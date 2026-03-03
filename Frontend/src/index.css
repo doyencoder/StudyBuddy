@@ -1,0 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 230 15% 5%;
+    --foreground: 220 20% 92%;
+
+    --card: 230 15% 8%;
+    --card-foreground: 220 20% 92%;
+
+    --popover: 230 15% 8%;
+    --popover-foreground: 220 20% 92%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 220 20% 98%;
+
+    --secondary: 230 15% 14%;
+    --secondary-foreground: 220 20% 85%;
+
+    --muted: 230 12% 14%;
+    --muted-foreground: 220 10% 55%;
+
+    --accent: 217 80% 55%;
+    --accent-foreground: 220 20% 98%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 230 15% 16%;
+    --input: 230 15% 14%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 230 15% 6%;
+    --sidebar-foreground: 220 10% 60%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 220 20% 98%;
+    --sidebar-accent: 217 91% 60%;
+    --sidebar-accent-foreground: 220 20% 98%;
+    --sidebar-border: 230 15% 12%;
+    --sidebar-ring: 217 91% 60%;
+
+    /* Custom tokens */
+    --glow-primary: 217 91% 60%;
+    --surface-raised: 230 15% 10%;
+    --surface-overlay: 230 15% 12%;
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 5%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 98%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+}
+
+@layer utilities {
+  .glow-blue {
+    box-shadow: 0 0 20px -5px hsl(var(--glow-primary) / 0.3);
+  }
+  .glow-blue-sm {
+    box-shadow: 0 0 10px -3px hsl(var(--glow-primary) / 0.2);
+  }
+  .border-glow {
+    border-color: hsl(var(--glow-primary) / 0.3);
+  }
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(var(--primary)), hsl(199 89% 68%));
+  }
+  .bg-surface-raised {
+    background-color: hsl(var(--surface-raised));
+  }
+  .bg-surface-overlay {
+    background-color: hsl(var(--surface-overlay));
+  }
+}
