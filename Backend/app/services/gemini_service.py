@@ -13,7 +13,7 @@ from google import genai
 from google.genai import types
 
 EMBEDDING_MODEL = "gemini-embedding-001"
-CHAT_MODEL = "gemini-2.0-flash-lite"
+CHAT_MODEL = "gemini-2.5-flash"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 4
 
