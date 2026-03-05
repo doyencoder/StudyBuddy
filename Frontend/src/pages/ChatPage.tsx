@@ -38,8 +38,6 @@ interface Message {
 
 const API_BASE = "http://localhost:8000";
 
-// Temporary hardcoded user ID until authentication is added.
-// Replace this with a real user ID from your auth system when ready.
 const USER_ID = "student-001";
 
 const TOOLS = [
@@ -61,6 +59,103 @@ const INITIAL_MESSAGES: Message[] = [
   },
 ];
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function generateUUID(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+// ── Markdown Renderer ─────────────────────────────────────────────────────────
+
+/** Applies inline formatting: **bold**, *italic*, `code` */
+function applyInline(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
+  return parts.map((part, i) => {
+    if (/^\*\*[^*]+\*\*$/.test(part)) {
+      return (
+        <strong key={i} className="font-semibold text-foreground">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (/^\*[^*]+\*$/.test(part)) {
+      return <em key={i} className="italic">{part.slice(1, -1)}</em>;
+    }
+    if (/^`[^`]+`$/.test(part)) {
+      return (
+        <code key={i} className="bg-secondary px-1.5 py-0.5 rounded text-xs font-mono text-primary">
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return part;
+  });
+}
+
+function renderMarkdown(text: string) {
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Empty line — skip
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    // Numbered list: "1. ..." (with optional leading spaces)
+    if (/^\s*\d+\.\s/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+\.\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s/, ""));
+        i++;
+      }
+      elements.push(
+        <ol key={`ol-${i}`} className="list-decimal list-inside space-y-1 my-2 ml-2">
+          {items.map((item, j) => (
+            <li key={j} className="text-sm">{applyInline(item)}</li>
+          ))}
+        </ol>
+      );
+      continue;
+    }
+
+    // Bullet list: "* ..." or "- ..." (with optional leading spaces)
+    if (/^\s*[\*\-]\s/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[\*\-]\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[\*\-]\s/, ""));
+        i++;
+      }
+      elements.push(
+        <ul key={`ul-${i}`} className="list-disc list-inside space-y-1 my-2 ml-2">
+          {items.map((item, j) => (
+            <li key={j} className="text-sm">{applyInline(item)}</li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    // Regular paragraph
+    elements.push(
+      <p key={`p-${i}`} className="text-sm leading-relaxed my-1">
+        {applyInline(line)}
+      </p>
+    );
+    i++;
+  }
+
+  return elements;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 const ChatPage = () => {
@@ -68,29 +163,22 @@ const ChatPage = () => {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-
-  // Persists across messages within the same session.
-  // Once the backend returns a conversation_id on the first message,
-  // we store it here and send it with every subsequent message.
   const [conversationId, setConversationId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Hidden file input — triggered when the Paperclip button is clicked.
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, isTyping]);
 
-  // ── Send Message (Real SSE Streaming) ───────────────────────────────────────
+  // ── Send Message ─────────────────────────────────────────────────────────────
 
   const sendMessage = async () => {
     if (!input.trim() || isTyping) return;
 
     const userMessage = input.trim();
 
-    // Add user message to UI immediately.
     const userMsg: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -101,15 +189,8 @@ const ChatPage = () => {
     setInput("");
     setIsTyping(true);
 
-    // Placeholder for the AI reply that we'll build up word-by-word.
     const aiMsgId = (Date.now() + 1).toString();
-    const aiMsg: Message = {
-      id: aiMsgId,
-      role: "assistant",
-      content: "",
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, aiMsg]);
+    setMessages((prev) => [...prev, { id: aiMsgId, role: "assistant", content: "", timestamp: new Date() }]);
 
     try {
       const response = await fetch(`${API_BASE}/chat/message`, {
@@ -117,16 +198,13 @@ const ChatPage = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: USER_ID,
-          conversation_id: conversationId,   // null on first message → backend creates one
+          conversation_id: conversationId,
           message: userMessage,
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
-      // Read the SSE stream chunk by chunk.
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
 
@@ -135,44 +213,25 @@ const ChatPage = () => {
         if (done) break;
 
         const raw = decoder.decode(value, { stream: true });
-
-        // Each SSE event looks like:  data: {...}\n\n
-        // Split on double-newlines to handle multiple events in one chunk.
         const lines = raw.split("\n\n").filter(Boolean);
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
-          const dataStr = line.slice(6).trim();   // strip "data: " prefix
+          const dataStr = line.slice(6).trim();
 
-          // Stream is finished.
-          if (dataStr === "[DONE]") {
-            setIsTyping(false);
-            break;
-          }
+          if (dataStr === "[DONE]") { setIsTyping(false); break; }
 
           let parsed: { type: string; content?: string; conversation_id?: string };
-          try {
-            parsed = JSON.parse(dataStr);
-          } catch {
-            continue;  // skip malformed events
-          }
+          try { parsed = JSON.parse(dataStr); } catch { continue; }
 
           if (parsed.type === "meta" && parsed.conversation_id) {
-            // Store the conversation_id returned by the backend.
             setConversationId(parsed.conversation_id);
           }
-
           if (parsed.type === "text" && parsed.content) {
-            // Append each streamed chunk to the AI message in real time.
             setMessages((prev) =>
-              prev.map((m) =>
-                m.id === aiMsgId
-                  ? { ...m, content: m.content + parsed.content }
-                  : m
-              )
+              prev.map((m) => m.id === aiMsgId ? { ...m, content: m.content + parsed.content } : m)
             );
           }
-
           if (parsed.type === "error") {
             toast.error(`AI error: ${parsed.content}`);
             setIsTyping(false);
@@ -182,21 +241,24 @@ const ChatPage = () => {
       }
     } catch (err) {
       toast.error("Could not reach the server. Is the backend running?");
-      // Remove the empty AI placeholder on failure.
       setMessages((prev) => prev.filter((m) => m.id !== aiMsgId));
     } finally {
       setIsTyping(false);
     }
   };
 
-  // ── File Upload (Paperclip Button) ───────────────────────────────────────────
+  // ── File Upload ───────────────────────────────────────────────────────────────
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // Reset input so the same file can be re-selected if needed.
     e.target.value = "";
+
+    let activeConversationId = conversationId;
+    if (!activeConversationId) {
+      activeConversationId = generateUUID();
+      setConversationId(activeConversationId);
+    }
 
     setIsUploading(true);
     toast.info(`Uploading "${file.name}"...`);
@@ -204,30 +266,22 @@ const ChatPage = () => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("user_id", USER_ID);
+    formData.append("conversation_id", activeConversationId);
 
     try {
-      const response = await fetch(`${API_BASE}/upload/file`, {
-        method: "POST",
-        body: formData,
-      });
-
+      const response = await fetch(`${API_BASE}/upload/file`, { method: "POST", body: formData });
       if (!response.ok) {
         const err = await response.json();
         throw new Error(err.detail || "Upload failed");
       }
-
       const data = await response.json();
       toast.success(`"${file.name}" uploaded! ${data.chunks_stored} chunks indexed.`);
-
-      // Add a system-style message in the chat confirming the upload.
-      const confirmMsg: Message = {
+      setMessages((prev) => [...prev, {
         id: Date.now().toString(),
         role: "assistant",
         content: `📎 I've processed **${file.name}** (${data.chunks_stored} chunks indexed). You can now ask me questions about it!`,
         timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, confirmMsg]);
-
+      }]);
     } catch (err: any) {
       toast.error(`Upload failed: ${err.message}`);
     } finally {
@@ -242,8 +296,6 @@ const ChatPage = () => {
     toast.info(`Selected: ${tool}. Type your topic and send!`);
   };
 
-  // ── Copy ──────────────────────────────────────────────────────────────────────
-
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard!");
@@ -253,7 +305,6 @@ const ChatPage = () => {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Hidden file input triggered by Paperclip button */}
       <input
         ref={fileInputRef}
         type="file"
@@ -266,7 +317,7 @@ const ChatPage = () => {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
         {messages.map((msg) => (
           <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}>
-            <div className={`max-w-[85%] md:max-w-[70%] ${msg.role === "user" ? "" : ""}`}>
+            <div className="max-w-[85%] md:max-w-[70%]">
               {msg.role === "assistant" && (
                 <div className="flex items-center gap-2 mb-1.5">
                   <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
@@ -275,6 +326,7 @@ const ChatPage = () => {
                   <span className="text-xs text-muted-foreground font-medium">Study Buddy</span>
                 </div>
               )}
+
               <div
                 className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                   msg.role === "user"
@@ -282,20 +334,18 @@ const ChatPage = () => {
                     : "bg-card border border-glow text-card-foreground rounded-bl-md"
                 }`}
               >
-                {msg.content.split("\n").map((line, i) => (
-                  <p key={i} className={i > 0 ? "mt-2" : ""}>
-                    {line}
-                  </p>
-                ))}
+                {msg.role === "user"
+                  ? msg.content
+                  : renderMarkdown(msg.content)
+                }
               </div>
 
-              {/* AI Action Bar — unchanged */}
               {msg.role === "assistant" && (
                 <div className="flex items-center gap-1 mt-2 ml-1">
                   {[
-                    { icon: Volume2, label: "Audio", action: () => toast.info("Text-to-speech coming soon!") },
-                    { icon: Globe, label: "Translate", action: () => toast.info("Translation coming soon!") },
-                    { icon: Copy, label: "Copy", action: () => handleCopy(msg.content) },
+                    { icon: Volume2, label: "Audio",      action: () => toast.info("Text-to-speech coming soon!") },
+                    { icon: Globe,   label: "Translate",  action: () => toast.info("Translation coming soon!") },
+                    { icon: Copy,    label: "Copy",       action: () => handleCopy(msg.content) },
                     { icon: RefreshCw, label: "Regenerate", action: () => toast.info("Regeneration coming soon!") },
                   ].map((btn) => (
                     <Button
@@ -328,7 +378,7 @@ const ChatPage = () => {
         )}
       </div>
 
-      {/* Input — identical layout, Paperclip now wired */}
+      {/* Input */}
       <div className="border-t border-border p-3 md:p-4 bg-card">
         <div className="flex items-end gap-2 max-w-4xl mx-auto">
           <DropdownMenu>
@@ -362,7 +412,6 @@ const ChatPage = () => {
               className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-4 py-2.5 resize-none outline-none min-h-[40px] max-h-[120px]"
             />
             <div className="flex items-center gap-1 pr-2 pb-1.5">
-              {/* Paperclip — now triggers hidden file input */}
               <Button
                 variant="ghost"
                 size="icon"

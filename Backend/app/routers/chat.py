@@ -25,15 +25,17 @@ async def chat_message(request: ChatRequest):
       1. Create a new conversation if none exists yet.
       2. Save the user's message to Cosmos DB.
       3. Embed the user's question using Gemini.
-      4. Retrieve the top-5 relevant chunks from Azure AI Search.
+      4. Retrieve the top-5 relevant chunks from Azure AI Search,
+         scoped strictly to this conversation_id so files from other
+         chats are never mixed in.
       5. Stream Gemini's reply back to the frontend as SSE.
       6. Once streaming is complete, save the full AI reply to Cosmos DB.
 
     Returns:
         A Server-Sent Events stream (text/event-stream).
-        Each event is:  data: <chunk_of_text>\n\n
-        Final event is: data: [DONE]\n\n
-        On error:       data: [ERROR] <message>\n\n
+        Each event is:  data: {"type": "text", "content": "..."}
+        Final event is: data: [DONE]
+        On error:       data: {"type": "error", "content": "..."}
     """
 
     # ── Step 1: Resolve conversation ID ──────────────────────────────────────
@@ -50,11 +52,14 @@ async def chat_message(request: ChatRequest):
     )
 
     # ── Step 3 & 4: Embed query + retrieve relevant chunks ───────────────────
+    # retrieve_chunks filters by BOTH user_id AND conversation_id —
+    # this ensures only files uploaded in this specific chat are used.
     try:
         query_embedding = embed_query(request.message)
         context_chunks = retrieve_chunks(
             query_embedding=query_embedding,
             user_id=request.user_id,
+            conversation_id=conversation_id,
             top_k=5,
         )
     except Exception as e:
@@ -65,17 +70,9 @@ async def chat_message(request: ChatRequest):
 
     # ── Step 5 & 6: Stream Gemini reply + save to Cosmos DB ──────────────────
     async def event_stream():
-        """
-        Generator that:
-        - Streams Gemini text chunks to the frontend as SSE events.
-        - Collects the full reply in memory.
-        - Saves the complete reply to Cosmos DB after streaming finishes.
-        - Sends conversation_id as the first event so the frontend can store it.
-        """
         full_reply = ""
 
-        # Always send the conversation_id first so the frontend can track it.
-        # Format: data: {"type": "meta", "conversation_id": "..."}
+        # Always send conversation_id first so the frontend can track it.
         meta = json.dumps({"type": "meta", "conversation_id": conversation_id})
         yield f"data: {meta}\n\n"
 
@@ -85,7 +82,6 @@ async def chat_message(request: ChatRequest):
                 context_chunks=context_chunks,
             ):
                 full_reply += chunk
-                # Format: data: {"type": "text", "content": "..."}
                 payload = json.dumps({"type": "text", "content": chunk})
                 yield f"data: {payload}\n\n"
 
@@ -94,7 +90,6 @@ async def chat_message(request: ChatRequest):
             yield f"data: {error_payload}\n\n"
             return
 
-        # Save the complete AI reply to Cosmos DB after stream finishes.
         await save_message(
             conversation_id=conversation_id,
             user_id=request.user_id,
@@ -102,14 +97,12 @@ async def chat_message(request: ChatRequest):
             content=full_reply,
         )
 
-        # Signal to the frontend that the stream is complete.
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={
-            # Prevent proxies/browsers from buffering the stream.
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
@@ -122,12 +115,6 @@ async def chat_message(request: ChatRequest):
 async def chat_history(conversation_id: str):
     """
     Returns the full message history for a given conversation.
-
-    Args:
-        conversation_id: The UUID of the conversation to fetch.
-
-    Returns:
-        ChatHistoryResponse with conversation_id and list of ChatMessage objects.
     """
     try:
         raw_messages = await get_messages(conversation_id)

@@ -4,8 +4,8 @@ POST /upload/file  — Full RAG ingestion pipeline:
   1. Upload file to Azure Blob Storage
   2. Extract text via Azure Document Intelligence
   3. Chunk the text (500 words, 50 overlap)
-  4. Embed each chunk with Gemini text-embedding-004
-  5. Store embeddings in Azure AI Search
+  4. Embed each chunk with Gemini gemini-embedding-001
+  5. Store embeddings in Azure AI Search (scoped to conversation_id)
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -18,7 +18,6 @@ from app.utils.chunking import chunk_text
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
-# Allowed file types
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "webp", "tiff"}
 MAX_FILE_SIZE_MB = 20
 
@@ -27,11 +26,14 @@ MAX_FILE_SIZE_MB = 20
 async def upload_file(
     file: UploadFile = File(...),
     user_id: str = Form(...),
+    conversation_id: str = Form(default="no-conversation"),
 ):
     """
     Upload a study document and run the full RAG pipeline.
 
     - Accepts: PDF, PNG, JPG, JPEG, WEBP, TIFF (max 20 MB)
+    - conversation_id scopes the stored chunks to this chat session only,
+      so files from other chats are never mixed in during retrieval.
     - Returns: file_id, blob_url, number of chunks indexed
     """
 
@@ -62,7 +64,7 @@ async def upload_file(
         raise HTTPException(status_code=500, detail=f"Blob upload failed: {str(e)}")
 
     blob_url = blob_info["blob_url"]
-    file_id = blob_info["file_id"]
+    file_id  = blob_info["file_id"]
 
     # ── Step 2: Extract text via Document Intelligence ────────────────────────
     try:
@@ -80,7 +82,7 @@ async def upload_file(
     # ── Step 3: Chunk the text ────────────────────────────────────────────────
     chunks = chunk_text(extracted_text)
 
-    # ── Step 4: Embed each chunk with Gemini ──────────────────────────────────
+    # ── Step 4: Embed each chunk with Gemini ─────────────────────────────────
     try:
         embeddings = [embed_text(chunk) for chunk in chunks]
     except Exception as e:
@@ -88,11 +90,12 @@ async def upload_file(
 
     # ── Step 5: Store in Azure AI Search ─────────────────────────────────────
     try:
-        create_index_if_not_exists()   # no-op if index already exists
+        create_index_if_not_exists()
         store_chunks(
             chunks=chunks,
             embeddings=embeddings,
             user_id=user_id,
+            conversation_id=conversation_id,
             file_id=file_id,
             filename=filename,
         )

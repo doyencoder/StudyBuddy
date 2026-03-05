@@ -17,12 +17,21 @@ CHAT_MODEL = "gemini-2.5-flash"
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 4
 
-SYSTEM_PROMPT = """You are StudyBuddy, an educational AI assistant.
+# When the student has uploaded material and chunks were found
+SYSTEM_PROMPT_RAG = """You are StudyBuddy, an educational AI assistant.
 Answer ONLY based on the context provided from the student's own study material.
 If the answer is not in the context, say: I could not find this in your uploaded material.
 If the question is ambiguous, ask ONE clarifying question before answering.
 Never fabricate facts, formulas, dates, or citations.
 Keep answers clear, structured, and student-friendly."""
+
+# When no uploaded material exists or nothing relevant was found
+SYSTEM_PROMPT_GENERAL = """You are StudyBuddy, an educational AI assistant.
+Answer the student's question using your general knowledge.
+Be accurate, clear, and student-friendly.
+If the question is ambiguous, ask ONE clarifying question before answering.
+Never fabricate facts, formulas, dates, or citations.
+Keep answers structured and easy to understand."""
 
 
 def _get_client() -> genai.Client:
@@ -84,19 +93,13 @@ def embed_query(query: str) -> List[float]:
 
 
 def chat_stream(question: str, context_chunks: List[str]) -> Generator[str, None, None]:
-    """
-    Stream a Gemini 1.5 Flash response grounded in the retrieved context chunks.
-
-    Yields:
-        Text delta strings for SSE streaming to the frontend.
-    """
     client = _get_client()
 
-    context_text = "\n\n---\n\n".join(
-        f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-    )
-
-    prompt = f"""Use the following context from the student's study material to answer the question.
+    if context_chunks:
+        context_text = "\n\n---\n\n".join(
+            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
+        )
+        prompt = f"""Use the following context from the student's study material to answer the question.
 
 CONTEXT:
 {context_text}
@@ -104,12 +107,16 @@ CONTEXT:
 QUESTION:
 {question}
 """
+        system_instruction = SYSTEM_PROMPT_RAG
+    else:
+        prompt = question
+        system_instruction = SYSTEM_PROMPT_GENERAL
 
     def _stream():
         return client.models.generate_content_stream(
             model=CHAT_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+            config=types.GenerateContentConfig(system_instruction=system_instruction),
         )
 
     response = _call_with_retry(_stream)
