@@ -12,3 +12,4 @@ azure-cognitiveservices-speech
 azure-ai-translation-text
 pydub
 python-jose[cryptography]
+azure-cosmos
