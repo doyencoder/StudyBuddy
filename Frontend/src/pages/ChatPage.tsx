@@ -77,7 +77,7 @@
 //   { label: "Generate Quiz",       icon: FileText },
 //   { label: "Generate Flashcards", icon: Layers },
 //   { label: "Create Study Plan",   icon: CalendarDays },
-//   { label: "Generate Diagram",    icon: GitBranch },
+//   { label: "Generate Mindmap",    icon: GitBranch },
 //   { label: "Generate Flowchart",  icon: Network },
 //   { label: "Generate Mindmap",    icon: Brain },
 // ];
@@ -835,6 +835,7 @@ import {
   Code,
   ImageIcon,
   Download,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -900,12 +901,21 @@ interface DiagramData {
   created_at: string;
 }
 
+interface ImageData {
+  diagram_id: string;
+  type: "image";
+  topic: string;
+  image_url: string;
+  created_at: string;
+}
+
 interface Message {
   id: string;
-  role: "user" | "assistant" | "quiz" | "diagram";
+  role: "user" | "assistant" | "quiz" | "diagram" | "image";
   content: string;
   quizData?: QuizData;
   diagramData?: DiagramData;
+  imageData?: ImageData;
   timestamp: Date;
 }
 
@@ -918,7 +928,8 @@ const TOOLS = [
   { label: "Generate Quiz",       icon: FileText    },
   { label: "Generate Flashcards", icon: Layers      },
   { label: "Create Study Plan",   icon: CalendarDays },
-  { label: "Generate Diagram",    icon: GitBranch   },
+  { label: "Generate Diagram",    icon: Sparkles    },
+  { label: "Generate Mindmap",    icon: GitBranch   },
   { label: "Generate Flowchart",  icon: Network     },
 ];
 
@@ -1386,6 +1397,79 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
   );
 };
 
+// ── ImageCard ─────────────────────────────────────────────────────────────────
+
+const ImageCard = ({ imageData }: { imageData: ImageData }) => {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  const handleDownload = () => {
+    const a = document.createElement("a");
+    a.href = imageData.image_url;
+    a.download = `${imageData.topic.replace(/\s+/g, "_")}.png`;
+    a.target = "_blank";
+    a.click();
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold text-foreground">{imageData.topic}</span>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary font-medium">
+            AI Image
+          </span>
+        </div>
+        {loaded && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleDownload}
+            className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download
+          </Button>
+        )}
+      </div>
+
+      {/* Image */}
+      <div className="rounded-xl overflow-hidden bg-secondary/50 min-h-[200px] flex items-center justify-center">
+        {error ? (
+          <div className="flex flex-col items-center gap-2 py-10">
+            <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
+            <p className="text-xs text-destructive">Failed to load image.</p>
+          </div>
+        ) : (
+          <>
+            {!loaded && (
+              <div className="flex gap-1.5 py-10">
+                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+            )}
+            <img
+              src={imageData.image_url}
+              alt={imageData.topic}
+              className={`w-full rounded-xl object-contain transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0 absolute"}`}
+              onLoad={() => setLoaded(true)}
+              onError={() => setError(true)}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Footer */}
+      <p className="text-xs text-muted-foreground text-right">
+        Saved to your Images library ✓
+      </p>
+    </div>
+  );
+};
+
 // ── Main Component ───────────────────────────────────────────────────────
 
 const ChatPage = () => {
@@ -1394,6 +1478,10 @@ const ChatPage = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // Holds the pending diagram type when the bot asked "what topic?" and is
+  // waiting for the user's next plain-text reply to use as the topic.
+  const [pendingDiagramType, setPendingDiagramType] = useState<"flowchart" | "diagram" | null>(null);
+  const [pendingImageRequest, setPendingImageRequest] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1489,7 +1577,7 @@ const ChatPage = () => {
     const formattedContent =
       diagramType === "flowchart"
         ? `Generate Flowchart for: ${topic.trim()}`
-        : `Generate Diagram for: ${topic.trim()}`;
+        : `Generate Mindmap for: ${topic.trim()}`;
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -1531,7 +1619,7 @@ const ChatPage = () => {
         },
       ]);
     } catch (err: any) {
-      toast.error(`Could not generate diagram: ${err.message}`);
+      toast.error(`Could not Generate Mindmap: ${err.message}`);
       setMessages((prev) => [
         ...prev,
         {
@@ -1546,11 +1634,266 @@ const ChatPage = () => {
     }
   };
 
+  // ── Smart topic inference from conversation history ───────────────────────
+  // Calls the backend /chat/infer-topic which uses Gemini to extract a clean
+  // 3-5 word topic from the recent messages. Used when user triggers diagram
+  // generation without specifying a topic mid-conversation.
+  const inferTopicFromConversation = async (): Promise<string | null> => {
+    const recentMessages = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-8)
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 300) }));
+
+    if (recentMessages.length === 0) return null;
+
+    try {
+      const res = await fetch(`${API_BASE}/chat/infer-topic`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: recentMessages }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.topic || null;
+    } catch {
+      return null;
+    }
+  };
+
+  // ── Handles a diagram request with full scenario logic ────────────────────
+  //
+  // Scenario A — topic given explicitly → generate immediately
+  // Scenario B — no topic, no chat history → ask the user what topic they want
+  // Scenario C — no topic, active conversation → infer topic via Gemini and generate
+  const handleDiagramRequest = async (
+    rawTopic: string,
+    diagramType: "flowchart" | "diagram",
+    userMessage: string
+  ) => {
+    const topic = rawTopic.trim();
+
+    // ── Scenario A: explicit topic given ─────────────────────────────────────
+    if (topic) {
+      await generateDiagram(topic, diagramType);
+      return;
+    }
+
+    // Real conversation messages (excluding the initial greeting and command/tool messages)
+    const realMessages = messages.filter(
+      (m) => (m.role === "user" || m.role === "assistant") && m.id !== "1"
+    );
+
+    // ── Scenario B: no topic + no prior conversation ──────────────────────────
+    if (realMessages.length === 0) {
+      const typeLabel = diagramType === "flowchart" ? "flowchart" : "mind map diagram";
+      // Show the user's trigger message in chat
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "user",
+          content: userMessage,
+          timestamp: new Date(),
+        },
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Sure! What topic would you like me to create a ${typeLabel} for? Just type the topic and I'll generate it right away. 🎨`,
+          timestamp: new Date(),
+        },
+      ]);
+      setInput("");
+      // Remember we're waiting for a topic reply
+      setPendingDiagramType(diagramType);
+      return;
+    }
+
+    // ── Scenario C: no topic + active conversation → infer via Gemini ────────
+    // Show the user's trigger message, then a "thinking" indicator while we infer
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: Date.now().toString(),
+        role: "user",
+        content: userMessage,
+        timestamp: new Date(),
+      },
+    ]);
+    setInput("");
+    setIsTyping(true);
+
+    const inferredTopic = await inferTopicFromConversation();
+    setIsTyping(false);
+
+    if (!inferredTopic || inferredTopic === "General Topic") {
+      // Inference unclear — ask the user explicitly
+      const typeLabel = diagramType === "flowchart" ? "flowchart" : "mind map diagram";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `I wasn't sure which topic to use from our conversation. What would you like me to create a ${typeLabel} for? Just type the topic! 🎨`,
+          timestamp: new Date(),
+        },
+      ]);
+      setPendingDiagramType(diagramType);
+      return;
+    }
+
+    // We have a good inferred topic — generate directly
+    await generateDiagram(inferredTopic, diagramType);
+  };
+
+  // ── Generate real AI image via Imagen 4 ──────────────────────────────────
+  const generateImage = async (topic: string) => {
+    if (!topic.trim()) {
+      toast.error("Please specify a topic for the image.");
+      return;
+    }
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: `Generate Diagram for: ${topic.trim()}`,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsTyping(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/diagrams/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          conversation_id: conversationId,
+          topic: topic.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Image generation failed");
+      }
+
+      const data: ImageData = await response.json();
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "image",
+          content: "",
+          imageData: data,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (err: any) {
+      toast.error(`Could not generate image: ${err.message}`);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Sorry, I couldn't generate the image. ${err.message}`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  // ── Smart handler for image requests (same 3-scenario logic as diagrams) ──
+  const handleImageRequest = async (rawTopic: string) => {
+    const topic = rawTopic.trim();
+
+    // Scenario A — explicit topic given
+    if (topic) {
+      await generateImage(topic);
+      return;
+    }
+
+    const realMessages = messages.filter(
+      (m) => (m.role === "user" || m.role === "assistant") && m.id !== "1"
+    );
+
+    // Scenario B — fresh chat, no history
+    if (realMessages.length === 0) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: `Sure! What topic would you like me to generate an AI diagram image for? Just type the topic. 🎨`,
+          timestamp: new Date(),
+        },
+      ]);
+      setPendingImageRequest(true);
+      return;
+    }
+
+    // Scenario C — active conversation, infer topic via Gemini
+    setIsTyping(true);
+    const inferredTopic = await inferTopicFromConversation();
+    setIsTyping(false);
+
+    if (!inferredTopic || inferredTopic === "General Topic") {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: `I wasn't sure which topic to pick from our conversation. What would you like me to generate an image for? 🎨`,
+          timestamp: new Date(),
+        },
+      ]);
+      setPendingImageRequest(true);
+      return;
+    }
+
+    await generateImage(inferredTopic);
+  };
+
   const sendMessage = async () => {
     if (!input.trim() || isTyping) return;
 
     const userMessage = input.trim();
     setInput("");
+
+    // ── Pending diagram topic reply ───────────────────────────────────────────
+    // The bot previously asked "what topic?" — this reply IS the topic.
+    if (pendingDiagramType) {
+      const diagramType = pendingDiagramType;
+      setPendingDiagramType(null);
+      // Strip any accidental tool prefix (e.g. if user clicked a tool button)
+      const cleanTopic = userMessage
+        .replace(/^generate (diagram|mindmap|flowchart|quiz)(\s+for)?:?\s*/i, "")
+        .trim();
+      if (!cleanTopic) {
+        // Still empty after stripping — ask again
+        setPendingDiagramType(diagramType);
+        return;
+      }
+      await generateDiagram(cleanTopic, diagramType);
+      return;
+    }
+
+    // ── Pending image topic reply ─────────────────────────────────────────────
+    if (pendingImageRequest) {
+      setPendingImageRequest(false);
+      const cleanTopic = userMessage
+        .replace(/^generate (diagram|mindmap|flowchart|quiz)(\s+for)?:?\s*/i, "")
+        .trim();
+      if (!cleanTopic) {
+        setPendingImageRequest(true);
+        return;
+      }
+      await generateImage(cleanTopic);
+      return;
+    }
 
     const { isQuiz, topic, numQuestions } = detectQuizIntent(userMessage);
 
@@ -1559,15 +1902,21 @@ const ChatPage = () => {
       return;
     }
 
-    if (/^generate flowchart/i.test(userMessage)) {
-      const match = userMessage.match(/^generate flowchart(?:\s+for)?:?\s*(.*)/i);
-      await generateDiagram(match?.[1]?.trim() || userMessage, "flowchart");
+    if (/^generate diagram/i.test(userMessage)) {
+      const match = userMessage.match(/^generate diagram(?:\s+for)?:?\s*(.*)/i);
+      await handleImageRequest(match?.[1] ?? "");
       return;
     }
 
-    if (/^generate diagram/i.test(userMessage)) {
-      const match = userMessage.match(/^generate diagram(?:\s+for)?:?\s*(.*)/i);
-      await generateDiagram(match?.[1]?.trim() || userMessage, "diagram");
+    if (/^generate flowchart/i.test(userMessage)) {
+      const match = userMessage.match(/^generate flowchart(?:\s+for)?:?\s*(.*)/i);
+      await handleDiagramRequest(match?.[1] ?? "", "flowchart", userMessage);
+      return;
+    }
+
+    if (/^Generate Mindmap/i.test(userMessage)) {
+      const match = userMessage.match(/^Generate Mindmap(?:\s+for)?:?\s*(.*)/i);
+      await handleDiagramRequest(match?.[1] ?? "", "diagram", userMessage);
       return;
     }
 
@@ -1688,15 +2037,15 @@ const ChatPage = () => {
   const handleToolClick = (tool: string) => {
     if (tool === "Generate Quiz") {
       setInput("Generate Quiz for: ");
+    } else if (tool === "Generate Diagram") {
+      setInput("Generate Diagram for: ");
+    } else if (tool === "Generate Flowchart") {
+      setInput("Generate Flowchart for: ");
+    } else if (tool === "Generate Mindmap") {
+      setInput("Generate Mindmap for: ");
     } else {
-      if (tool === "Generate Flowchart") {
-        setInput("Generate Flowchart for: ");
-      } else if (tool === "Generate Diagram") {
-        setInput("Generate Diagram for: ");
-      } else {
-        setInput(`${tool} for: `);
-        toast.info(`Selected: ${tool}. Type your topic and send!`);
-      }
+      setInput(`${tool} for: `);
+      toast.info(`Selected: ${tool}. Type your topic and send!`);
     }
   };
 
@@ -1755,6 +2104,25 @@ const ChatPage = () => {
                   </div>
                   <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-5">
                     <DiagramCard diagramData={msg.diagramData} />
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // AI-generated image message
+          if (msg.role === "image" && msg.imageData) {
+            return (
+              <div key={msg.id} className="flex justify-start animate-fade-in">
+                <div className="w-full max-w-[90%] md:max-w-[80%]">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
+                      <Bot className="w-3.5 h-3.5 text-primary" />
+                    </div>
+                    <span className="text-xs text-muted-foreground font-medium">Study Buddy</span>
+                  </div>
+                  <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-5">
+                    <ImageCard imageData={msg.imageData} />
                   </div>
                 </div>
               </div>

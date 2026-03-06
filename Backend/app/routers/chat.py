@@ -1,9 +1,11 @@
 import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from typing import List
 
 from app.models import ChatRequest, ChatHistoryResponse, ChatMessage
-from app.services.gemini_service import embed_query, chat_stream
+from app.services.gemini_service import embed_query, chat_stream, infer_topic_from_messages
 from app.services.search_service import retrieve_chunks
 from app.services.cosmos_service import (
     create_conversation,
@@ -144,3 +146,26 @@ async def chat_history(conversation_id: str):
         conversation_id=conversation_id,
         messages=messages,
     )
+
+# ── POST /chat/infer-topic ────────────────────────────────────────────────────
+
+class InferTopicRequest(BaseModel):
+    messages: List[dict]   # [{"role": "user"|"assistant", "content": "..."}]
+
+
+@router.post("/infer-topic")
+async def infer_topic(request: InferTopicRequest):
+    """
+    Given recent conversation messages, asks Gemini to extract a clean
+    3-5 word topic that best describes what the student was studying.
+    Used by the frontend when the user triggers diagram generation
+    mid-conversation without specifying a topic.
+    """
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="No messages provided.")
+
+    try:
+        topic = infer_topic_from_messages(request.messages)
+        return {"topic": topic}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Topic inference failed: {str(e)}")

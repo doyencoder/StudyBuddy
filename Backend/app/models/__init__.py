@@ -101,7 +101,7 @@ class DiagramGenerateRequest(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None   # optional — if None, uses general knowledge
     topic: str
-    diagram_type: str = "flowchart"   # "flowchart" | "diagram"
+    diagram_type: str = "flowchart"   # "flowchart" | "diagram" (mindmap)
 
 
 class DiagramGenerateResponse(BaseModel):
@@ -112,11 +112,28 @@ class DiagramGenerateResponse(BaseModel):
     created_at: str
 
 
+# ── Image Generation (Imagen 3) ───────────────────────────────────────────────
+
+class ImageGenerateRequest(BaseModel):
+    user_id: str
+    conversation_id: Optional[str] = None
+    topic: str
+
+
+class ImageGenerateResponse(BaseModel):
+    diagram_id: str
+    type: str          # always "image"
+    topic: str
+    image_url: str     # Azure Blob SAS URL
+    created_at: str
+
+
 class DiagramHistoryItem(BaseModel):
     diagram_id: str
-    type: str
+    type: str                             # "flowchart" | "diagram" | "image"
     topic: str
-    mermaid_code: str
+    mermaid_code: Optional[str] = None   # present for flowchart/mindmap, empty for image
+    image_url: Optional[str] = None      # present for image type only
     created_at: str
     conversation_id: str
 

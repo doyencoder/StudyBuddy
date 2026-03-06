@@ -79,3 +79,51 @@ def upload_file_to_blob(file_bytes: bytes, original_filename: str, user_id: str)
         "blob_name": blob_name,
         "blob_url": sas_url,
     }
+
+def upload_generated_image_to_blob(image_bytes: bytes, topic: str, user_id: str) -> dict:
+    """
+    Uploads an AI-generated image (PNG bytes) to Azure Blob Storage.
+    Uses a 30-day SAS URL so the image stays visible in the UI.
+    Unlike document uploads (1hr SAS), generated images need to persist
+    for the user to view them in the Images page long-term.
+
+    Returns:
+        dict with keys: image_id, blob_name, blob_url
+    """
+    container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "studybuddy-files")
+
+    image_id = str(uuid.uuid4())
+    safe_topic = topic.replace(" ", "_").replace("/", "-")[:40]
+    blob_name = f"{user_id}/generated_images/{image_id}_{safe_topic}.png"
+
+    client = get_blob_client()
+    container_client = client.get_container_client(container_name)
+
+    blob_client = container_client.get_blob_client(blob_name)
+    blob_client.upload_blob(
+        image_bytes,
+        overwrite=True,
+        content_settings=ContentSettings(content_type="image/png"),
+    )
+
+    # 30-day SAS URL — long enough for practical use while still being safe
+    service_client = get_blob_client()
+    account_name = service_client.account_name
+    account_key = service_client.credential.account_key
+
+    sas_token = generate_blob_sas(
+        account_name=account_name,
+        container_name=container_name,
+        blob_name=blob_name,
+        account_key=account_key,
+        permission=BlobSasPermissions(read=True),
+        expiry=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+
+    sas_url = f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas_token}"
+
+    return {
+        "image_id": image_id,
+        "blob_name": blob_name,
+        "blob_url": sas_url,
+    }

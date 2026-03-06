@@ -24,9 +24,10 @@ mermaid.initialize({
 
 interface DiagramItem {
   diagram_id: string;
-  type: string;
+  type: string;          // "flowchart" | "diagram" | "image"
   topic: string;
   mermaid_code: string;
+  image_url?: string;    // present for type="image"
   created_at: string;
   conversation_id: string;
 }
@@ -71,18 +72,40 @@ const DiagramPreview = ({ item }: { item: DiagramItem }) => {
   const id = `preview-${item.diagram_id.replace(/-/g, "")}`;
 
   useEffect(() => {
+    // Real images don't need Mermaid rendering
+    if (item.type === "image") return;
     if (!item.mermaid_code) return;
     mermaid
       .render(id, item.mermaid_code)
       .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
       .catch(() => {
-        // Clean up leaked Mermaid error container
         const leaked = document.getElementById(`d${id}`);
         if (leaked) leaked.remove();
         setError(true);
       });
   }, [item.mermaid_code]);
 
+  // ── Real AI-generated image ───────────────────────────────────────────────
+  if (item.type === "image") {
+    return (
+      <div className="aspect-video bg-secondary/50 rounded-t-xl overflow-hidden">
+        {item.image_url ? (
+          <img
+            src={item.image_url}
+            alt={item.topic}
+            className="w-full h-full object-cover"
+            onError={() => setError(true)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <ImageIcon className="w-10 h-10 text-muted-foreground/40" />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Mermaid diagram (flowchart / mindmap) ─────────────────────────────────
   if (error) {
     return (
       <div className="aspect-video bg-secondary/50 rounded-t-xl flex items-center justify-center">
@@ -125,8 +148,12 @@ const DiagramModal = ({
   const [showCode, setShowCode] = useState(false);
   const modalId = `modal-${item.diagram_id.replace(/-/g, "")}`;
 
+  const isImage = item.type === "image";
+
   useEffect(() => {
-    // Render fresh at full size for the modal
+    // Skip Mermaid rendering for real images
+    if (isImage) return;
+
     mermaid
       .render(modalId, item.mermaid_code)
       .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
@@ -136,25 +163,41 @@ const DiagramModal = ({
         setError(true);
       });
 
-    // Close on Escape
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [item.mermaid_code]);
 
-  const typeLabel = item.type === "flowchart" ? "Flowchart" : "Mind Map";
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const typeLabel =
+    item.type === "flowchart" ? "Flowchart"
+    : item.type === "image"   ? "AI Image"
+    : "Mind Map";
+
   const typeBadgeColor =
-    item.type === "flowchart"
-      ? "bg-blue-500/15 text-blue-400"
-      : "bg-purple-500/15 text-purple-400";
+    item.type === "flowchart" ? "bg-blue-500/15 text-blue-400"
+    : item.type === "image"   ? "bg-primary/15 text-primary"
+    : "bg-purple-500/15 text-purple-400";
+
+  const handleImageDownload = () => {
+    if (!item.image_url) return;
+    const a = document.createElement("a");
+    a.href = item.image_url;
+    a.download = `${item.topic.replace(/\s+/g, "_")}.png`;
+    a.target = "_blank";
+    a.click();
+  };
 
   return (
-    // Backdrop
     <div
       className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 md:p-8"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      {/* Panel */}
       <div className="bg-card border border-border rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl">
 
         {/* Modal header */}
@@ -168,17 +211,32 @@ const DiagramModal = ({
           </div>
 
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowCode((v) => !v)}
-              className="h-8 px-3 text-xs text-muted-foreground hover:text-primary gap-1.5"
-            >
-              <Code className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{showCode ? "View diagram" : "View code"}</span>
-            </Button>
+            {/* View code button — only for Mermaid types */}
+            {!isImage && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowCode((v) => !v)}
+                className="h-8 px-3 text-xs text-muted-foreground hover:text-primary gap-1.5"
+              >
+                <Code className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{showCode ? "View diagram" : "View code"}</span>
+              </Button>
+            )}
 
-            {svg && !showCode && (
+            {/* Download: PNG export for Mermaid, direct URL for real image */}
+            {isImage && item.image_url && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleImageDownload}
+                className="h-8 px-3 text-xs text-muted-foreground hover:text-primary gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Download PNG</span>
+              </Button>
+            )}
+            {!isImage && svg && !showCode && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -203,7 +261,21 @@ const DiagramModal = ({
 
         {/* Modal body */}
         <div className="flex-1 overflow-auto p-6">
-          {showCode ? (
+          {isImage ? (
+            item.image_url ? (
+              <img
+                src={item.image_url}
+                alt={item.topic}
+                className="w-full rounded-xl object-contain max-h-[65vh]"
+                onError={() => setError(true)}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-48 gap-2">
+                <ImageIcon className="w-10 h-10 text-muted-foreground/30" />
+                <p className="text-sm text-destructive">Image URL not available.</p>
+              </div>
+            )
+          ) : showCode ? (
             <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap bg-secondary/60 rounded-xl p-4">
               {item.mermaid_code}
             </pre>
@@ -272,12 +344,16 @@ const ImagesPage = () => {
 
   useEffect(() => { fetchDiagrams(); }, []);
 
-  const typeLabel = (type: string) => type === "flowchart" ? "Flowchart" : "Mind Map";
+  const typeLabel = (type: string) =>
+    type === "flowchart" ? "Flowchart" : type === "image" ? "AI Image" : "Mind Map";
   const typeBadgeColor = (type: string) =>
     type === "flowchart"
       ? "bg-blue-500/15 text-blue-400"
+      : type === "image"
+      ? "bg-primary/15 text-primary"
       : "bg-purple-500/15 text-purple-400";
-  const TypeIcon = (type: string) => type === "flowchart" ? Network : GitBranch;
+  const TypeIcon = (type: string) =>
+    type === "flowchart" ? Network : type === "image" ? ImageIcon : GitBranch;
 
   return (
     <>

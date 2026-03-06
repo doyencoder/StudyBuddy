@@ -216,6 +216,113 @@ Each item must have exactly these fields:
     return sanitized            
 
 
+def infer_topic_from_messages(messages: list) -> str:
+    """
+    Given a list of recent chat messages [{"role": ..., "content": ...}],
+    asks Gemini to extract a clean 3-5 word topic that the student was
+    studying. Falls back to "General Topic" if inference fails.
+
+    Called by POST /chat/infer-topic when user requests a diagram
+    mid-conversation without specifying a topic.
+    """
+    client = _get_client()
+
+    # Build a readable conversation summary (cap content length to save tokens)
+    conversation_text = "\n".join(
+        f"{'Student' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:300]}"
+        for m in messages[-8:]   # last 8 messages max
+        if m.get("role") in ("user", "assistant")
+    )
+
+    prompt = f"""Read this study conversation and extract the main topic being studied.
+Return ONLY a short topic name (3-5 words max). No explanation, no punctuation, no quotes.
+Examples of good responses: "Photosynthesis", "Newton Laws of Motion", "Cell Division", "Water Cycle"
+
+CONVERSATION:
+{conversation_text}
+
+TOPIC:"""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.1),
+        )
+
+    response = _call_with_retry(_generate)
+    topic = response.text.strip().strip('"').strip("'").strip(".")
+
+    # Sanity check — if Gemini returned something too long or empty, fallback
+    if not topic or len(topic) > 60:
+        return "General Topic"
+
+    return topic
+
+
+def generate_image(topic: str, context_chunks: List[str]) -> bytes:
+    """
+    Generates a real AI image for a study topic using FLUX.1-schnell
+    via the Hugging Face Inference API.
+    If context_chunks are provided, the prompt is grounded in the student's
+    uploaded material. Otherwise falls back to general knowledge.
+
+    Returns raw PNG bytes ready to be uploaded to Azure Blob Storage.
+    """
+    import requests
+
+    hf_token = os.getenv("HF_API_TOKEN")
+    if not hf_token:
+        raise ValueError("HF_API_TOKEN is not set in .env")
+
+    if context_chunks:
+        context_summary = " ".join(context_chunks[:3])[:400]
+        prompt = (
+            f"Educational diagram or illustration about: {topic}. "
+            f"Based on these study notes: {context_summary}. "
+            "Style: clean infographic, white background, clearly labelled, educational, suitable for students."
+        )
+    else:
+        prompt = (
+            f"Educational diagram or illustration about: {topic}. "
+            "Style: clean infographic, white background, clearly labelled, educational, suitable for students."
+        )
+
+    api_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
+
+    response = requests.post(
+        api_url,
+        headers={
+            "Authorization": f"Bearer {hf_token}",
+            "Content-Type": "application/json",
+        },
+        json={"inputs": prompt},
+        timeout=120,  # first request can take 20-30s if model is cold
+    )
+
+    if response.status_code == 503:
+        # Model is loading — wait and retry once
+        import time
+        time.sleep(30)
+        response = requests.post(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {hf_token}",
+                "Content-Type": "application/json",
+            },
+            json={"inputs": prompt},
+            timeout=120,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Hugging Face API error {response.status_code}: {response.text[:300]}"
+        )
+
+    # HF returns raw image bytes directly
+    return response.content
+
+
 def generate_mermaid(
     topic: str,
     diagram_type: str,

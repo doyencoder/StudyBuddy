@@ -291,6 +291,39 @@ async def save_diagram(
     return document
 
 
+async def save_image_diagram(
+    user_id: str,
+    conversation_id: str,
+    topic: str,
+    image_url: str,
+) -> Dict[str, Any]:
+    """
+    Saves an AI-generated image (from Imagen 3) to the diagrams container.
+    Uses type="image" to distinguish from Mermaid-based flowcharts/mindmaps.
+    mermaid_code is stored as empty string so existing queries don't break.
+    """
+    diagram_id = str(uuid.uuid4())
+
+    document = {
+        "id": diagram_id,
+        "diagram_id": diagram_id,
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "type": "image",
+        "topic": topic,
+        "mermaid_code": "",          # empty — not applicable for real images
+        "image_url": image_url,      # Azure Blob SAS URL
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(DIAGRAMS_CONTAINER)
+        await container.create_item(body=document)
+
+    return document
+
+
 async def list_diagrams(user_id: str) -> List[Dict[str, Any]]:
     """
     Returns all diagrams for a given user, newest first.
@@ -301,7 +334,7 @@ async def list_diagrams(user_id: str) -> List[Dict[str, Any]]:
         container = db.get_container_client(DIAGRAMS_CONTAINER)
 
         query = (
-            "SELECT c.diagram_id, c.type, c.topic, c.mermaid_code, c.created_at, c.conversation_id "
+            "SELECT c.diagram_id, c.type, c.topic, c.mermaid_code, c.image_url, c.created_at, c.conversation_id "
             "FROM c WHERE c.user_id = @user_id "
             "ORDER BY c.created_at DESC"
         )

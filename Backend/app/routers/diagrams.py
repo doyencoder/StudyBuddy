@@ -14,10 +14,13 @@ from app.models import (
     DiagramGenerateResponse,
     DiagramHistoryResponse,
     DiagramHistoryItem,
+    ImageGenerateRequest,
+    ImageGenerateResponse,
 )
-from app.services.gemini_service import embed_query, generate_mermaid
+from app.services.gemini_service import embed_query, generate_mermaid, generate_image
 from app.services.search_service import retrieve_chunks
-from app.services.cosmos_service import save_diagram, list_diagrams
+from app.services.blob_service import upload_generated_image_to_blob
+from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams
 
 router = APIRouter(prefix="/diagrams", tags=["diagrams"])
 
@@ -113,10 +116,83 @@ async def diagram_history(user_id: str = Query(...)):
                 diagram_id=d["diagram_id"],
                 type=d["type"],
                 topic=d["topic"],
-                mermaid_code=d["mermaid_code"],
+                mermaid_code=d.get("mermaid_code", ""),
+                image_url=d.get("image_url"),
                 created_at=d["created_at"],
                 conversation_id=d["conversation_id"],
             )
             for d in raw
         ]
+    )
+
+@router.post("/generate-image", response_model=ImageGenerateResponse)
+async def generate_diagram_image(req: ImageGenerateRequest):
+    """
+    Generates a real AI image for a study topic using Imagen 3.
+
+    If conversation_id is provided:
+      - Searches for relevant chunks from uploaded documents
+      - If chunks found → image prompt is grounded in that material
+      - If no chunks → falls back to Gemini general knowledge
+
+    If no conversation_id:
+      - Skips retrieval, generates from general knowledge
+
+    Flow:
+      1. Retrieve relevant chunks (optional)
+      2. generate_image() → Imagen 3 → raw PNG bytes
+      3. upload_generated_image_to_blob() → Azure Blob → 30-day SAS URL
+      4. save_image_diagram() → Cosmos diagrams container
+      5. Return ImageGenerateResponse with image_url
+    """
+
+    # Step 1 — retrieve relevant chunks if conversation exists
+    chunks = []
+    if req.conversation_id:
+        try:
+            query_embedding = embed_query(req.topic)
+            chunks = retrieve_chunks(
+                query_embedding=query_embedding,
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                top_k=3,
+                score_threshold=0.5,
+            )
+        except Exception as e:
+            print(f"[DiagramImage] Chunk retrieval failed, using general knowledge: {e}")
+            chunks = []
+
+    # Step 2 — generate image bytes via Imagen 3
+    try:
+        image_bytes = generate_image(topic=req.topic, context_chunks=chunks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
+
+    # Step 3 — upload to Azure Blob Storage
+    try:
+        blob_result = upload_generated_image_to_blob(
+            image_bytes=image_bytes,
+            topic=req.topic,
+            user_id=req.user_id,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload image: {str(e)}")
+
+    # Step 4 — save to Cosmos DB
+    try:
+        saved = await save_image_diagram(
+            user_id=req.user_id,
+            conversation_id=req.conversation_id or "no-conversation",
+            topic=req.topic,
+            image_url=blob_result["blob_url"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save image record: {str(e)}")
+
+    return ImageGenerateResponse(
+        diagram_id=saved["diagram_id"],
+        type="image",
+        topic=saved["topic"],
+        image_url=saved["image_url"],
+        created_at=saved["created_at"],
     )
