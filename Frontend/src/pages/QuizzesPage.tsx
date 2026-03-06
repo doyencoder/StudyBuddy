@@ -1,8 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+
+const API_BASE = "http://localhost:8000";
+const USER_ID = "student-001";
+
+interface QuizQuestion {
+  question: string;
+  options: string[];
+  selected: number;
+  correct: number;
+  explanation: string;
+}
 
 interface Quiz {
   id: string;
@@ -12,86 +23,75 @@ interface Quiz {
   total: number;
   accuracy: number;
   difficulty: "Easy" | "Medium" | "Hard";
-  questions: {
-    question: string;
-    options: string[];
-    selected: number;
-    correct: number;
-    explanation: string;
-  }[];
+  questions: QuizQuestion[];
   weakAreas: string[];
 }
 
-const MOCK_QUIZZES: Quiz[] = [
-  {
-    id: "1",
-    topic: "Photosynthesis",
-    date: "2026-03-01",
-    score: 8,
-    total: 10,
-    accuracy: 80,
-    difficulty: "Medium",
-    questions: [
-      {
-        question: "What is the primary pigment in photosynthesis?",
-        options: ["Chlorophyll", "Carotene", "Xanthophyll", "Anthocyanin"],
-        selected: 0,
-        correct: 0,
-        explanation: "Chlorophyll is the main pigment that absorbs light energy for photosynthesis.",
-      },
-      {
-        question: "Where does the light reaction occur?",
-        options: ["Stroma", "Thylakoid membrane", "Cytoplasm", "Nucleus"],
-        selected: 2,
-        correct: 1,
-        explanation: "Light reactions take place in the thylakoid membranes of the chloroplast.",
-      },
-    ],
-    weakAreas: ["Light reactions location", "Calvin cycle details"],
-  },
-  {
-    id: "2",
-    topic: "Newton's Laws of Motion",
-    date: "2026-02-28",
-    score: 6,
-    total: 10,
-    accuracy: 60,
-    difficulty: "Hard",
-    questions: [],
-    weakAreas: ["Third law applications", "Free body diagrams"],
-  },
-  {
-    id: "3",
-    topic: "Cell Division",
-    date: "2026-02-25",
-    score: 9,
-    total: 10,
-    accuracy: 90,
-    difficulty: "Easy",
-    questions: [],
-    weakAreas: [],
-  },
-  {
-    id: "4",
-    topic: "Thermodynamics",
-    date: "2026-02-22",
-    score: 5,
-    total: 10,
-    accuracy: 50,
-    difficulty: "Hard",
-    questions: [],
-    weakAreas: ["Entropy", "Second law applications", "Carnot cycle"],
-  },
-];
+const difficultyFromAccuracy = (accuracy: number): "Easy" | "Medium" | "Hard" => {
+  if (accuracy >= 80) return "Easy";
+  if (accuracy >= 60) return "Medium";
+  return "Hard";
+};
 
 const difficultyColor = (d: string) => {
-  if (d === "Easy") return "bg-success/15 text-success border-success/30";
+  if (d === "Easy")   return "bg-success/15 text-success border-success/30";
   if (d === "Medium") return "bg-warning/15 text-warning border-warning/30";
   return "bg-destructive/15 text-destructive border-destructive/30";
 };
 
 const QuizzesPage = () => {
+  const [quizzes, setQuizzes]           = useState<Quiz[]>([]);
   const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchQuizzes = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`);
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+        const data = await response.json();
+
+        const mapped: Quiz[] = data.quizzes.map((q: any) => {
+          const accuracy = q.total_questions > 0
+            ? Math.round(((q.correct_count ?? 0) / q.total_questions) * 100)
+            : 0;
+
+          // Map results array into the shape the UI expects
+          const questions: QuizQuestion[] = (q.results ?? []).map((r: any) => ({
+            question:    r.question,
+            options:     r.options,
+            selected:    r.selected_index,
+            correct:     r.correct_index,
+            explanation: r.explanation,
+          }));
+
+          return {
+            id:         q.quiz_id,
+            topic:      q.topic,
+            date:       q.created_at ? q.created_at.split("T")[0] : "",
+            score:      q.correct_count ?? 0,
+            total:      q.total_questions,
+            accuracy,
+            difficulty: difficultyFromAccuracy(accuracy),
+            questions,
+            weakAreas:  q.weak_areas ?? [],
+          };
+        });
+
+        setQuizzes(mapped);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchQuizzes();
+  }, []);
+
+  // ── Detail view ────────────────────────────────────────────────────────────
 
   if (selectedQuiz) {
     return (
@@ -115,11 +115,9 @@ const QuizzesPage = () => {
                 <Card key={i} className="bg-card border-border">
                   <CardContent className="p-5 space-y-3">
                     <div className="flex items-start gap-2">
-                      {isCorrect ? (
-                        <CheckCircle2 className="w-5 h-5 text-success mt-0.5 shrink-0" />
-                      ) : (
-                        <XCircle className="w-5 h-5 text-destructive mt-0.5 shrink-0" />
-                      )}
+                      {isCorrect
+                        ? <CheckCircle2 className="w-5 h-5 text-success mt-0.5 shrink-0" />
+                        : <XCircle     className="w-5 h-5 text-destructive mt-0.5 shrink-0" />}
                       <p className="text-sm font-medium text-foreground">{q.question}</p>
                     </div>
                     <div className="grid gap-2 ml-7">
@@ -149,7 +147,7 @@ const QuizzesPage = () => {
         ) : (
           <Card className="bg-card border-border">
             <CardContent className="p-8 text-center text-muted-foreground">
-              Detailed questions will appear here when connected to AI.
+              No question breakdown available for this quiz.
             </CardContent>
           </Card>
         )}
@@ -172,6 +170,8 @@ const QuizzesPage = () => {
     );
   }
 
+  // ── List view ──────────────────────────────────────────────────────────────
+
   return (
     <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
       <div>
@@ -179,46 +179,71 @@ const QuizzesPage = () => {
         <p className="text-muted-foreground mt-1">Review your quiz history and performance.</p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {MOCK_QUIZZES.map((quiz) => (
-          <Card key={quiz.id} className="bg-card border-border hover:border-glow transition-all duration-300 group cursor-pointer" onClick={() => setSelectedQuiz(quiz)}>
-            <CardContent className="p-5 space-y-4">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center">
-                    <ClipboardList className="w-4 h-4 text-primary" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">{quiz.topic}</h3>
-                    <p className="text-xs text-muted-foreground">{quiz.date}</p>
-                  </div>
-                </div>
-                <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
-                  {quiz.difficulty}
-                </Badge>
-              </div>
+      {loading && (
+        <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+          Loading quizzes...
+        </div>
+      )}
 
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">Score</p>
-                  <p className="text-lg font-bold text-foreground">{quiz.score}/{quiz.total}</p>
-                </div>
-                <div className="space-y-1 text-right">
-                  <p className="text-xs text-muted-foreground">Accuracy</p>
-                  <p className={`text-lg font-bold ${quiz.accuracy >= 70 ? "text-success" : "text-warning"}`}>
-                    {quiz.accuracy}%
-                  </p>
-                </div>
-              </div>
+      {error && (
+        <div className="flex items-center justify-center h-40 text-destructive text-sm">
+          Failed to load quizzes: {error}
+        </div>
+      )}
 
-              <Button variant="ghost" className="w-full justify-between text-muted-foreground hover:text-primary hover:bg-primary/10 text-xs h-9">
-                View Details
-                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </Button>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      {!loading && !error && quizzes.length === 0 && (
+        <div className="flex flex-col items-center justify-center h-40 text-muted-foreground text-sm gap-2">
+          <ClipboardList className="w-8 h-8 opacity-40" />
+          <p>No quizzes yet. Generate one from the Chat page!</p>
+        </div>
+      )}
+
+      {!loading && !error && quizzes.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {quizzes.map((quiz) => (
+            <Card
+              key={quiz.id}
+              className="bg-card border-border hover:border-glow transition-all duration-300 group cursor-pointer"
+              onClick={() => setSelectedQuiz(quiz)}
+            >
+              <CardContent className="p-5 space-y-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center">
+                      <ClipboardList className="w-4 h-4 text-primary" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">{quiz.topic}</h3>
+                      <p className="text-xs text-muted-foreground">{quiz.date}</p>
+                    </div>
+                  </div>
+                  <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
+                    {quiz.difficulty}
+                  </Badge>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Score</p>
+                    <p className="text-lg font-bold text-foreground">{quiz.score}/{quiz.total}</p>
+                  </div>
+                  <div className="space-y-1 text-right">
+                    <p className="text-xs text-muted-foreground">Accuracy</p>
+                    <p className={`text-lg font-bold ${quiz.accuracy >= 70 ? "text-success" : "text-warning"}`}>
+                      {quiz.accuracy}%
+                    </p>
+                  </div>
+                </div>
+
+                <Button variant="ghost" className="w-full justify-between text-muted-foreground hover:text-primary hover:bg-primary/10 text-xs h-9">
+                  View Details
+                  <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

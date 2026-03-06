@@ -126,6 +126,96 @@ QUESTION:
             yield chunk.text
 
 
+def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions: int = 5) -> list:
+    """
+    Uses Gemini to generate MCQ quiz questions.
+    - If context_chunks provided: generates strictly from the uploaded material.
+    - If context_chunks is empty: generates from general knowledge on the topic.
+    """
+    client = _get_client()
+
+    if context_chunks:
+        # ── Document-based mode ───────────────────────────────────────────────
+        context_text = "\n\n---\n\n".join(
+            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
+        )
+        topic_line = f"Focus specifically on the topic: {topic}" if topic else "Cover the most important concepts from the material."
+
+        prompt = f"""You are a quiz generator for students. Based ONLY on the study material below, generate exactly {num_questions} multiple choice questions.
+
+{topic_line}
+
+STUDY MATERIAL:
+{context_text}
+
+STRICT RULES:
+- Generate exactly {num_questions} questions
+- Each question must have exactly 4 options
+- Only one option is correct
+- Base every question strictly on the provided material — no outside knowledge
+- The explanation must reference the material directly
+
+Respond ONLY with a valid JSON array. No extra text. No markdown. No code fences.
+Each item must have exactly these fields:
+{{
+  "question": "the question text",
+  "options": ["option A", "option B", "option C", "option D"],
+  "correct_index": 0,
+  "explanation": "why this answer is correct based on the material"
+}}"""
+
+    else:
+        # ── General knowledge mode ────────────────────────────────────────────
+        if not topic:
+            topic = "general knowledge"
+
+        prompt = f"""You are a quiz generator for students. Generate exactly {num_questions} multiple choice questions about: {topic}
+
+STRICT RULES:
+- Generate exactly {num_questions} questions
+- Each question must have exactly 4 options
+- Only one option is correct
+- Questions should be educational and appropriate for students
+- Vary the difficulty across questions
+
+Respond ONLY with a valid JSON array. No extra text. No markdown. No code fences.
+Each item must have exactly these fields:
+{{
+  "question": "the question text",
+  "options": ["option A", "option B", "option C", "option D"],
+  "correct_index": 0,
+  "explanation": "why this answer is correct"
+}}"""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.4,
+            ),
+        )
+
+    response = _call_with_retry(_generate)
+
+    import json
+    raw = response.text.strip()
+    questions = json.loads(raw)
+
+    sanitized = []
+    for i, q in enumerate(questions[:num_questions]):
+        sanitized.append({
+            "id": f"q{i + 1}",
+            "question": q["question"],
+            "options": q["options"],
+            "correct_index": int(q["correct_index"]),
+            "explanation": q["explanation"],
+        })
+
+    return sanitized            
+
+
 def generate_mermaid(
     topic: str,
     diagram_type: str,

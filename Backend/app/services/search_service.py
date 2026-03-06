@@ -3,7 +3,9 @@ search_service.py
 Manages the Azure AI Search index:
   - create_index_if_not_exists()  → sets up the vector index schema
   - store_chunks()                → saves embedded chunks to the index
-  - retrieve_chunks()             → vector searches for top-k relevant chunks
+  - retrieve_chunks()             → pure vector search (used by chat)
+  - retrieve_chunks_hybrid()      → BM25 + vector search (used by quiz)
+  - conversation_has_documents()  → checks if any docs exist for a conversation
 """
 
 import os
@@ -55,7 +57,7 @@ def create_index_if_not_exists():
       - conversation_id (string, filterable) ← scopes chunks to a single chat session
       - file_id         (string, filterable)
       - filename        (string)
-      - chunk_text      (string, searchable)
+      - chunk_text      (string, searchable)  ← searchable for BM25 keyword matching
       - embedding       (Collection(Single), 3072-dim, HNSW vector)
     """
     index_client = SearchIndexClient(
@@ -109,15 +111,6 @@ def store_chunks(
 ):
     """
     Upload embedded chunks to Azure AI Search.
-
-    Args:
-        chunks:           List of text chunk strings.
-        embeddings:       Parallel list of 3072-dim embedding vectors.
-        user_id:          Owner of the document.
-        conversation_id:  The chat session this file was uploaded in.
-                          Ensures retrieval is scoped to this conversation only.
-        file_id:          Unique ID of the uploaded file.
-        filename:         Original file name.
     """
     search_client = SearchClient(
         endpoint=_get_endpoint(),
@@ -155,22 +148,8 @@ def retrieve_chunks(
     score_threshold: float = 0.75,
 ) -> List[str]:
     """
-    Vector search: find the top-k most relevant chunks scoped to a specific
-    conversation. This ensures files uploaded in other chats are never used.
-
-    Args:
-        query_embedding:  3072-dim embedding of the user's question.
-        user_id:          Filter results to only this user's documents.
-        conversation_id:  Filter results to only this chat session's uploads.
-        top_k:            Number of candidates to fetch (default 5).
-        score_threshold:  Minimum cosine similarity score to keep (default 0.75).
-                          Tune up (e.g. 0.78) to be stricter,
-                          or down (e.g. 0.70) if relevant chunks are being dropped.
-
-    Returns:
-        List of chunk_text strings that passed the threshold, most relevant first.
-        Returns an empty list if no chunks meet the threshold — chat_stream()
-        will automatically fall back to general knowledge mode.
+    Pure vector search — used by the chat endpoint.
+    Returns chunks above the cosine similarity threshold.
     """
     search_client = SearchClient(
         endpoint=_get_endpoint(),
@@ -197,3 +176,91 @@ def retrieve_chunks(
         for r in results
         if r.get("@search.score", 0) >= score_threshold
     ]
+
+
+def retrieve_chunks_hybrid(
+    topic: str,
+    query_embedding: List[float],
+    user_id: str,
+    conversation_id: str,
+    top_k: int = 10,
+    rrf_threshold: float = 0.016,
+) -> List[str]:
+    """
+    Hybrid search — BM25 keyword + vector, combined via Reciprocal Rank Fusion (RRF).
+    Used exclusively by quiz generation.
+
+    How it works:
+      - BM25 scores keyword relevance (does the topic word literally appear?)
+      - Vector scores semantic relevance (is the meaning related?)
+      - Azure fuses both via RRF into a single score (range: ~0.010 to 0.030)
+
+    Why this solves the basketball/skills problem:
+      - "skills" in resume → BM25 finds keyword + vector finds meaning → high RRF → passes ✅
+      - "basketball" not in resume → BM25 finds nothing → only weak vector → low RRF → fails ✅
+
+    Args:
+        topic:           The quiz topic — used as the BM25 keyword search text.
+        query_embedding: 3072-dim embedding of the topic for vector search.
+        user_id:         Filter to this user only.
+        conversation_id: Filter to this chat session only.
+        top_k:           Number of results to fetch.
+        rrf_threshold:   Minimum RRF score to keep. Default 0.016 is well-calibrated:
+                         - Pure keyword match scores ~0.013
+                         - Pure vector match scores ~0.013
+                         - Both matching scores ~0.020+
+                         Setting 0.016 means BOTH signals must contribute.
+
+    Returns:
+        List of chunk_text strings that passed the RRF threshold.
+        Empty list if topic is unrelated to the documents → caller uses general knowledge.
+    """
+    search_client = SearchClient(
+        endpoint=_get_endpoint(),
+        index_name=_get_index_name(),
+        credential=_get_credential(),
+    )
+
+    vector_query = VectorizedQuery(
+        vector=query_embedding,
+        k_nearest_neighbors=top_k,
+        fields="embedding",
+    )
+
+    results = search_client.search(
+        search_text=topic,              # ← BM25 keyword search on chunk_text
+        vector_queries=[vector_query],  # ← vector search on embedding
+        filter=f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'",
+        select=["chunk_text"],
+        top=top_k,
+    )
+
+    return [
+        r["chunk_text"]
+        for r in results
+        if r.get("@search.score", 0) >= rrf_threshold
+    ]
+
+
+def conversation_has_documents(user_id: str, conversation_id: str) -> bool:
+    """
+    Checks whether any document chunks exist for this conversation.
+    Used as a hard gate before attempting any vector search.
+    Zero embedding calls — pure metadata check.
+    """
+    search_client = SearchClient(
+        endpoint=_get_endpoint(),
+        index_name=_get_index_name(),
+        credential=_get_credential(),
+    )
+
+    results = search_client.search(
+        search_text="*",
+        filter=f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'",
+        select=["id"],
+        top=1,
+    )
+
+    for _ in results:
+        return True
+    return False

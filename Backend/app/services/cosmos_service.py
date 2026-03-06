@@ -152,6 +152,106 @@ async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
             results.append(item)
 
         return results
+    
+
+# ── Quiz Container ─────────────────────────────────────────────────────────────
+
+QUIZZES_CONTAINER = "quizzes"
+
+
+async def save_quiz(
+    user_id: str,
+    quiz_id: str,
+    topic: str,
+    questions: list,
+) -> None:
+    """
+    Creates a new quiz document in Cosmos DB when a quiz is generated.
+    Stores questions with their correct answers (never sent to frontend).
+    """
+    document = {
+        "id": quiz_id,
+        "user_id": user_id,
+        "topic": topic,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "submitted": False,
+        "questions": questions,      # full question data including correct_index
+        "score": None,
+        "correct_count": None,
+        "total_questions": len(questions),
+        "weak_areas": [],
+        "results": [],
+    }
+
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(QUIZZES_CONTAINER)
+        await container.create_item(body=document)
+
+
+async def get_quiz(quiz_id: str, user_id: str) -> Dict[str, Any]:
+    """
+    Fetches a single quiz document by quiz_id.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(QUIZZES_CONTAINER)
+        item = await container.read_item(item=quiz_id, partition_key=user_id)
+        return item
+
+
+async def submit_quiz(
+    quiz_id: str,
+    user_id: str,
+    score: int,
+    correct_count: int,
+    total_questions: int,
+    weak_areas: list,
+    results: list,
+) -> None:
+    """
+    Updates the quiz document with the user's submitted answers and results.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(QUIZZES_CONTAINER)
+
+        item = await container.read_item(item=quiz_id, partition_key=user_id)
+        item["submitted"] = True
+        item["score"] = score
+        item["correct_count"] = correct_count
+        item["total_questions"] = total_questions
+        item["weak_areas"] = weak_areas
+        item["results"] = results
+
+        await container.replace_item(item=quiz_id, body=item)
+
+
+async def list_quizzes(user_id: str) -> list:
+    """
+    Returns all submitted quizzes for a user, newest first.
+    Used by the My Quizzes page.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(QUIZZES_CONTAINER)
+
+        query = """
+            SELECT * FROM c
+            WHERE c.user_id = @user_id
+            AND c.submitted = true
+            ORDER BY c.created_at DESC
+        """
+        parameters = [{"name": "@user_id", "value": user_id}]
+
+        results = []
+        async for item in container.query_items(
+            query=query,
+            parameters=parameters,
+        ):
+            results.append(item)
+
+        return results
 
 
 # ── Diagrams ──────────────────────────────────────────────────────────────────
