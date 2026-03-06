@@ -106,8 +106,10 @@ app.include_router(upload_router)
 # Phase 2 + 3 routers will be added here as we build them:
 from app.routers.chat import router as chat_router
 # from app.routers.quiz import router as quiz_router
+from app.routers.diagrams import router as diagrams_router
 app.include_router(chat_router)
 # app.include_router(quiz_router)
+app.include_router(diagrams_router)
 
 
 @app.get("/health")

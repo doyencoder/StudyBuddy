@@ -124,3 +124,79 @@ QUESTION:
     for chunk in response:
         if chunk.text:
             yield chunk.text
+
+
+def generate_mermaid(
+    topic: str,
+    diagram_type: str,
+    context_chunks: List[str],
+) -> str:
+    """
+    Generates valid Mermaid syntax for a flowchart or concept diagram.
+    If context_chunks is empty, falls back to Gemini general knowledge.
+
+    diagram_type:
+      "flowchart" -> Mermaid flowchart TD
+      "diagram"   -> Mermaid mindmap
+    """
+    client = _get_client()
+
+    context_text = (
+        "\n\n---\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(context_chunks))
+        if context_chunks
+        else "No specific material uploaded. Use your general knowledge about this topic."
+    )
+
+    if diagram_type == "flowchart":
+        format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
+- First line must be exactly: flowchart TD
+- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
+- Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
+- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
+- If you need parens, rephrase e.g. write -when applicable- instead of -if applicable-
+- Maximum 12 nodes total
+- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+    else:
+        format_instructions = """Output ONLY a valid Mermaid mindmap. Rules:
+- First line must be exactly: mindmap
+- Second line must be indented 2 spaces: root((TopicName))
+- Children indented 4 spaces: plain word labels only
+- Grandchildren indented 6 spaces: plain word labels only
+- CRITICAL: labels must NEVER contain parentheses, brackets, braces, or special chars
+- Use plain simple words only in every label
+- Maximum 1 root, 5 branches, 3 leaves per branch
+- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+
+    prompt = f"""You are a visual learning assistant. Create a {diagram_type} for the topic: "{topic}".
+
+STUDY MATERIAL CONTEXT:
+{context_text}
+
+{format_instructions}"""
+
+    def _generate():
+        response = client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "You output ONLY valid Mermaid diagram syntax. "
+                    "No markdown fences, no explanation, no code blocks. "
+                    "Start your response directly with flowchart TD or mindmap."
+                ),
+                temperature=0.3,
+            ),
+        )
+        return response.text
+
+    raw = _call_with_retry(_generate)
+
+    # Strip any accidental markdown fences Gemini might add
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        cleaned = "\n".join(lines).strip()
+
+    return cleaned

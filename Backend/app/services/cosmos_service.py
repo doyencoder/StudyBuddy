@@ -13,6 +13,7 @@ load_dotenv()
 
 DB_NAME = os.getenv("AZURE_COSMOS_DB_NAME", "studybuddy")
 CONVERSATIONS_CONTAINER = "conversations"
+DIAGRAMS_CONTAINER = "diagrams"
 
 
 # ── Client helper ─────────────────────────────────────────────────────────────
@@ -141,6 +142,69 @@ async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
         container = db.get_container_client(CONVERSATIONS_CONTAINER)
 
         query = "SELECT c.conversation_id, c.created_at FROM c WHERE c.user_id = @user_id"
+        parameters = [{"name": "@user_id", "value": user_id}]
+
+        results = []
+        async for item in container.query_items(
+            query=query,
+            parameters=parameters,
+        ):
+            results.append(item)
+
+        return results
+
+
+# ── Diagrams ──────────────────────────────────────────────────────────────────
+
+async def save_diagram(
+    user_id: str,
+    conversation_id: str,
+    diagram_type: str,        # "flowchart" | "diagram"
+    topic: str,
+    mermaid_code: str,
+) -> Dict[str, Any]:
+    """
+    Saves a generated Mermaid diagram to the diagrams container.
+    Stored independently from the conversation so it persists
+    in ImagesPage even after the chat session changes.
+
+    diagram_type: "flowchart" or "diagram"
+    """
+    diagram_id = str(uuid.uuid4())
+
+    document = {
+        "id": diagram_id,
+        "diagram_id": diagram_id,
+        "user_id": user_id,
+        "conversation_id": conversation_id,   # which chat it came from (for context)
+        "type": diagram_type,
+        "topic": topic,
+        "mermaid_code": mermaid_code,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(DIAGRAMS_CONTAINER)
+        await container.create_item(body=document)
+
+    return document
+
+
+async def list_diagrams(user_id: str) -> List[Dict[str, Any]]:
+    """
+    Returns all diagrams for a given user, newest first.
+    Used by ImagesPage to show the full history across all conversations.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(DIAGRAMS_CONTAINER)
+
+        query = (
+            "SELECT c.diagram_id, c.type, c.topic, c.mermaid_code, c.created_at, c.conversation_id "
+            "FROM c WHERE c.user_id = @user_id "
+            "ORDER BY c.created_at DESC"
+        )
         parameters = [{"name": "@user_id", "value": user_id}]
 
         results = []

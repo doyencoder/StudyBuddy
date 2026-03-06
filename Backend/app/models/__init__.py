@@ -86,3 +86,33 @@ class QuizSubmitResponse(BaseModel):
     total_questions: int
     correct_count: int
     results: List[QuizResult]
+
+
+# ── Diagrams ──────────────────────────────────────────────────────────────────
+
+class DiagramGenerateRequest(BaseModel):
+    user_id: str
+    conversation_id: Optional[str] = None   # optional — if None, uses general knowledge
+    topic: str
+    diagram_type: str = "flowchart"   # "flowchart" | "diagram"
+
+
+class DiagramGenerateResponse(BaseModel):
+    diagram_id: str
+    type: str
+    topic: str
+    mermaid_code: str
+    created_at: str
+
+
+class DiagramHistoryItem(BaseModel):
+    diagram_id: str
+    type: str
+    topic: str
+    mermaid_code: str
+    created_at: str
+    conversation_id: str
+
+
+class DiagramHistoryResponse(BaseModel):
+    diagrams: List[DiagramHistoryItem]
