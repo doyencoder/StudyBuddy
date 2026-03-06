@@ -92,6 +92,19 @@ def embed_query(query: str) -> List[float]:
     return _call_with_retry(_embed)
 
 
+def _is_latin_script(text: str) -> bool:
+    """
+    Returns True if the message is predominantly written in Latin/Roman script
+    (i.e. >80% of alphabetic characters are standard ASCII a-z A-Z).
+    Used to detect Hinglish (e.g. 'mujhe ek summary do') vs true Devanagari.
+    """
+    alpha_chars = [c for c in text if c.isalpha()]
+    if not alpha_chars:
+        return True  # empty or numbers-only → treat as Latin
+    latin_count = sum(1 for c in alpha_chars if ord(c) < 128)
+    return (latin_count / len(alpha_chars)) > 0.8
+
+
 def chat_stream(question: str, context_chunks: List[str]) -> Generator[str, None, None]:
     client = _get_client()
 
@@ -111,6 +124,20 @@ QUESTION:
     else:
         prompt = question
         system_instruction = SYSTEM_PROMPT_GENERAL
+
+    # ── Script mirroring ──────────────────────────────────────────────────────
+    # If the user wrote in Roman/Latin script (e.g. Hinglish: "mujhe batao"),
+    # Gemini tends to reply in Devanagari. We explicitly tell it to mirror the
+    # user's script so Hinglish input gets a Hinglish response.
+    if _is_latin_script(question):
+        system_instruction += (
+            "\n\nIMPORTANT — Script rule: The user has written in Roman/Latin script. "
+            "You MUST respond in Roman/Latin script as well. "
+            "Do NOT use Devanagari, Tamil, Telugu, or any other non-Latin script. "
+            "If the user is mixing Hindi and English (Hinglish), reply in Hinglish too "
+            "(e.g. 'Photosynthesis ek process hai jisme plants sunlight use karte hain'). "
+            "Match the user's exact language style."
+        )
 
     def _stream():
         return client.models.generate_content_stream(

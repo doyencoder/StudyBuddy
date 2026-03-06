@@ -7,6 +7,7 @@ import {
   Plus,
   Clock,
   ImageIcon,
+  PanelLeft,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -42,14 +43,27 @@ const RECENT_CHATS = [
 ];
 
 const AppSidebar = () => {
-  const { state } = useSidebar();
+  const { state, toggleSidebar } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border">
-      <SidebarContent className="pt-4">
+      <SidebarContent className="pt-2">
+
+        {/* Sidebar toggle button — lives inside the sidebar itself */}
+        <div className={`flex ${collapsed ? "justify-center" : "justify-end"} px-2 pb-1`}>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleSidebar}
+            className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-secondary"
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <PanelLeft className="w-4 h-4" />
+          </Button>
+        </div>
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>

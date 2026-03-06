@@ -1,4 +1,6 @@
+import io
 import json
+import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -12,8 +14,26 @@ from app.services.cosmos_service import (
     save_message,
     get_messages,
 )
+from app.services.translator_service import translate_text
+from app.services.tts_service import synthesize_speech
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+
+
+# ── Request models ────────────────────────────────────────────────────────────
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_language: str   # one of: en, hi, mr, ta, te, bn, gu, kn
+
+
+class TTSRequest(BaseModel):
+    text: str
+    language: str          # one of: en, hi, mr, ta, te, bn, gu, kn
+
+
+class InferTopicRequest(BaseModel):
+    messages: List[dict]   # [{"role": "user"|"assistant", "content": "..."}]
 
 
 # ── POST /chat/message ────────────────────────────────────────────────────────
@@ -40,12 +60,10 @@ async def chat_message(request: ChatRequest):
         On error:       data: {"type": "error", "content": "..."}
     """
 
-    # ── Step 1: Resolve conversation ID ──────────────────────────────────────
     conversation_id = request.conversation_id
     if not conversation_id:
         conversation_id = await create_conversation(request.user_id)
 
-    # ── Step 2: Save user message to Cosmos DB ────────────────────────────────
     await save_message(
         conversation_id=conversation_id,
         user_id=request.user_id,
@@ -53,9 +71,6 @@ async def chat_message(request: ChatRequest):
         content=request.message,
     )
 
-    # ── Step 3 & 4: Embed query + retrieve relevant chunks ───────────────────
-    # retrieve_chunks filters by BOTH user_id AND conversation_id —
-    # this ensures only files uploaded in this specific chat are used.
     try:
         query_embedding = embed_query(request.message)
         context_chunks = retrieve_chunks(
@@ -70,11 +85,9 @@ async def chat_message(request: ChatRequest):
             detail=f"RAG retrieval failed: {str(e)}",
         )
 
-    # ── Step 5 & 6: Stream Gemini reply + save to Cosmos DB ──────────────────
     async def event_stream():
         full_reply = ""
 
-        # Always send conversation_id first so the frontend can track it.
         meta = json.dumps({"type": "meta", "conversation_id": conversation_id})
         yield f"data: {meta}\n\n"
 
@@ -147,11 +160,84 @@ async def chat_history(conversation_id: str):
         messages=messages,
     )
 
+
+# ── POST /chat/translate ───────────────────────────────────────────────────────
+
+@router.post("/translate")
+async def translate_message(request: TranslateRequest):
+    """
+    Translates a chat message into the requested language using Azure Translator.
+    Fast, non-streaming — returns immediately.
+    """
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    try:
+        translated = translate_text(
+            text=request.text,
+            target_language=request.target_language,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return {"translated_text": translated, "target_language": request.target_language}
+
+
+# ── POST /chat/tts ────────────────────────────────────────────────────────────
+
+@router.post("/tts")
+async def text_to_speech(request: TTSRequest):
+    """
+    Converts text to speech using Azure Neural TTS and returns raw MP3 bytes.
+
+    Why this exists instead of using the browser's Web Speech API:
+      - window.speechSynthesis has NO reliable Indian-language voices on most
+        desktops/laptops. When a user translates a message to Hindi/Tamil/etc.
+        and then clicks Audio, the browser silently fails — it gets Devanagari
+        or Tamil script but has no voice that can pronounce it.
+      - Azure Neural TTS has dedicated high-quality voices for all 8 languages
+        we support. Audio is always generated server-side and returned as MP3,
+        which every browser can play via new Audio(objectURL).
+
+    The frontend strips markdown before calling this endpoint.
+    Returns: audio/mpeg stream (MP3 bytes).
+    """
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    # Extra safety: strip any residual markdown that slipped through
+    clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)       # **bold**
+    clean_text = re.sub(r"\*(.*?)\*",     r"\1", clean_text)  # *italic*
+    clean_text = re.sub(r"`(.*?)`",       r"\1", clean_text)  # `code`
+    clean_text = re.sub(r"#{1,6}\s",      "",    clean_text)  # headings
+    clean_text = re.sub(r"[-*]\s",        "",    clean_text)  # list bullets
+    clean_text = clean_text.strip()
+
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="No speakable text after cleaning.")
+
+    try:
+        mp3_bytes = synthesize_speech(text=clean_text, language=request.language)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return StreamingResponse(
+        io.BytesIO(mp3_bytes),
+        media_type="audio/mpeg",
+        headers={
+            # Tell the browser it can play immediately without waiting for full download
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
 # ── POST /chat/infer-topic ────────────────────────────────────────────────────
-
-class InferTopicRequest(BaseModel):
-    messages: List[dict]   # [{"role": "user"|"assistant", "content": "..."}]
-
 
 @router.post("/infer-topic")
 async def infer_topic(request: InferTopicRequest):
