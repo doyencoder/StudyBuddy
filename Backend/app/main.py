@@ -107,9 +107,13 @@ app.include_router(upload_router)
 from app.routers.chat import router as chat_router
 from app.routers.quiz import router as quiz_router
 from app.routers.diagrams import router as diagrams_router
+from app.routers.study_plans import router as study_plans_router
+from app.routers.goals import router as goals_router
 app.include_router(chat_router)
 app.include_router(quiz_router)
 app.include_router(diagrams_router)
+app.include_router(study_plans_router)
+app.include_router(goals_router)
 
 
 @app.get("/health")

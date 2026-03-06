@@ -6,6 +6,10 @@ import {
   FileText, CalendarDays, GitBranch, Network, Brain, Bot,
   ChevronLeft, ChevronRight, CheckCircle2, XCircle, Code,
   ImageIcon, Download, Square, Sparkles,
+  Save,
+  Clock,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,12 +29,78 @@ mermaid.initialize({
 });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface QuizQuestion { id: string; question: string; options: string[]; }
-interface QuizResult { question_id: string; correct: boolean; selected_index: number; correct_index: number; explanation: string; question: string; options: string[]; }
-interface QuizData { quiz_id: string; topic: string; questions: QuizQuestion[]; submitted: boolean; score?: number; correct_count?: number; total_questions?: number; weak_areas?: string[]; results?: QuizResult[]; }
-interface DiagramData { diagram_id: string; type: "flowchart" | "diagram"; topic: string; mermaid_code: string; created_at: string; }
-interface ImageData { diagram_id: string; type: "image"; topic: string; image_url: string; created_at: string; }
-interface Message { id: string; role: "user" | "assistant" | "quiz" | "diagram" | "image"; content: string; quizData?: QuizData; diagramData?: DiagramData; imageData?: ImageData; timestamp: Date; }
+
+interface QuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+}
+
+interface QuizResult {
+  question_id: string;
+  correct: boolean;
+  selected_index: number;
+  correct_index: number;
+  explanation: string;
+  question: string;
+  options: string[];
+}
+
+interface QuizData {
+  quiz_id: string;
+  topic: string;
+  questions: QuizQuestion[];
+  submitted: boolean;
+  score?: number;
+  correct_count?: number;
+  total_questions?: number;
+  weak_areas?: string[];
+  results?: QuizResult[];
+}
+
+interface DiagramData {
+  diagram_id: string;
+  type: "flowchart" | "diagram";
+  topic: string;
+  mermaid_code: string;
+  created_at: string;
+}
+
+interface WeekPlanData {
+  week_number: number;
+  start_date: string;
+  end_date: string;
+  tasks: string[];
+  estimate_hours?: number;
+}
+
+interface StudyPlanData {
+  plan_id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  weeks: WeekPlanData[];
+  summary: string;
+}
+
+interface ImageData {
+  diagram_id: string;
+  type: "image";
+  topic: string;
+  image_url: string;
+  created_at: string;
+}
+
+interface Message {
+  id: string;
+  role: "user" | "assistant" | "quiz" | "diagram" | "study_plan" | "image";
+  content: string;
+  quizData?: QuizData;
+  diagramData?: DiagramData;
+  studyPlanData?: StudyPlanData;
+  imageData?: ImageData;
+  timestamp: Date;
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API_BASE = "http://localhost:8000";
@@ -199,37 +269,109 @@ const QuizCard = ({ messageId, quizData, onQuizComplete }: { messageId: string; 
         ))}
       </div>
       <div className="flex items-center justify-between pt-1">
-        <Button variant="ghost" size="sm" onClick={() => setCurrentQ((q) => q - 1)} disabled={currentQ === 0} className="gap-1 text-xs text-muted-foreground hover:text-primary"><ChevronLeft className="w-4 h-4" /> Previous</Button>
-        {currentQ < total - 1
-          ? <Button variant="ghost" size="sm" onClick={() => setCurrentQ((q) => q + 1)} className="gap-1 text-xs text-muted-foreground hover:text-primary">Next <ChevronRight className="w-4 h-4" /></Button>
-          : <Button size="sm" onClick={handleSubmit} disabled={!allAnswered || isSubmitting} className="text-xs bg-primary hover:bg-primary/90 disabled:opacity-40">{isSubmitting ? "Submitting..." : "Submit Quiz"}</Button>}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setCurrentQ((q) => q - 1)}
+          disabled={currentQ === 0}
+          className="gap-1 text-xs text-muted-foreground hover:text-primary"
+        >
+          <ChevronLeft className="w-4 h-4" /> Previous
+        </Button>
+
+        {currentQ < total - 1 ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setCurrentQ((q) => q + 1)}
+            className="gap-1 text-xs text-muted-foreground hover:text-primary"
+          >
+            Next <ChevronRight className="w-4 h-4" />
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={handleSubmit}
+            disabled={!allAnswered || isSubmitting}
+            className="text-xs bg-primary hover:bg-primary/90 disabled:opacity-40"
+          >
+            {isSubmitting ? "Submitting..." : "Submit Quiz"}
+          </Button>
+        )}
       </div>
-      <p className="text-xs text-center text-muted-foreground">{answeredCount} of {total} answered</p>
+
+      <p className="text-xs text-center text-muted-foreground">
+        {answeredCount} of {total} answered
+      </p>
     </div>
   );
 };
 
-// ── DiagramCard ───────────────────────────────────────────────────────────────
+// ── StudyPlanCard Component ────────────────────────────────────────────────
+
 const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
-  const [svg, setSvg] = useState(""); const [renderError, setRenderError] = useState(false); const [showCode, setShowCode] = useState(false);
+  const [svg, setSvg] = useState<string>("");
+  const [renderError, setRenderError] = useState(false);
+  const [showCode, setShowCode] = useState(false);
   const containerId = useRef(`mermaid-${generateUUID().replace(/-/g, "")}`);
+
   useEffect(() => {
-    if (!diagramData.mermaid_code) return; setRenderError(false); setSvg("");
-    mermaid.render(containerId.current, diagramData.mermaid_code)
-      .then(({ svg: s }) => setSvg(s))
-      .catch((err) => { console.error("Mermaid render error:", err); const l = document.getElementById(`d${containerId.current}`); if (l) l.remove(); setRenderError(true); });
+    if (!diagramData.mermaid_code) return;
+    setRenderError(false);
+    setSvg("");
+
+    mermaid
+      .render(containerId.current, diagramData.mermaid_code)
+      .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
+      .catch((err) => {
+        console.error("Mermaid render error:", err);
+        const leaked = document.getElementById(`d${containerId.current}`);
+        if (leaked) leaked.remove();
+        setRenderError(true);
+      });
   }, [diagramData.mermaid_code]);
+
   const typeLabel = diagramData.type === "flowchart" ? "Flowchart" : "Mind Map";
-  const typeBadgeColor = diagramData.type === "flowchart" ? "bg-blue-500/15 text-blue-400" : "bg-purple-500/15 text-purple-400";
+  const typeBadgeColor =
+    diagramData.type === "flowchart"
+      ? "bg-blue-500/15 text-blue-400"
+      : "bg-purple-500/15 text-purple-400";
+
   return (
     <div className="w-full space-y-3">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2"><ImageIcon className="w-4 h-4 text-primary" /><span className="text-sm font-semibold text-foreground">{diagramData.topic}</span><span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeBadgeColor}`}>{typeLabel}</span></div>
+        <div className="flex items-center gap-2">
+          <ImageIcon className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold text-foreground">{diagramData.topic}</span>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeBadgeColor}`}>
+            {typeLabel}
+          </span>
+        </div>
         <div className="flex items-center gap-1">
-          {svg && <Button variant="ghost" size="sm" onClick={() => downloadPNG(svg, diagramData.topic)} className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"><Download className="w-3.5 h-3.5" /><span className="hidden sm:inline">Download</span></Button>}
-          <Button variant="ghost" size="sm" onClick={() => setShowCode((v) => !v)} className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"><Code className="w-3.5 h-3.5" />{showCode ? "Hide code" : "View code"}</Button>
+          {svg && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => downloadPNG(svg, diagramData.topic)}
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
+              title="Download as PNG"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Download</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowCode((v) => !v)}
+            className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
+          >
+            <Code className="w-3.5 h-3.5" />
+            {showCode ? "Hide code" : "View code"}
+          </Button>
         </div>
       </div>
+
       {!showCode && (
         <div className="rounded-xl bg-secondary/60 border border-border p-4 overflow-x-auto min-h-[120px] flex items-center justify-center">
           {svg ? <div className="w-full" dangerouslySetInnerHTML={{ __html: svg }} />
@@ -263,6 +405,174 @@ const ImageCard = ({ imageData }: { imageData: ImageData }) => {
   );
 };
 
+// ── StudyPlanCard Component ────────────────────────────────────────────────
+
+const StudyPlanCard = ({
+  studyPlanData,
+  conversationId,
+}: {
+  studyPlanData: StudyPlanData;
+  conversationId: string | null;
+}) => {
+  const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([1]));
+  const [isSaving, setIsSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const toggleWeek = (weekNum: number) => {
+    setExpandedWeeks((prev) => {
+      const next = new Set(prev);
+      if (next.has(weekNum)) next.delete(weekNum);
+      else next.add(weekNum);
+      return next;
+    });
+  };
+
+  const handleSaveAsGoal = async () => {
+    setIsSaving(true);
+    try {
+      const resp = await fetch(`${API_BASE}/goals/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          title: studyPlanData.title,
+          start_date: studyPlanData.start_date,
+          end_date: studyPlanData.end_date,
+          weekly_plan: studyPlanData.weeks,
+          progress: 0,
+          reminder: null,
+        }),
+      });
+      if (!resp.ok) throw new Error("Failed to save goal");
+      setSaved(true);
+      toast.success("Study plan saved as a goal! View it on the Goals page.");
+    } catch (err: any) {
+      toast.error(`Could not save goal: ${err.message}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const totalHours = studyPlanData.weeks.reduce((s, w) => s + (w.estimate_hours || 0), 0);
+
+  return (
+    <div className="w-full space-y-3">
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <CalendarDays className="w-4 h-4 text-primary" />
+        <span className="text-sm font-semibold text-foreground">{studyPlanData.title}</span>
+      </div>
+
+      {/* Overview badges */}
+      <div className="flex flex-wrap gap-2">
+        <Badge variant="outline" className="text-xs border-primary/30 text-primary bg-primary/10">
+          {studyPlanData.weeks.length} weeks
+        </Badge>
+        <Badge variant="outline" className="text-xs border-border text-muted-foreground">
+          {studyPlanData.start_date} → {studyPlanData.end_date}
+        </Badge>
+        {totalHours > 0 && (
+          <Badge variant="outline" className="text-xs border-border text-muted-foreground">
+            <Clock className="w-3 h-3 mr-1" />
+            ~{totalHours}h total
+          </Badge>
+        )}
+      </div>
+
+      {/* Summary */}
+      {studyPlanData.summary && (
+        <p className="text-xs text-muted-foreground bg-secondary/40 rounded-lg p-3">
+          {studyPlanData.summary}
+        </p>
+      )}
+
+      {/* Weekly breakdown */}
+      <div className="space-y-2">
+        {studyPlanData.weeks.map((week) => (
+          <div key={week.week_number} className="border border-border rounded-xl overflow-hidden">
+            <button
+              onClick={() => toggleWeek(week.week_number)}
+              className="w-full flex items-center justify-between px-4 py-2.5 bg-secondary/30 hover:bg-secondary/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-foreground">Week {week.week_number}</span>
+                <span className="text-xs text-muted-foreground">
+                  {week.start_date} – {week.end_date}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {week.estimate_hours && (
+                  <span className="text-xs text-muted-foreground">{week.estimate_hours}h</span>
+                )}
+                {expandedWeeks.has(week.week_number)
+                  ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+              </div>
+            </button>
+            {expandedWeeks.has(week.week_number) && (
+              <div className="px-4 py-3 space-y-1.5">
+                {week.tasks.map((task, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 shrink-0" />
+                    <span className="text-xs text-foreground">{task}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 pt-1">
+        <Button
+          size="sm"
+          onClick={handleSaveAsGoal}
+          disabled={isSaving || saved}
+          className="text-xs bg-primary hover:bg-primary/90 gap-1.5"
+        >
+          <Save className="w-3.5 h-3.5" />
+          {saved ? "Saved ✓" : isSaving ? "Saving..." : "Save as Goal"}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+// ── Study plan input parser (LLM-backed) ────────────────────────────────
+
+async function parseStudyPlanInput(rawInput: string): Promise<{
+  topic: string | null;
+  weeks: number | null;
+  hoursPerWeek: number | null;
+}> {
+  try {
+    const resp = await fetch(`${API_BASE}/study_plans/parse_intent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raw_input: rawInput }),
+    });
+    if (!resp.ok) throw new Error("Parse failed");
+    const data = await resp.json();
+    return {
+      topic: data.topic || null,
+      weeks: data.timeline_weeks || null,
+      hoursPerWeek: data.hours_per_week || null,
+    };
+  } catch (err) {
+    console.error("LLM parsing failed, falling back to regex:", err);
+    // Fallback: simple regex
+    const weeksMatch = rawInput.match(/(\d+)\s*(?:weeks?)?/i);
+    const weeks = weeksMatch ? parseInt(weeksMatch[1]) : null;
+    const cleaned = rawInput.replace(/\d+\s*(?:weeks?|months?)?\s*/gi, "").trim();
+    return {
+      topic: cleaned || null,
+      weeks,
+      hoursPerWeek: null,
+    };
+  }
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 const ChatPage = () => {
   const { language } = useLanguage();
@@ -271,6 +581,11 @@ const ChatPage = () => {
   const [isTyping,          setIsTyping]          = useState(false);
   const [isUploading,       setIsUploading]       = useState(false);
   const [conversationId,    setConversationId]    = useState<string | null>(null);
+  const [pendingStudyPlan, setPendingStudyPlan] = useState<{
+    topic?: string;
+    weeks?: number;
+    hoursPerWeek?: number;
+  } | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   // TTS / audio state
@@ -357,6 +672,80 @@ const ChatPage = () => {
 
     loadHistory();
   }, [searchParams]);
+
+  // ── Generate Study Plan ────────────────────────────────────────────────
+
+  const generateStudyPlan = async (
+    topic: string,
+    weeks: number = 4,
+    hoursPerWeek: number = 8,
+    skipUserMsg: boolean = false
+  ) => {
+    let activeConversationId = conversationId;
+    if (!activeConversationId) {
+      activeConversationId = generateUUID();
+      setConversationId(activeConversationId);
+    }
+
+    if (!skipUserMsg) {
+      const userMsg: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: topic
+          ? `Create Study Plan for: ${topic} (${weeks} weeks, ${hoursPerWeek}h/week)`
+          : "Create Study Plan from uploaded material",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    }
+    setIsTyping(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/study_plans/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          conversation_id: activeConversationId,
+          topic: topic || null,
+          timeline_weeks: weeks,
+          preferences: { hours_per_week: hoursPerWeek, focus_days: null },
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Study plan generation failed");
+      }
+
+      const data: StudyPlanData = await response.json();
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "study_plan" as const,
+          content: "",
+          studyPlanData: data,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (err: any) {
+      toast.error(`Could not generate study plan: ${err.message}`);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `Sorry, I couldn't generate the study plan. ${err.message}`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
 
   const [pendingDiagramType,  setPendingDiagramType]  = useState<"flowchart" | "diagram" | null>(null);
@@ -395,7 +784,7 @@ const ChatPage = () => {
     setSpeakingMsgId(null); setLoadingAudioMsgId(null);
   };
 
-  // ── Azure Neural TTS ──────────────────────────────────────────────────────────
+// ── Azure Neural TTS ──────────────────────────────────────────────────────────
   const speakText = async (msgId: string, text: string, langOverride?: string) => {
     if (speakingMsgId === msgId || loadingAudioMsgId === msgId) { stopSpeech(); return; }
     stopSpeech();
@@ -605,6 +994,42 @@ const ChatPage = () => {
     if (!input.trim() || isTyping) return;
     const userMessage = input.trim(); setInput("");
 
+    // ── Handle pending study plan clarification ──────────────────────────
+    if (pendingStudyPlan) {
+      const pending = { ...pendingStudyPlan };
+
+      // Show user reply
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), role: "user" as const, content: userMessage, timestamp: new Date() },
+      ]);
+
+      // Parse the reply for missing info via LLM
+      const parsed = await parseStudyPlanInput(userMessage);
+
+      if (!pending.topic && parsed.topic) pending.topic = parsed.topic;
+      if (!pending.weeks && parsed.weeks) pending.weeks = parsed.weeks;
+      if (!pending.hoursPerWeek && parsed.hoursPerWeek) pending.hoursPerWeek = parsed.hoursPerWeek;
+
+      // If still missing topic, use the whole reply as topic
+      if (!pending.topic) pending.topic = userMessage.trim();
+
+      // If we still don't have weeks, ask again
+      if (!pending.weeks) {
+        setPendingStudyPlan(pending);
+        setMessages((prev) => [
+          ...prev,
+          { id: (Date.now() + 1).toString(), role: "assistant" as const, content: "How many weeks should this study plan cover? (e.g. \"6 weeks\")", timestamp: new Date() },
+        ]);
+        return;
+      }
+
+      // Complete! Generate the plan
+      setPendingStudyPlan(null);
+      await generateStudyPlan(pending.topic, pending.weeks, pending.hoursPerWeek || 8, true);
+      return;
+    }
+
     if (pendingDiagramType) {
       const dt = pendingDiagramType; setPendingDiagramType(null);
       const clean = userMessage.replace(/^generate (diagram|mindmap|flowchart|quiz)(\s+for)?:?\s*/i, "").trim();
@@ -619,6 +1044,53 @@ const ChatPage = () => {
 
     const { isQuiz, topic, numQuestions } = detectQuizIntent(userMessage);
     if (isQuiz) { await generateQuiz(topic, numQuestions); return; }
+
+    // ── Study plan intent (smart parsing) ────────────────────────────────
+    if (/^create study plan/i.test(userMessage)) {
+      const rawMatch = userMessage.match(/^create study plan(?:\s+for)?:?\s*(.*)/i);
+      const rawInput = rawMatch?.[1]?.trim() || "";
+      const parsed = await parseStudyPlanInput(rawInput);
+
+      const hasValidTopic = !!parsed.topic && parsed.topic.length > 2 && !/^\d+$/.test(parsed.topic);
+      const hasWeeks = parsed.weeks !== null && parsed.weeks > 0;
+
+      if (hasValidTopic && hasWeeks) {
+        await generateStudyPlan(parsed.topic, parsed.weeks!, parsed.hoursPerWeek || 8);
+        return;
+      }
+
+      // Show user message first
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), role: "user" as const, content: userMessage, timestamp: new Date() },
+      ]);
+
+      if (hasValidTopic && !hasWeeks) {
+        setPendingStudyPlan({ topic: parsed.topic, hoursPerWeek: parsed.hoursPerWeek || undefined });
+        setMessages((prev) => [
+          ...prev,
+          { id: (Date.now() + 1).toString(), role: "assistant" as const, content: `I'll create a study plan for **${parsed.topic}**. How many weeks should this plan cover?`, timestamp: new Date() },
+        ]);
+        return;
+      }
+
+      if (!hasValidTopic && hasWeeks) {
+        setPendingStudyPlan({ weeks: parsed.weeks!, hoursPerWeek: parsed.hoursPerWeek || undefined });
+        setMessages((prev) => [
+          ...prev,
+          { id: (Date.now() + 1).toString(), role: "assistant" as const, content: `Got it — ${parsed.weeks} week plan. What topic or subject would you like to study?`, timestamp: new Date() },
+        ]);
+        return;
+      }
+
+      setPendingStudyPlan({});
+      setMessages((prev) => [
+        ...prev,
+        { id: (Date.now() + 1).toString(), role: "assistant" as const, content: "I'd love to create a study plan! What topic or subject do you want to study, and how many weeks should the plan cover?", timestamp: new Date() },
+      ]);
+      return;
+    }
+
     if (/^generate diagram/i.test(userMessage)) { const m = userMessage.match(/^generate diagram(?:\s+for)?:?\s*(.*)/i); await handleImageRequest(m?.[1] ?? ""); return; }
     if (/^generate flowchart/i.test(userMessage)) { const m = userMessage.match(/^generate flowchart(?:\s+for)?:?\s*(.*)/i); await handleDiagramRequest(m?.[1] ?? "", "flowchart", userMessage); return; }
     if (/^Generate Mindmap/i.test(userMessage)) { const m = userMessage.match(/^Generate Mindmap(?:\s+for)?:?\s*(.*)/i); await handleDiagramRequest(m?.[1] ?? "", "diagram", userMessage); return; }
@@ -674,10 +1146,11 @@ const ChatPage = () => {
   };
 
   const handleToolClick = (tool: string) => {
-    if (tool === "Generate Quiz")        setInput("Generate Quiz for: ");
-    else if (tool === "Generate Diagram")   setInput("Generate Diagram for: ");
+    if (tool === "Generate Quiz")          setInput("Generate Quiz for: ");
+    else if (tool === "Create Study Plan") setInput("Create Study Plan for: ");
     else if (tool === "Generate Flowchart") setInput("Generate Flowchart for: ");
-    else if (tool === "Generate Mindmap")   setInput("Generate Mindmap for: ");
+    else if (tool === "Generate Diagram")  setInput("Generate Diagram for: ");
+    else if (tool === "Generate Mindmap")  setInput("Generate Mindmap for: ");
     else { setInput(`${tool} for: `); toast.info(`Selected: ${tool}. Type your topic and send!`); }
   };
 
@@ -729,6 +1202,25 @@ const ChatPage = () => {
               </div>
             </div>
           );
+
+          // Study Plan message
+          if (msg.role === "study_plan" && msg.studyPlanData) {
+            return (
+              <div key={msg.id} className="flex justify-start animate-fade-in">
+                <div className="w-full max-w-[90%] md:max-w-[80%]">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
+                      <Bot className="w-3.5 h-3.5 text-primary" />
+                    </div>
+                    <span className="text-xs text-muted-foreground font-medium">Study Buddy</span>
+                  </div>
+                  <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-5">
+                    <StudyPlanCard studyPlanData={msg.studyPlanData} conversationId={conversationId} />
+                  </div>
+                </div>
+              </div>
+            );
+          }
 
           if (msg.role === "assistant" && msg.content === "") return null;
           return (

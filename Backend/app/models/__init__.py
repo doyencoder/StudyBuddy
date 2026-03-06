@@ -1,6 +1,6 @@
 from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime
+from typing import Optional, List, Literal, Dict
+from datetime import datetime, date
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
@@ -140,3 +140,81 @@ class DiagramHistoryItem(BaseModel):
 
 class DiagramHistoryResponse(BaseModel):
     diagrams: List[DiagramHistoryItem]
+
+
+# ── Study Plans ───────────────────────────────────────────────────────────────
+
+class StudyPlanPreferences(BaseModel):
+    hours_per_week: int = 8
+    focus_days: Optional[List[str]] = None   # ["Mon", "Wed", "Sat"]
+
+
+class StudyPlanRequest(BaseModel):
+    user_id: str
+    conversation_id: Optional[str] = None
+    topic: Optional[str] = None
+    timeline_weeks: int = 4
+    preferences: Optional[StudyPlanPreferences] = None
+
+
+class WeekPlan(BaseModel):
+    week_number: int
+    start_date: str
+    end_date: str
+    tasks: List[str]
+    estimate_hours: Optional[int] = None
+
+
+class StudyPlanResponse(BaseModel):
+    plan_id: str
+    title: str
+    start_date: str
+    end_date: str
+    weeks: List[WeekPlan]
+    summary: str
+
+
+# ── Goals ─────────────────────────────────────────────────────────────────────
+
+class Reminder(BaseModel):
+    enabled: bool = False
+    type: Literal["daily", "weekly", "custom"] = "weekly"
+    time: Optional[str] = None          # "HH:MM"
+    days: Optional[List[str]] = None    # ["Mon", "Thu"]
+    interval_days: Optional[int] = None
+
+
+class GoalCreateRequest(BaseModel):
+    user_id: str
+    title: str
+    start_date: str
+    end_date: str
+    weekly_plan: List[WeekPlan]
+    progress: int = 0
+    reminder: Optional[Reminder] = None
+    completed_tasks: Optional[Dict[str, bool]] = None
+
+
+class GoalUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    weekly_plan: Optional[List[WeekPlan]] = None
+    progress: Optional[int] = None
+    reminder: Optional[Reminder] = None
+    completed_tasks: Optional[Dict[str, bool]] = None
+
+
+class GoalItem(BaseModel):
+    goal_id: str
+    user_id: str
+    title: str
+    start_date: str
+    end_date: str
+    weekly_plan: List[WeekPlan]
+    progress: int
+    reminder: Optional[Reminder] = None
+    completed_tasks: Optional[Dict[str, bool]] = None
+    created_at: str
+
+
+class GoalsListResponse(BaseModel):
+    goals: List[GoalItem]

@@ -4,9 +4,13 @@ Wraps all Gemini API calls using the new google.genai SDK:
   - embed_text()   → embed a document chunk
   - embed_query()  → embed a user query
   - chat_stream()  → stream a RAG chat response from Gemini 1.5 Flash
+  - generate_quiz_questions() → generate MCQ quiz
+  - generate_mermaid()        → generate Mermaid diagram
+  - generate_study_plan()     → generate structured study plan JSON
 """
 
 import os
+import json
 import time
 from typing import List, Generator
 from google import genai
@@ -424,6 +428,136 @@ STUDY MATERIAL CONTEXT:
         cleaned = "\n".join(lines).strip()
 
     return cleaned
+
+
+def generate_study_plan(
+    topic: str,
+    timeline_weeks: int,
+    start_date: str,
+    context_chunks: List[str],
+    hours_per_week: int = 8,
+    focus_days: List[str] = None,
+) -> dict:
+    """
+    Generates a structured study plan as JSON using Gemini.
+    If context_chunks provided: grounds the plan in uploaded material.
+    If empty: uses general knowledge.
+    Returns parsed dict with title, start_date, end_date, weeks[], summary.
+    """
+    client = _get_client()
+
+    focus_str = ""
+    if focus_days:
+        focus_str = f"\nThe student prefers to study on: {', '.join(focus_days)}."
+
+    if context_chunks:
+        context_text = "\n\n---\n\n".join(
+            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
+        )
+        topic_line = f'Topic: "{topic}"' if topic else "Cover all key topics from the material."
+        source_instruction = f"""The student has uploaded study material. Base the plan strictly on this material.
+
+STUDY MATERIAL:
+{context_text}
+
+{topic_line}"""
+    else:
+        topic_line = f'Topic: "{topic}"' if topic else 'Topic: "General study skills and learning techniques"'
+        source_instruction = f"""Use your general knowledge to create the study plan.
+
+{topic_line}"""
+
+    prompt = f"""Create a detailed study plan with exactly {timeline_weeks} weeks.
+Start date: {start_date}
+Hours per week budget: {hours_per_week}{focus_str}
+
+{source_instruction}
+
+STRICT OUTPUT RULES:
+- Output a single JSON object with these exact fields:
+  "title": a short descriptive title for the plan - NO special characters like parentheses brackets or braces
+  "start_date": "{start_date}"
+  "end_date": the calculated end date in YYYY-MM-DD format
+  "weeks": an array of exactly {timeline_weeks} week objects each with:
+    "week_number": integer starting from 1
+    "start_date": YYYY-MM-DD
+    "end_date": YYYY-MM-DD
+    "tasks": array of 3-6 actionable task strings like Read chapter 2 or Solve 10 MCQs or Make flashcards for topic X
+    "estimate_hours": integer estimate of hours for this week
+  "summary": a 2-3 sentence summary of the overall plan
+
+- Tasks must be actionable and specific
+- Each week should build on the previous week
+- Distribute the hours_per_week budget across tasks
+- If grounded in material, reference specific topics from the material in task descriptions
+- Do NOT include raw chunk text - only paraphrased task descriptions
+- Keep the title under 60 characters with no special characters"""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.4,
+            ),
+        )
+
+    response = _call_with_retry(_generate)
+    raw = response.text.strip()
+    plan = json.loads(raw)
+
+    return plan
+
+
+def parse_study_plan_intent(raw_input: str) -> dict:
+    """
+    Uses Gemini to parse a free-form study plan request into structured fields.
+    Returns {"topic": str|null, "timeline_weeks": int|null, "hours_per_week": int|null}.
+    Handles inputs like "7", "machine learning for 6 weeks", "3 months of calculus", etc.
+    """
+    client = _get_client()
+
+    prompt = f"""You are a parser assistant. Extract structured study plan parameters from the user's input.
+
+User input: "{raw_input}"
+
+Extract the following fields:
+- "topic": the subject or topic to study. If the user only provides a number or duration, set to null.
+- "timeline_weeks": the number of weeks for the study plan. If the user says months, convert to weeks (1 month = 4 weeks). If the user provides just a number (like "7"), interpret it as weeks. If no duration is found, set to null.
+- "hours_per_week": if mentioned, the study hours per week. Otherwise null.
+
+STRICT RULES:
+- Output ONLY a JSON object with these three fields.
+- If a field cannot be determined, set it to null.
+- "timeline_weeks" must be a positive integer or null.
+- "hours_per_week" must be a positive integer or null.
+- "topic" must be a string or null. Do not include duration words in the topic.
+- A standalone number like "7" or "10" means timeline_weeks, not a topic.
+- Input like "7 weeks" means timeline_weeks=7, topic=null.
+- Input like "machine learning" means topic="machine learning", timeline_weeks=null.
+- Input like "machine learning for 6 weeks" means topic="machine learning", timeline_weeks=6.
+- Input like "3 months of calculus 5 hours per week" means topic="calculus", timeline_weeks=12, hours_per_week=5."""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+            ),
+        )
+
+    response = _call_with_retry(_generate)
+    raw = response.text.strip()
+    result = json.loads(raw)
+
+    return {
+        "topic": result.get("topic"),
+        "timeline_weeks": result.get("timeline_weeks"),
+        "hours_per_week": result.get("hours_per_week"),
+    }
 
 
 def classify_weak_area(question: str) -> str:

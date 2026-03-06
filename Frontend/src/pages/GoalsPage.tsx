@@ -1,12 +1,70 @@
-import { useState } from "react";
-import { Plus, Check, Bell, BellOff } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useEffect, useCallback } from "react";
+import { Plus, Check, Bell, Trash2, ChevronDown, ChevronUp, Clock, CalendarDays } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
+
+const API_BASE = "http://localhost:8000";
+const USER_ID = "student-001";
+
+// ── Daily goals localStorage helpers ─────────────────────────────────────────
+
+const DAILY_GOALS_KEY = "studybuddy_daily_goals";
+
+interface StoredDailyGoals {
+  date: string; // YYYY-MM-DD
+  goals: DailyGoal[];
+}
+
+function getTodayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function loadDailyGoals(): DailyGoal[] {
+  try {
+    const raw = localStorage.getItem(DAILY_GOALS_KEY);
+    if (!raw) return getDefaultDailyGoals();
+    const stored: StoredDailyGoals = JSON.parse(raw);
+    if (stored.date !== getTodayStr()) {
+      // New day → reset all goals to uncompleted
+      const resetGoals = stored.goals.map((g) => ({ ...g, completed: false }));
+      saveDailyGoals(resetGoals);
+      return resetGoals;
+    }
+    return stored.goals;
+  } catch {
+    return getDefaultDailyGoals();
+  }
+}
+
+function saveDailyGoals(goals: DailyGoal[]) {
+  const data: StoredDailyGoals = { date: getTodayStr(), goals };
+  localStorage.setItem(DAILY_GOALS_KEY, JSON.stringify(data));
+}
+
+function getDefaultDailyGoals(): DailyGoal[] {
+  return [
+    { id: "1", text: "Complete 2 quizzes on Biology", completed: false },
+    { id: "2", text: "Review flashcards for Chemistry", completed: false },
+    { id: "3", text: "Read chapter 5 of Physics textbook", completed: false },
+    { id: "4", text: "Practice 10 Math problems", completed: false },
+  ];
+}
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 interface DailyGoal {
   id: string;
@@ -14,50 +72,469 @@ interface DailyGoal {
   completed: boolean;
 }
 
-interface MonthlyGoal {
-  id: string;
-  text: string;
-  progress: number;
-  reminder: boolean;
+interface WeekPlan {
+  week_number: number;
+  start_date: string;
+  end_date: string;
+  tasks: string[];
+  estimate_hours?: number;
 }
 
+interface Reminder {
+  enabled: boolean;
+  type: "daily" | "weekly" | "custom";
+  time?: string;
+  days?: string[];
+  interval_days?: number;
+}
+
+interface GoalItem {
+  goal_id: string;
+  user_id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  weekly_plan: WeekPlan[];
+  progress: number;
+  reminder?: Reminder | null;
+  completed_tasks?: Record<string, boolean>;
+  created_at: string;
+}
+
+// ── Helper: compute progress from completed tasks ────────────────────────────
+
+function computeProgress(
+  weeklyPlan: WeekPlan[],
+  completedTasks: Record<string, boolean>
+): number {
+  const total = weeklyPlan.reduce((s, w) => s + w.tasks.length, 0);
+  if (total === 0) return 0;
+  const done = Object.values(completedTasks).filter(Boolean).length;
+  return Math.round((done / total) * 100);
+}
+
+// ── Long-term Goal Card ──────────────────────────────────────────────────────
+
+const GoalCard = ({
+  goal,
+  onDelete,
+  onToggleReminder,
+  onToggleTask,
+}: {
+  goal: GoalItem;
+  onDelete: (goalId: string) => void;
+  onToggleReminder: (goalId: string, enabled: boolean) => void;
+  onToggleTask: (goalId: string, taskKey: string, done: boolean) => void;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+
+  const daysLeft = Math.max(
+    0,
+    Math.ceil(
+      (new Date(goal.end_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+    )
+  );
+
+  const totalTasks = goal.weekly_plan.reduce((s, w) => s + w.tasks.length, 0);
+  const totalHours = goal.weekly_plan.reduce(
+    (s, w) => s + (w.estimate_hours || 0),
+    0
+  );
+  const completedTasks = goal.completed_tasks || {};
+  const completedCount = Object.values(completedTasks).filter(Boolean).length;
+
+  const progressColor =
+    goal.progress >= 80
+      ? "text-green-400"
+      : goal.progress >= 50
+      ? "text-yellow-400"
+      : "text-primary";
+
+  return (
+    <Card className="bg-card border-border">
+      <CardContent className="p-5 space-y-3">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div className="space-y-1 flex-1">
+            <h3 className="text-sm font-semibold text-foreground">
+              {goal.title}
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              <Badge
+                variant="outline"
+                className="text-xs border-border text-muted-foreground"
+              >
+                <CalendarDays className="w-3 h-3 mr-1" />
+                {goal.start_date} → {goal.end_date}
+              </Badge>
+              <Badge
+                variant="outline"
+                className={`text-xs ${
+                  daysLeft <= 7
+                    ? "border-red-500/30 text-red-400 bg-red-500/10"
+                    : "border-border text-muted-foreground"
+                }`}
+              >
+                <Clock className="w-3 h-3 mr-1" />
+                {daysLeft} days left
+              </Badge>
+              {totalHours > 0 && (
+                <Badge
+                  variant="outline"
+                  className="text-xs border-border text-muted-foreground"
+                >
+                  ~{totalHours}h total
+                </Badge>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-primary hover:bg-primary/10"
+              onClick={() => onToggleReminder(goal.goal_id, true)}
+              title="Send reminder email"
+            >
+              <Bell className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-red-400 hover:bg-red-400/10"
+              onClick={() => onDelete(goal.goal_id)}
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Progress */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-xs text-muted-foreground">
+              Progress ({completedCount}/{totalTasks} tasks)
+            </span>
+            <span className={`text-xs font-medium ${progressColor}`}>
+              {goal.progress}%
+            </span>
+          </div>
+          <Progress
+            value={goal.progress}
+            className="h-2 bg-secondary [&>div]:bg-primary"
+          />
+        </div>
+
+        {/* Expandable weekly plan with checkboxes */}
+        {goal.weekly_plan.length > 0 && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setExpanded((v) => !v)}
+              className="w-full text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1"
+            >
+              {expanded ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" /> Hide weekly plan
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" /> Show weekly plan (
+                  {goal.weekly_plan.length} weeks, {totalTasks} tasks)
+                </>
+              )}
+            </Button>
+
+            {expanded && (
+              <div className="space-y-2">
+                {goal.weekly_plan.map((week) => (
+                  <div
+                    key={week.week_number}
+                    className="border border-border rounded-xl p-3 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-foreground">
+                        Week {week.week_number}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {week.start_date} – {week.end_date}
+                        {week.estimate_hours
+                          ? ` · ${week.estimate_hours}h`
+                          : ""}
+                      </span>
+                    </div>
+                    {week.tasks.map((task, i) => {
+                      const taskKey = `${week.week_number}-${i}`;
+                      const isDone = !!completedTasks[taskKey];
+                      return (
+                        <div key={i} className="flex items-start gap-2">
+                          <Checkbox
+                            checked={isDone}
+                            onCheckedChange={(checked) =>
+                              onToggleTask(
+                                goal.goal_id,
+                                taskKey,
+                                !!checked
+                              )
+                            }
+                            className="mt-0.5 border-border data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                          />
+                          <span
+                            className={`text-xs ${
+                              isDone
+                                ? "line-through text-muted-foreground"
+                                : "text-foreground"
+                            }`}
+                          >
+                            {task}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// ── Main Page ────────────────────────────────────────────────────────────────
+
 const GoalsPage = () => {
-  const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>([
-    { id: "1", text: "Complete 2 quizzes on Biology", completed: true },
-    { id: "2", text: "Review flashcards for Chemistry", completed: false },
-    { id: "3", text: "Read chapter 5 of Physics textbook", completed: false },
-    { id: "4", text: "Practice 10 Math problems", completed: true },
-  ]);
-
-  const [monthlyGoals, setMonthlyGoals] = useState<MonthlyGoal[]>([
-    { id: "1", text: "Complete all Biology chapters", progress: 65, reminder: true },
-    { id: "2", text: "Score 80%+ on all Physics quizzes", progress: 40, reminder: false },
-    { id: "3", text: "Master Organic Chemistry basics", progress: 25, reminder: true },
-  ]);
-
+  // Daily goals (localStorage-backed)
+  const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>(loadDailyGoals);
   const [newGoal, setNewGoal] = useState("");
 
+  // Long-term goals (from backend)
+  const [longTermGoals, setLongTermGoals] = useState<GoalItem[]>([]);
+  const [loadingGoals, setLoadingGoals] = useState(false);
+
+  // Manual goal creation dialog
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    title: "",
+    start_date: getTodayStr(),
+    end_date: "",
+    numWeeks: 1,
+    weeklyTasks: [[""]] as string[][],  // array of weeks, each an array of task strings
+  });
+  const [isCreating, setIsCreating] = useState(false);
+
+  // Persist daily goals to localStorage whenever they change
+  useEffect(() => {
+    saveDailyGoals(dailyGoals);
+  }, [dailyGoals]);
+
+  // Midnight reset check — runs every minute
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const stored = localStorage.getItem(DAILY_GOALS_KEY);
+      if (stored) {
+        try {
+          const data: StoredDailyGoals = JSON.parse(stored);
+          if (data.date !== getTodayStr()) {
+            const reset = data.goals.map((g) => ({ ...g, completed: false }));
+            setDailyGoals(reset);
+            toast.info("Daily goals have been reset for today!");
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Fetch long-term goals ─────────────────────────────────────────────────
+
+  const fetchGoals = useCallback(async () => {
+    setLoadingGoals(true);
+    try {
+      const resp = await fetch(`${API_BASE}/goals/?user_id=${USER_ID}`);
+      if (!resp.ok) throw new Error("Failed to fetch goals");
+      const data = await resp.json();
+      setLongTermGoals(data.goals || []);
+    } catch (err: any) {
+      console.error("Failed to fetch goals:", err);
+    } finally {
+      setLoadingGoals(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchGoals();
+  }, [fetchGoals]);
+
+  // ── Daily goal handlers ───────────────────────────────────────────────────
+
   const toggleDaily = (id: string) => {
-    setDailyGoals((prev) => prev.map((g) => (g.id === id ? { ...g, completed: !g.completed } : g)));
+    setDailyGoals((prev) =>
+      prev.map((g) => (g.id === id ? { ...g, completed: !g.completed } : g))
+    );
   };
 
   const addDailyGoal = () => {
     if (!newGoal.trim()) return;
-    setDailyGoals((prev) => [...prev, { id: Date.now().toString(), text: newGoal, completed: false }]);
+    setDailyGoals((prev) => [
+      ...prev,
+      { id: Date.now().toString(), text: newGoal, completed: false },
+    ]);
     setNewGoal("");
     toast.success("Goal added!");
   };
 
-  const toggleReminder = (id: string) => {
-    setMonthlyGoals((prev) =>
-      prev.map((g) => {
-        if (g.id === id) {
-          toast.info(g.reminder ? "Reminder disabled" : "Reminder enabled");
-          return { ...g, reminder: !g.reminder };
+  // ── Long-term goal handlers (optimistic UI) ──────────────────────────────
+
+  const handleDeleteGoal = async (goalId: string) => {
+    // Optimistic: remove immediately
+    const prev = longTermGoals;
+    setLongTermGoals((g) => g.filter((goal) => goal.goal_id !== goalId));
+
+    try {
+      const resp = await fetch(
+        `${API_BASE}/goals/${goalId}?user_id=${USER_ID}`,
+        { method: "DELETE" }
+      );
+      if (!resp.ok && resp.status !== 204) {
+        throw new Error("Delete failed");
+      }
+      toast.success("Goal deleted");
+    } catch (err: any) {
+      // Revert on failure
+      setLongTermGoals(prev);
+      toast.error(`Could not delete goal: ${err.message}`);
+    }
+  };
+
+  const handleToggleReminder = async (goalId: string, enabled: boolean) => {
+    if (!enabled) return; // only act on unchecked → checked
+
+    // Show sending state
+    toast.info("Sending reminder email...");
+
+    try {
+      const resp = await fetch(
+        `${API_BASE}/goals/${goalId}/send_reminder?user_id=${USER_ID}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "student@studybuddy.demo" }),
         }
-        return g;
+      );
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || "Send failed");
+      }
+
+      toast.success("Reminder email sent!");
+    } catch (err: any) {
+      toast.error(`Could not send reminder: ${err.message}`);
+    }
+    // Reminder stays unchecked (we don't toggle state — it's a one-shot action)
+  };
+
+  const handleToggleTask = async (
+    goalId: string,
+    taskKey: string,
+    done: boolean
+  ) => {
+    // Optimistic update: toggle task, recompute progress
+    setLongTermGoals((prev) =>
+      prev.map((g) => {
+        if (g.goal_id !== goalId) return g;
+        const newCompleted = { ...(g.completed_tasks || {}), [taskKey]: done };
+        if (!done) delete newCompleted[taskKey];
+        const newProgress = computeProgress(g.weekly_plan, newCompleted);
+        return { ...g, completed_tasks: newCompleted, progress: newProgress };
       })
     );
+
+    // Sync to backend in background
+    const goal = longTermGoals.find((g) => g.goal_id === goalId);
+    if (!goal) return;
+
+    const newCompleted = { ...(goal.completed_tasks || {}), [taskKey]: done };
+    if (!done) delete newCompleted[taskKey];
+    const newProgress = computeProgress(goal.weekly_plan, newCompleted);
+
+    try {
+      await fetch(`${API_BASE}/goals/${goalId}?user_id=${USER_ID}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          completed_tasks: newCompleted,
+          progress: newProgress,
+        }),
+      });
+    } catch {
+      console.error("Failed to sync task completion to backend");
+    }
+  };
+
+  // ── Manual goal creation ──────────────────────────────────────────────────
+
+  const handleCreateGoal = async () => {
+    if (!createForm.title.trim() || !createForm.end_date.trim()) {
+      toast.error("Please provide a title and end date.");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      // Build weekly_plan from per-week tasks
+      const startDate = new Date(createForm.start_date);
+      const weeklyPlan = createForm.weeklyTasks.map((tasks, idx) => {
+        const weekStart = new Date(startDate);
+        weekStart.setDate(weekStart.getDate() + idx * 7);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        const filteredTasks = tasks.map((t) => t.trim()).filter(Boolean);
+        return {
+          week_number: idx + 1,
+          start_date: weekStart.toISOString().slice(0, 10),
+          end_date: weekEnd.toISOString().slice(0, 10),
+          tasks: filteredTasks.length > 0 ? filteredTasks : ["No tasks defined"],
+          estimate_hours: null,
+        };
+      });
+
+      const resp = await fetch(`${API_BASE}/goals/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          title: createForm.title.trim(),
+          start_date: createForm.start_date,
+          end_date: createForm.end_date,
+          weekly_plan: weeklyPlan,
+          progress: 0,
+          reminder: null,
+        }),
+      });
+
+      if (!resp.ok) throw new Error("Failed to create goal");
+      const newGoalData = await resp.json();
+      setLongTermGoals((prev) => [...prev, newGoalData]);
+      setShowCreateDialog(false);
+      setCreateForm({
+        title: "",
+        start_date: getTodayStr(),
+        end_date: "",
+        numWeeks: 1,
+        weeklyTasks: [[""]],
+      });
+      toast.success("Goal created!");
+    } catch (err: any) {
+      toast.error(`Could not create goal: ${err.message}`);
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const completedCount = dailyGoals.filter((g) => g.completed).length;
@@ -66,34 +543,53 @@ const GoalsPage = () => {
     <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Goals</h1>
-        <p className="text-muted-foreground mt-1">Stay on track with daily and monthly learning goals.</p>
+        <p className="text-muted-foreground mt-1">
+          Stay on track with daily and long-term learning goals.
+        </p>
       </div>
 
       <Tabs defaultValue="daily">
         <TabsList className="bg-secondary border border-border">
-          <TabsTrigger value="daily" className="data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
+          <TabsTrigger
+            value="daily"
+            className="data-[state=active]:bg-primary/15 data-[state=active]:text-primary"
+          >
             Daily Goals
           </TabsTrigger>
-          <TabsTrigger value="monthly" className="data-[state=active]:bg-primary/15 data-[state=active]:text-primary">
-            Monthly Goals
+          <TabsTrigger
+            value="longterm"
+            className="data-[state=active]:bg-primary/15 data-[state=active]:text-primary"
+          >
+            Long Term Goals
+            {longTermGoals.length > 0 && (
+              <Badge variant="secondary" className="ml-1.5 text-xs px-1.5">
+                {longTermGoals.length}
+              </Badge>
+            )}
           </TabsTrigger>
         </TabsList>
 
+        {/* ── Daily tab ──────────────────────────────────────────────────────── */}
         <TabsContent value="daily" className="mt-4 space-y-4">
-          {/* Progress summary */}
           <Card className="bg-card border-border">
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Today's Progress</span>
+                <span className="text-sm text-muted-foreground">
+                  Today's Progress
+                </span>
                 <span className="text-sm font-medium text-primary">
                   {completedCount}/{dailyGoals.length} completed
                 </span>
               </div>
-              <Progress value={(completedCount / dailyGoals.length) * 100} className="h-2 bg-secondary [&>div]:bg-primary" />
+              <Progress
+                value={
+                  (completedCount / Math.max(dailyGoals.length, 1)) * 100
+                }
+                className="h-2 bg-secondary [&>div]:bg-primary"
+              />
             </CardContent>
           </Card>
 
-          {/* Add goal */}
           <div className="flex gap-2">
             <Input
               value={newGoal}
@@ -102,58 +598,279 @@ const GoalsPage = () => {
               placeholder="Add a new daily goal..."
               className="bg-secondary border-border text-foreground placeholder:text-muted-foreground"
             />
-            <Button onClick={addDailyGoal} size="icon" className="shrink-0 bg-primary hover:bg-primary/90">
+            <Button
+              onClick={addDailyGoal}
+              size="icon"
+              className="shrink-0 bg-primary hover:bg-primary/90"
+            >
               <Plus className="w-4 h-4" />
             </Button>
           </div>
 
-          {/* Goals list */}
           <div className="space-y-2">
             {dailyGoals.map((goal) => (
-              <Card key={goal.id} className={`bg-card border-border transition-all ${goal.completed ? "opacity-60" : ""}`}>
+              <Card
+                key={goal.id}
+                className={`bg-card border-border transition-all ${
+                  goal.completed ? "opacity-60" : ""
+                }`}
+              >
                 <CardContent className="p-4 flex items-center gap-3">
                   <Checkbox
                     checked={goal.completed}
                     onCheckedChange={() => toggleDaily(goal.id)}
                     className="border-border data-[state=checked]:bg-primary data-[state=checked]:border-primary"
                   />
-                  <span className={`text-sm flex-1 ${goal.completed ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                  <span
+                    className={`text-sm flex-1 ${
+                      goal.completed
+                        ? "line-through text-muted-foreground"
+                        : "text-foreground"
+                    }`}
+                  >
                     {goal.text}
                   </span>
-                  {goal.completed && <Check className="w-4 h-4 text-success" />}
+                  {goal.completed && (
+                    <Check className="w-4 h-4 text-success" />
+                  )}
                 </CardContent>
               </Card>
             ))}
           </div>
         </TabsContent>
 
-        <TabsContent value="monthly" className="mt-4 space-y-4">
-          {monthlyGoals.map((goal) => (
-            <Card key={goal.id} className="bg-card border-border">
-              <CardContent className="p-5 space-y-3">
-                <div className="flex items-start justify-between">
-                  <h3 className="text-sm font-semibold text-foreground">{goal.text}</h3>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-muted-foreground hover:text-primary"
-                    onClick={() => toggleReminder(goal.id)}
-                  >
-                    {goal.reminder ? <Bell className="w-4 h-4 text-primary" /> : <BellOff className="w-4 h-4" />}
-                  </Button>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-xs text-muted-foreground">Progress</span>
-                    <span className="text-xs font-medium text-primary">{goal.progress}%</span>
-                  </div>
-                  <Progress value={goal.progress} className="h-2 bg-secondary [&>div]:bg-primary" />
-                </div>
+        {/* ── Long Term tab ──────────────────────────────────────────────────── */}
+        <TabsContent value="longterm" className="mt-4 space-y-4">
+          {/* Add goal button */}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={() => setShowCreateDialog(true)}
+              className="gap-1.5 bg-primary hover:bg-primary/90 text-xs"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Goal
+            </Button>
+          </div>
+
+          {loadingGoals ? (
+            <div className="text-center py-12">
+              <div className="flex justify-center gap-1.5 mb-3">
+                <span
+                  className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"
+                  style={{ animationDelay: "0ms" }}
+                />
+                <span
+                  className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"
+                  style={{ animationDelay: "150ms" }}
+                />
+                <span
+                  className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"
+                  style={{ animationDelay: "300ms" }}
+                />
+              </div>
+              <p className="text-sm text-muted-foreground">Loading goals...</p>
+            </div>
+          ) : longTermGoals.length === 0 ? (
+            <Card className="bg-card border-border border-dashed">
+              <CardContent className="p-8 text-center space-y-3">
+                <CalendarDays className="w-10 h-10 text-muted-foreground mx-auto" />
+                <h3 className="text-sm font-semibold text-foreground">
+                  No long-term goals yet
+                </h3>
+                <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                  Click "Add Goal" above to create one manually, or generate a
+                  study plan from the Chat page and save it as a goal.
+                </p>
               </CardContent>
             </Card>
-          ))}
+          ) : (
+            longTermGoals.map((goal) => (
+              <GoalCard
+                key={goal.goal_id}
+                goal={goal}
+                onDelete={handleDeleteGoal}
+                onToggleReminder={handleToggleReminder}
+                onToggleTask={handleToggleTask}
+              />
+            ))
+          )}
         </TabsContent>
       </Tabs>
+
+      {/* ── Create Goal Dialog ────────────────────────────────────────────── */}
+      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+        <DialogContent className="bg-card border-border max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">
+              Create Long Term Goal
+            </DialogTitle>
+            <DialogDescription className="text-muted-foreground">
+              Add a goal with weekly tasks to track your progress.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground">
+                Title *
+              </label>
+              <Input
+                value={createForm.title}
+                onChange={(e) =>
+                  setCreateForm((f) => ({ ...f, title: e.target.value }))
+                }
+                placeholder="e.g. Learn React fundamentals"
+                className="bg-secondary border-border text-foreground"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">
+                  Start Date
+                </label>
+                <Input
+                  type="date"
+                  value={createForm.start_date}
+                  onChange={(e) =>
+                    setCreateForm((f) => ({
+                      ...f,
+                      start_date: e.target.value,
+                    }))
+                  }
+                  className="bg-secondary border-border text-foreground"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">
+                  End Date *
+                </label>
+                <Input
+                  type="date"
+                  value={createForm.end_date}
+                  onChange={(e) =>
+                    setCreateForm((f) => ({
+                      ...f,
+                      end_date: e.target.value,
+                    }))
+                  }
+                  className="bg-secondary border-border text-foreground"
+                />
+              </div>
+            </div>
+
+            {/* Number of weeks */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground">
+                Number of Weeks
+              </label>
+              <Input
+                type="number"
+                min={1}
+                max={52}
+                value={createForm.numWeeks}
+                onChange={(e) => {
+                  const n = Math.max(1, Math.min(52, parseInt(e.target.value) || 1));
+                  setCreateForm((f) => {
+                    const newWeeklyTasks = [...f.weeklyTasks];
+                    // Expand or shrink weeks array
+                    while (newWeeklyTasks.length < n) newWeeklyTasks.push([""]);
+                    while (newWeeklyTasks.length > n) newWeeklyTasks.pop();
+                    return { ...f, numWeeks: n, weeklyTasks: newWeeklyTasks };
+                  });
+                }}
+                className="bg-secondary border-border text-foreground w-24"
+              />
+            </div>
+
+            {/* Per-week task entry */}
+            <div className="space-y-3">
+              <label className="text-xs font-medium text-foreground">
+                Weekly Tasks
+              </label>
+              {createForm.weeklyTasks.map((tasks, weekIdx) => (
+                <div
+                  key={weekIdx}
+                  className="border border-border rounded-lg p-3 space-y-2"
+                >
+                  <span className="text-xs font-semibold text-foreground">
+                    Week {weekIdx + 1}
+                  </span>
+                  {tasks.map((task, taskIdx) => (
+                    <div key={taskIdx} className="flex gap-2 items-center">
+                      <Input
+                        value={task}
+                        onChange={(e) => {
+                          setCreateForm((f) => {
+                            const updated = f.weeklyTasks.map((w, wi) =>
+                              wi === weekIdx
+                                ? w.map((t, ti) =>
+                                    ti === taskIdx ? e.target.value : t
+                                  )
+                                : w
+                            );
+                            return { ...f, weeklyTasks: updated };
+                          });
+                        }}
+                        placeholder={`Task ${taskIdx + 1}`}
+                        className="bg-secondary border-border text-foreground text-xs"
+                      />
+                      {tasks.length > 1 && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-400 hover:bg-red-400/10"
+                          onClick={() => {
+                            setCreateForm((f) => {
+                              const updated = f.weeklyTasks.map((w, wi) =>
+                                wi === weekIdx
+                                  ? w.filter((_, ti) => ti !== taskIdx)
+                                  : w
+                              );
+                              return { ...f, weeklyTasks: updated };
+                            });
+                          }}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1"
+                    onClick={() => {
+                      setCreateForm((f) => {
+                        const updated = f.weeklyTasks.map((w, wi) =>
+                          wi === weekIdx ? [...w, ""] : w
+                        );
+                        return { ...f, weeklyTasks: updated };
+                      });
+                    }}
+                  >
+                    <Plus className="w-3 h-3" /> Add task
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowCreateDialog(false)}
+              className="border-border text-muted-foreground"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateGoal}
+              disabled={isCreating}
+              className="bg-primary hover:bg-primary/90"
+            >
+              {isCreating ? "Creating..." : "Create Goal"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
