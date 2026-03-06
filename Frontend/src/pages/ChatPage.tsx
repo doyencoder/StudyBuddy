@@ -1,817 +1,5 @@
-// import { useState, useRef, useEffect } from "react";
-// import {
-//   Send,
-//   Paperclip,
-//   Mic,
-//   Plus,
-//   Volume2,
-//   Globe,
-//   Copy,
-//   RefreshCw,
-//   FileText,
-//   Layers,
-//   CalendarDays,
-//   GitBranch,
-//   Network,
-//   Brain,
-//   Bot,
-//   ChevronLeft,
-//   ChevronRight,
-//   CheckCircle2,
-//   XCircle,
-// } from "lucide-react";
-// import { Button } from "@/components/ui/button";
-// import {
-//   DropdownMenu,
-//   DropdownMenuContent,
-//   DropdownMenuItem,
-//   DropdownMenuTrigger,
-// } from "@/components/ui/dropdown-menu";
-// import { Badge } from "@/components/ui/badge";
-// import { toast } from "sonner";
-
-// // ── Types ─────────────────────────────────────────────────────────────────────
-
-// interface QuizQuestion {
-//   id: string;
-//   question: string;
-//   options: string[];
-// }
-
-// interface QuizResult {
-//   question_id: string;
-//   correct: boolean;
-//   selected_index: number;
-//   correct_index: number;
-//   explanation: string;
-//   question: string;
-//   options: string[];
-// }
-
-// interface QuizData {
-//   quiz_id: string;
-//   topic: string;
-//   questions: QuizQuestion[];
-//   submitted: boolean;
-//   score?: number;
-//   correct_count?: number;
-//   total_questions?: number;
-//   weak_areas?: string[];
-//   results?: QuizResult[];
-// }
-
-// interface Message {
-//   id: string;
-//   role: "user" | "assistant" | "quiz";
-//   content: string;
-//   quizData?: QuizData;
-//   timestamp: Date;
-// }
-
-// // ── Constants ─────────────────────────────────────────────────────────────────
-
-// const API_BASE = "http://localhost:8000";
-// const USER_ID = "student-001";
-
-// const TOOLS = [
-//   { label: "Generate Quiz",       icon: FileText },
-//   { label: "Generate Flashcards", icon: Layers },
-//   { label: "Create Study Plan",   icon: CalendarDays },
-//   { label: "Generate Mindmap",    icon: GitBranch },
-//   { label: "Generate Flowchart",  icon: Network },
-//   { label: "Generate Mindmap",    icon: Brain },
-// ];
-
-// const INITIAL_MESSAGES: Message[] = [
-//   {
-//     id: "1",
-//     role: "assistant",
-//     content:
-//       "Hey there! 👋 I'm your Study Buddy. I can help you understand complex topics, generate quizzes, create flashcards, build study plans, and much more. Just type your question or use the ➕ tools menu to get started!",
-//     timestamp: new Date(),
-//   },
-// ];
-
-// // ── Helpers ───────────────────────────────────────────────────────────────────
-
-// function generateUUID(): string {
-//   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-//     const r = (Math.random() * 16) | 0;
-//     const v = c === "x" ? r : (r & 0x3) | 0x8;
-//     return v.toString(16);
-//   });
-// }
-
-// // ── Markdown Renderer ─────────────────────────────────────────────────────────
-
-// function applyInline(text: string): React.ReactNode[] {
-//   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
-//   return parts.map((part, i) => {
-//     if (/^\*\*[^*]+\*\*$/.test(part))
-//       return <strong key={i} className="font-semibold text-foreground">{part.slice(2, -2)}</strong>;
-//     if (/^\*[^*]+\*$/.test(part))
-//       return <em key={i} className="italic">{part.slice(1, -1)}</em>;
-//     if (/^`[^`]+`$/.test(part))
-//       return <code key={i} className="bg-secondary px-1.5 py-0.5 rounded text-xs font-mono text-primary">{part.slice(1, -1)}</code>;
-//     return part;
-//   });
-// }
-
-// function renderMarkdown(text: string) {
-//   const lines = text.split("\n");
-//   const elements: React.ReactNode[] = [];
-//   let i = 0;
-//   while (i < lines.length) {
-//     const line = lines[i];
-//     if (line.trim() === "") { i++; continue; }
-//     if (/^\s*\d+\.\s/.test(line)) {
-//       const items: string[] = [];
-//       while (i < lines.length && /^\s*\d+\.\s/.test(lines[i]))
-//         items.push(lines[i++].replace(/^\s*\d+\.\s/, ""));
-//       elements.push(
-//         <ol key={`ol-${i}`} className="list-decimal list-inside space-y-1 my-2 ml-2">
-//           {items.map((item, j) => <li key={j} className="text-sm">{applyInline(item)}</li>)}
-//         </ol>
-//       );
-//       continue;
-//     }
-//     if (/^\s*[\*\-]\s/.test(line)) {
-//       const items: string[] = [];
-//       while (i < lines.length && /^\s*[\*\-]\s/.test(lines[i]))
-//         items.push(lines[i++].replace(/^\s*[\*\-]\s/, ""));
-//       elements.push(
-//         <ul key={`ul-${i}`} className="list-disc list-inside space-y-1 my-2 ml-2">
-//           {items.map((item, j) => <li key={j} className="text-sm">{applyInline(item)}</li>)}
-//         </ul>
-//       );
-//       continue;
-//     }
-//     elements.push(<p key={`p-${i}`} className="text-sm leading-relaxed my-1">{applyInline(line)}</p>);
-//     i++;
-//   }
-//   return elements;
-// }
-
-// // ── QuizResults Component ─────────────────────────────────────────────────────
-
-// const QuizResults = ({ quizData }: { quizData: QuizData }) => {
-//   const [showBreakdown, setShowBreakdown] = useState(false);
-//   const score = quizData.score ?? 0;
-//   const scoreColor = score >= 80 ? "text-green-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
-
-//   return (
-//     <div className="space-y-4">
-//       {/* Score header */}
-//       <div className="text-center py-2">
-//         <p className={`text-4xl font-bold ${scoreColor}`}>{score}%</p>
-//         <p className="text-sm text-muted-foreground mt-1">
-//           {quizData.correct_count} / {quizData.total_questions} correct
-//         </p>
-//       </div>
-
-//       {/* Weak areas */}
-//       {quizData.weak_areas && quizData.weak_areas.length > 0 && (
-//         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 space-y-2">
-//           <p className="text-xs font-semibold text-yellow-400">⚠️ Weak Areas Identified</p>
-//           <div className="flex flex-wrap gap-2">
-//             {quizData.weak_areas.map((area, i) => (
-//               <Badge key={i} variant="outline" className="border-yellow-500/30 text-yellow-400 bg-yellow-500/10 text-xs">
-//                 {area}
-//               </Badge>
-//             ))}
-//           </div>
-//         </div>
-//       )}
-
-//       {/* Breakdown toggle */}
-//       <Button
-//         variant="ghost"
-//         size="sm"
-//         onClick={() => setShowBreakdown((v) => !v)}
-//         className="w-full text-xs text-muted-foreground hover:text-primary"
-//       >
-//         {showBreakdown ? "Hide" : "Show"} question breakdown
-//       </Button>
-
-//       {/* Per-question breakdown */}
-//       {showBreakdown && quizData.results && (
-//         <div className="space-y-3">
-//           {quizData.results.map((r, i) => (
-//             <div key={i} className="bg-secondary/40 rounded-xl p-3 space-y-2">
-//               <div className="flex items-start gap-2">
-//                 {r.correct
-//                   ? <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
-//                   : <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />}
-//                 <p className="text-xs font-medium text-foreground">{r.question}</p>
-//               </div>
-//               <div className="space-y-1 ml-6">
-//                 {r.options.map((opt, oi) => (
-//                   <div
-//                     key={oi}
-//                     className={`text-xs px-3 py-1.5 rounded-lg border ${
-//                       oi === r.correct_index
-//                         ? "border-green-500/40 bg-green-500/10 text-green-400"
-//                         : oi === r.selected_index && !r.correct
-//                         ? "border-red-500/40 bg-red-500/10 text-red-400"
-//                         : "border-border text-muted-foreground"
-//                     }`}
-//                   >
-//                     {opt}
-//                   </div>
-//                 ))}
-//               </div>
-//               <p className="text-xs text-muted-foreground ml-6 bg-secondary/50 p-2 rounded-lg">
-//                 💡 {r.explanation}
-//               </p>
-//             </div>
-//           ))}
-//         </div>
-//       )}
-//     </div>
-//   );
-// };
-
-// // ── QuizCard Component ────────────────────────────────────────────────────────
-
-// const QuizCard = ({
-//   messageId,
-//   quizData,
-//   onQuizComplete,
-// }: {
-//   messageId: string;
-//   quizData: QuizData;
-//   onQuizComplete: (messageId: string, updatedQuizData: QuizData) => void;
-// }) => {
-//   const [currentQ, setCurrentQ] = useState(0);
-//   const [answers, setAnswers] = useState<(number | null)[]>(
-//     Array(quizData.questions.length).fill(null)
-//   );
-//   const [isSubmitting, setIsSubmitting] = useState(false);
-
-//   // If already submitted, show results
-//   if (quizData.submitted) {
-//     return (
-//       <div className="space-y-3">
-//         <p className="text-sm font-semibold text-foreground">📊 {quizData.topic} — Results</p>
-//         <QuizResults quizData={quizData} />
-//       </div>
-//     );
-//   }
-
-//   const question = quizData.questions[currentQ];
-//   const total = quizData.questions.length;
-//   const allAnswered = answers.every((a) => a !== null);
-
-//   const handleSelect = (optionIndex: number) => {
-//     setAnswers((prev) => {
-//       const updated = [...prev];
-//       updated[currentQ] = optionIndex;
-//       return updated;
-//     });
-//   };
-
-//   const handleSubmit = async () => {
-//     if (!allAnswered) return;
-//     setIsSubmitting(true);
-//     try {
-//       const response = await fetch(`${API_BASE}/quiz/submit`, {
-//         method: "POST",
-//         headers: { "Content-Type": "application/json" },
-//         body: JSON.stringify({
-//           user_id: USER_ID,
-//           quiz_id: quizData.quiz_id,
-//           answers: answers,
-//         }),
-//       });
-//       if (!response.ok) {
-//         const err = await response.json();
-//         throw new Error(err.detail || "Submission failed");
-//       }
-//       const result = await response.json();
-//       onQuizComplete(messageId, {
-//         ...quizData,
-//         submitted: true,
-//         score: result.score,
-//         correct_count: result.correct_count,
-//         total_questions: result.total_questions,
-//         weak_areas: result.weak_areas,
-//         results: result.results,
-//       });
-//     } catch (err: any) {
-//       toast.error(`Failed to submit quiz: ${err.message}`);
-//     } finally {
-//       setIsSubmitting(false);
-//     }
-//   };
-
-//   return (
-//     <div className="space-y-4">
-//       {/* Header */}
-//       <div className="flex items-center justify-between">
-//         <p className="text-sm font-semibold text-foreground">📝 {quizData.topic}</p>
-//         <span className="text-xs text-muted-foreground">{currentQ + 1} / {total}</span>
-//       </div>
-
-//       {/* Progress bar */}
-//       <div className="w-full bg-secondary rounded-full h-1.5">
-//         <div
-//           className="bg-primary h-1.5 rounded-full transition-all duration-300"
-//           style={{ width: `${((currentQ + 1) / total) * 100}%` }}
-//         />
-//       </div>
-
-//       {/* Question */}
-//       <p className="text-sm font-medium text-foreground">{question.question}</p>
-
-//       {/* Options */}
-//       <div className="space-y-2">
-//         {question.options.map((opt, i) => (
-//           <button
-//             key={i}
-//             onClick={() => handleSelect(i)}
-//             className={`w-full text-left text-sm px-4 py-2.5 rounded-xl border transition-all duration-150 ${
-//               answers[currentQ] === i
-//                 ? "border-primary bg-primary/15 text-primary"
-//                 : "border-border text-muted-foreground hover:border-primary/40 hover:bg-primary/5"
-//             }`}
-//           >
-//             {opt}
-//           </button>
-//         ))}
-//       </div>
-
-//       {/* Navigation */}
-//       <div className="flex items-center justify-between pt-1">
-//         <Button
-//           variant="ghost"
-//           size="sm"
-//           onClick={() => setCurrentQ((q) => q - 1)}
-//           disabled={currentQ === 0}
-//           className="gap-1 text-xs text-muted-foreground hover:text-primary"
-//         >
-//           <ChevronLeft className="w-4 h-4" /> Previous
-//         </Button>
-
-//         {currentQ < total - 1 ? (
-//           <Button
-//             variant="ghost"
-//             size="sm"
-//             onClick={() => setCurrentQ((q) => q + 1)}
-//             className="gap-1 text-xs text-muted-foreground hover:text-primary"
-//           >
-//             Next <ChevronRight className="w-4 h-4" />
-//           </Button>
-//         ) : (
-//           <Button
-//             size="sm"
-//             onClick={handleSubmit}
-//             disabled={!allAnswered || isSubmitting}
-//             className="text-xs bg-primary hover:bg-primary/90 disabled:opacity-40"
-//           >
-//             {isSubmitting ? "Submitting..." : "Submit Quiz"}
-//           </Button>
-//         )}
-//       </div>
-
-//       {/* Answered count */}
-//       <p className="text-xs text-center text-muted-foreground">
-//         {answers.filter((a) => a !== null).length} of {total} answered
-//       </p>
-//     </div>
-//   );
-// };
-
-// // ── Main Component ────────────────────────────────────────────────────────────
-
-// const ChatPage = () => {
-//   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
-//   const [input, setInput] = useState("");
-//   const [isTyping, setIsTyping] = useState(false);
-//   const [isUploading, setIsUploading] = useState(false);
-//   const [conversationId, setConversationId] = useState<string | null>(null);
-
-//   const scrollRef = useRef<HTMLDivElement>(null);
-//   const fileInputRef = useRef<HTMLInputElement>(null);
-
-//   useEffect(() => {
-//     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-//   }, [messages, isTyping]);
-
-//   // ── Quiz Complete Callback ────────────────────────────────────────────────
-
-//   const handleQuizComplete = (messageId: string, updatedQuizData: QuizData) => {
-//     setMessages((prev) =>
-//       prev.map((m) => m.id === messageId ? { ...m, quizData: updatedQuizData } : m)
-//     );
-//   };
-
-//   // ── Generate Quiz ─────────────────────────────────────────────────────────
-
-//   const generateQuiz = async (topic: string, numQuestions: number = 5) => {
-//     if (!topic && !conversationId) {
-//       toast.error("Please provide a topic, e.g. 'Generate Quiz for: cricket'");
-//       return;
-//     }
-
-//     // Auto-generate a conversationId if none exists yet.
-//     // This allows general knowledge quizzes with no document upload.
-//     let activeConversationId = conversationId;
-//     if (!activeConversationId) {
-//       activeConversationId = generateUUID();
-//       setConversationId(activeConversationId);
-//     }
-
-//     // Add user message to chat
-//     const userMsg: Message = {
-//       id: Date.now().toString(),
-//       role: "user",
-//       content: `Generate Quiz for: ${topic}`,
-//       timestamp: new Date(),
-//     };
-//     setMessages((prev) => [...prev, userMsg]);
-//     setIsTyping(true);
-
-//     try {
-//       const response = await fetch(`${API_BASE}/quiz/generate`, {
-//         method: "POST",
-//         headers: { "Content-Type": "application/json" },
-//         body: JSON.stringify({
-//           user_id: USER_ID,
-//           conversation_id: activeConversationId,
-//           topic: topic,
-//           num_questions: numQuestions,
-//         }),
-//       });
-
-//       if (!response.ok) {
-//         const err = await response.json();
-//         throw new Error(err.detail || "Quiz generation failed");
-//       }
-
-//       const data = await response.json();
-
-//       // Add quiz message to chat
-//       const quizMsg: Message = {
-//         id: (Date.now() + 1).toString(),
-//         role: "quiz",
-//         content: "",
-//         quizData: {
-//           quiz_id: data.quiz_id,
-//           topic: data.topic,
-//           questions: data.questions,
-//           submitted: false,
-//         },
-//         timestamp: new Date(),
-//       };
-//       setMessages((prev) => [...prev, quizMsg]);
-
-//     } catch (err: any) {
-//       setMessages((prev) => [
-//         ...prev,
-//         {
-//           id: (Date.now() + 1).toString(),
-//           role: "assistant",
-//           content: `❌ Could not generate quiz: ${err.message}`,
-//           timestamp: new Date(),
-//         },
-//       ]);
-//     } finally {
-//       setIsTyping(false);
-//     }
-//   };
-
-//   // ── Send Message ──────────────────────────────────────────────────────────
-
-//   const sendMessage = async () => {
-//     if (!input.trim() || isTyping) return;
-
-//     const userMessage = input.trim();
-//     setInput("");
-
-//     // ── Detect quiz trigger ───────────────────────────────────────────────────
-//     // Catches both structured and natural language quiz requests:
-//     // "Generate Quiz for: cricket"
-//     // "give me a quiz on football"
-//     // "make a 10 question quiz about photosynthesis"
-//     // "quiz me on newton's laws"
-//     // "create a quiz for chapter 3"
-//     const quizTriggerPattern = /^(?:generate(?:\s+a)?\s+quiz|give(?:\s+me)?\s+a\s+(?:\d+\s*(?:qns?|questions?|qs?)\s+)?quiz|make(?:\s+me)?\s+a\s+(?:\d+\s*(?:qns?|questions?|qs?)\s+)?quiz|create\s+a\s+(?:\d+\s*(?:qns?|questions?|qs?)\s+)?quiz|quiz\s+me\s+on)/i;
-//     const isQuizRequest = quizTriggerPattern.test(userMessage);
-
-//     if (isQuizRequest) {
-//       // Extract everything after the trigger phrase as the raw topic
-//       const rawTopic = userMessage
-//         .replace(/^(?:generate quiz(?:\s+for)?|give me a(?:\s+\d+\s*(?:qns?|questions?|qs?))?\s+quiz(?:\s+on)?|make a(?:\s+\d+\s*(?:qns?|questions?|qs?))?\s+quiz(?:\s+(?:about|on|for))?|create a(?:\s+\d+\s*(?:qns?|questions?|qs?))?\s+quiz(?:\s+(?:about|on|for))?|quiz me on|make me a(?:\s+\d+\s*(?:qns?|questions?|qs?))?\s+quiz(?:\s+(?:about|on|for))?|give a(?:\s+\d+\s*(?:qns?|questions?|qs?))?\s+quiz(?:\s+(?:about|on|for))?|generate a(?:\s+\d+\s*(?:qns?|questions?|qs?))?\s+quiz(?:\s+(?:about|on|for))?)/i, "")
-//         .replace(/^:?\s*/, "")
-//         .trim();
-
-//       // Parse optional quantity anywhere in the message
-//       // Handles: "10 questions", "10qns", "10qs", "10q"
-//       const qtyMatch = userMessage.match(/\b(\d+)\s*(?:qns?|questions?|qs?)\b/i);
-//       const numQuestions = qtyMatch ? parseInt(qtyMatch[1]) : 5;
-
-//       // Clean leftover connective words from topic
-//       const cleanTopic = rawTopic
-//         .replace(/\s*\b\d+\s*(?:qns?|questions?|qs?)\b/i, "")
-//         .replace(/\s*\b(and|with|about|for|on)\s*$/i, "")
-//         .trim();
-
-//       await generateQuiz(cleanTopic, numQuestions);
-//       return;
-//     }
-
-//     const userMsg: Message = {
-//       id: Date.now().toString(),
-//       role: "user",
-//       content: userMessage,
-//       timestamp: new Date(),
-//     };
-//     setMessages((prev) => [...prev, userMsg]);
-//     setIsTyping(true);
-
-//     const aiMsgId = (Date.now() + 1).toString();
-//     setMessages((prev) => [...prev, { id: aiMsgId, role: "assistant", content: "", timestamp: new Date() }]);
-
-//     try {
-//       const response = await fetch(`${API_BASE}/chat/message`, {
-//         method: "POST",
-//         headers: { "Content-Type": "application/json" },
-//         body: JSON.stringify({
-//           user_id: USER_ID,
-//           conversation_id: conversationId,
-//           message: userMessage,
-//         }),
-//       });
-
-//       if (!response.ok) throw new Error(`Server error: ${response.status}`);
-
-//       const reader = response.body!.getReader();
-//       const decoder = new TextDecoder();
-
-//       while (true) {
-//         const { done, value } = await reader.read();
-//         if (done) break;
-
-//         const raw = decoder.decode(value, { stream: true });
-//         const lines = raw.split("\n\n").filter(Boolean);
-
-//         for (const line of lines) {
-//           if (!line.startsWith("data: ")) continue;
-//           const dataStr = line.slice(6).trim();
-//           if (dataStr === "[DONE]") { setIsTyping(false); break; }
-
-//           let parsed: { type: string; content?: string; conversation_id?: string };
-//           try { parsed = JSON.parse(dataStr); } catch { continue; }
-
-//           if (parsed.type === "meta" && parsed.conversation_id)
-//             setConversationId(parsed.conversation_id);
-//           if (parsed.type === "text" && parsed.content)
-//             setMessages((prev) =>
-//               prev.map((m) => m.id === aiMsgId ? { ...m, content: m.content + parsed.content } : m)
-//             );
-//           if (parsed.type === "error") {
-//             toast.error(`AI error: ${parsed.content}`);
-//             setIsTyping(false);
-//             break;
-//           }
-//         }
-//       }
-//     } catch (err) {
-//       toast.error("Could not reach the server. Is the backend running?");
-//       setMessages((prev) => prev.filter((m) => m.id !== aiMsgId));
-//     } finally {
-//       setIsTyping(false);
-//     }
-//   };
-
-//   // ── File Upload ───────────────────────────────────────────────────────────
-
-//   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-//     const file = e.target.files?.[0];
-//     if (!file) return;
-//     e.target.value = "";
-
-//     let activeConversationId = conversationId;
-//     if (!activeConversationId) {
-//       activeConversationId = generateUUID();
-//       setConversationId(activeConversationId);
-//     }
-
-//     setIsUploading(true);
-//     toast.info(`Uploading "${file.name}"...`);
-
-//     const formData = new FormData();
-//     formData.append("file", file);
-//     formData.append("user_id", USER_ID);
-//     formData.append("conversation_id", activeConversationId);
-
-//     try {
-//       const response = await fetch(`${API_BASE}/upload/file`, { method: "POST", body: formData });
-//       if (!response.ok) {
-//         const err = await response.json();
-//         throw new Error(err.detail || "Upload failed");
-//       }
-//       const data = await response.json();
-//       toast.success(`"${file.name}" uploaded! ${data.chunks_stored} chunks indexed.`);
-//       setMessages((prev) => [
-//         ...prev,
-//         {
-//           id: Date.now().toString(),
-//           role: "assistant",
-//           content: `📎 I've processed **${file.name}** (${data.chunks_stored} chunks indexed). You can now ask me questions about it!`,
-//           timestamp: new Date(),
-//         },
-//       ]);
-//     } catch (err: any) {
-//       toast.error(`Upload failed: ${err.message}`);
-//     } finally {
-//       setIsUploading(false);
-//     }
-//   };
-
-//   // ── Tool Click ────────────────────────────────────────────────────────────
-
-//   const handleToolClick = (tool: string) => {
-//     if (tool === "Generate Quiz") {
-//       setInput("Generate Quiz for: ");
-//     } else {
-//       setInput(`${tool} for: `);
-//       toast.info(`Selected: ${tool}. Type your topic and send!`);
-//     }
-//   };
-
-//   const handleCopy = (text: string) => {
-//     navigator.clipboard.writeText(text);
-//     toast.success("Copied to clipboard!");
-//   };
-
-//   // ── Render ────────────────────────────────────────────────────────────────
-
-//   return (
-//     <div className="flex flex-col h-full">
-//       <input
-//         ref={fileInputRef}
-//         type="file"
-//         accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff"
-//         className="hidden"
-//         onChange={handleFileChange}
-//       />
-
-//       {/* Messages */}
-//       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-//         {messages.map((msg) => {
-
-//           // ── Quiz message ──────────────────────────────────────────────────
-//           if (msg.role === "quiz" && msg.quizData) {
-//             return (
-//               <div key={msg.id} className="flex justify-start animate-fade-in">
-//                 <div className="w-full max-w-[90%] md:max-w-[75%]">
-//                   <div className="flex items-center gap-2 mb-1.5">
-//                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
-//                       <Bot className="w-3.5 h-3.5 text-primary" />
-//                     </div>
-//                     <span className="text-xs text-muted-foreground font-medium">Study Buddy</span>
-//                   </div>
-//                   <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-5">
-//                     <QuizCard
-//                       messageId={msg.id}
-//                       quizData={msg.quizData}
-//                       onQuizComplete={handleQuizComplete}
-//                     />
-//                   </div>
-//                 </div>
-//               </div>
-//             );
-//           }
-
-//           // ── Regular user / assistant message ──────────────────────────────
-//           return (
-//             <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}>
-//               <div className="max-w-[85%] md:max-w-[70%]">
-//                 {msg.role === "assistant" && (
-//                   <div className="flex items-center gap-2 mb-1.5">
-//                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
-//                       <Bot className="w-3.5 h-3.5 text-primary" />
-//                     </div>
-//                     <span className="text-xs text-muted-foreground font-medium">Study Buddy</span>
-//                   </div>
-//                 )}
-//                 <div
-//                   className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-//                     msg.role === "user"
-//                       ? "bg-primary text-primary-foreground rounded-br-md"
-//                       : "bg-card border border-glow text-card-foreground rounded-bl-md"
-//                   }`}
-//                 >
-//                   {msg.role === "user" ? msg.content : renderMarkdown(msg.content)}
-//                 </div>
-//                 {msg.role === "assistant" && (
-//                   <div className="flex items-center gap-1 mt-2 ml-1">
-//                     {[
-//                       { icon: Volume2,   label: "Audio",      action: () => toast.info("Text-to-speech coming soon!") },
-//                       { icon: Globe,     label: "Translate",  action: () => toast.info("Translation coming soon!") },
-//                       { icon: Copy,      label: "Copy",       action: () => handleCopy(msg.content) },
-//                       { icon: RefreshCw, label: "Regenerate", action: () => toast.info("Regeneration coming soon!") },
-//                     ].map((btn) => (
-//                       <Button
-//                         key={btn.label}
-//                         variant="ghost"
-//                         size="sm"
-//                         onClick={btn.action}
-//                         className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5"
-//                       >
-//                         <btn.icon className="w-3.5 h-3.5" />
-//                         <span className="hidden sm:inline">{btn.label}</span>
-//                       </Button>
-//                     ))}
-//                   </div>
-//                 )}
-//               </div>
-//             </div>
-//           );
-//         })}
-
-//         {isTyping && (
-//           <div className="flex justify-start animate-fade-in">
-//             <div className="bg-card border border-glow rounded-2xl rounded-bl-md px-4 py-3">
-//               <div className="flex gap-1.5">
-//                 <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-//                 <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-//                 <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-//               </div>
-//             </div>
-//           </div>
-//         )}
-//       </div>
-
-//       {/* Input */}
-//       <div className="border-t border-border p-3 md:p-4 bg-card">
-//         <div className="flex items-end gap-2 max-w-4xl mx-auto">
-//           <DropdownMenu>
-//             <DropdownMenuTrigger asChild>
-//               <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground hover:text-primary hover:bg-primary/10 h-10 w-10">
-//                 <Plus className="w-5 h-5" />
-//               </Button>
-//             </DropdownMenuTrigger>
-//             <DropdownMenuContent align="start" side="top" className="bg-card border-border w-56">
-//               {TOOLS.map((tool) => (
-//                 <DropdownMenuItem key={tool.label} onClick={() => handleToolClick(tool.label)} className="gap-3 text-foreground">
-//                   <tool.icon className="w-4 h-4 text-primary" />
-//                   {tool.label}
-//                 </DropdownMenuItem>
-//               ))}
-//             </DropdownMenuContent>
-//           </DropdownMenu>
-
-//           <div className="flex-1 flex items-end bg-secondary rounded-xl border border-border focus-within:border-primary/50 focus-within:glow-blue-sm transition-all">
-//             <textarea
-//               value={input}
-//               onChange={(e) => setInput(e.target.value)}
-//               onKeyDown={(e) => {
-//                 if (e.key === "Enter" && !e.shiftKey) {
-//                   e.preventDefault();
-//                   sendMessage();
-//                 }
-//               }}
-//               placeholder="Ask anything..."
-//               rows={1}
-//               className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-4 py-2.5 resize-none outline-none min-h-[40px] max-h-[120px]"
-//             />
-//             <div className="flex items-center gap-1 pr-2 pb-1.5">
-//               <Button
-//                 variant="ghost"
-//                 size="icon"
-//                 className="h-8 w-8 text-muted-foreground hover:text-primary"
-//                 disabled={isUploading}
-//                 onClick={() => fileInputRef.current?.click()}
-//               >
-//                 <Paperclip className={`w-4 h-4 ${isUploading ? "animate-pulse" : ""}`} />
-//               </Button>
-//               <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary">
-//                 <Mic className="w-4 h-4" />
-//               </Button>
-//             </div>
-//           </div>
-
-//           <Button
-//             onClick={sendMessage}
-//             disabled={!input.trim() || isTyping}
-//             size="icon"
-//             className="shrink-0 h-10 w-10 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30"
-//           >
-//             <Send className="w-4 h-4" />
-//           </Button>
-//         </div>
-//       </div>
-//     </div>
-//   );
-// };
-
-// export default ChatPage;
-
-
-
 import { useState, useRef, useEffect } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import mermaid from "mermaid";
 import {
   Send, Paperclip, Mic, Plus, Volume2, Globe, Copy, RefreshCw,
@@ -885,7 +73,8 @@ function detectQuizIntent(message: string): { isQuiz: boolean; topic: string; nu
     .replace(/\b(\d+)\s*(?:qns?|questions?|qs?)\b/gi, "").replace(/\b(generate|make|create|give|get|need|want|build|prepare|design|write|produce|test)\b/gi, "")
     .replace(/\b(quiz|quizzes|question|questions|me|us|my|a|an|the)\b/gi, "").replace(/\b(about|on|for|regarding|related to|covering|of)\b/gi, "")
     .replace(/\b(i|can|you|could|please|would|like)\b/gi, "").replace(/[?!.,]/g, "").replace(/\s+/g, " ").trim();
-  return { isQuiz: true, topic: cleanTopic, numQuestions };
+  const finalTopic = cleanTopic.replace(/^[:\s]+/, "").trim();
+  return { isQuiz: true, topic: finalTopic, numQuestions };
 }
 
 function downloadPNG(svgContent: string, filename: string) {
@@ -1082,6 +271,7 @@ const ChatPage = () => {
   const [isTyping,          setIsTyping]          = useState(false);
   const [isUploading,       setIsUploading]       = useState(false);
   const [conversationId,    setConversationId]    = useState<string | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   // TTS / audio state
   const [speakingMsgId,     setSpeakingMsgId]     = useState<string | null>(null);
@@ -1098,6 +288,75 @@ const ChatPage = () => {
   const scrollRef      = useRef<HTMLDivElement>(null);
   const bottomRef      = useRef<HTMLDivElement>(null);
   const fileInputRef   = useRef<HTMLInputElement>(null);
+  const skipHistoryReload = useRef(false);
+  const lastLoadedId = useRef<string | null>(null);
+
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // Prefill input from navigation state (e.g. "Take a Quiz" from Dashboard)
+  useEffect(() => {
+    const state = location.state as { prefillInput?: string } | null;
+    if (state?.prefillInput) {
+      setInput(state.prefillInput);
+      window.history.replaceState({}, document.title);
+    }
+  }, []);
+
+  // Load conversation from URL param
+  useEffect(() => {
+    const urlConversationId = searchParams.get("conversationId");
+
+    // No conversationId in URL → new chat, reset everything
+    if (!urlConversationId) {
+      setMessages(INITIAL_MESSAGES);
+      setConversationId(null);
+      setInput("");
+      lastLoadedId.current = null;
+      return;
+    }
+
+    // We navigated here ourselves during streaming — skip reload to avoid
+    // overwriting the live streamed response
+    if (skipHistoryReload.current) {
+      skipHistoryReload.current = false;
+      return;
+    }
+
+    // Same conversation already loaded — don't re-fetch
+    if (lastLoadedId.current === urlConversationId) return;
+
+    setConversationId(urlConversationId);
+    setIsLoadingHistory(true);
+    setMessages([]);
+
+    const loadHistory = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/chat/history/${urlConversationId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const loadedMessages: Message[] = data.messages.map((m: any) => ({
+          id: m.id,
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          timestamp: new Date(m.timestamp),
+        }));
+
+        if (loadedMessages.length > 0) {
+          setMessages([INITIAL_MESSAGES[0], ...loadedMessages]);
+        }
+      } catch {
+        toast.error("Could not load conversation history.");
+      } finally {
+        setIsLoadingHistory(false);
+        lastLoadedId.current = urlConversationId;
+      }
+    };
+
+    loadHistory();
+  }, [searchParams]);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
 
   const [pendingDiagramType,  setPendingDiagramType]  = useState<"flowchart" | "diagram" | null>(null);
@@ -1381,7 +640,14 @@ const ChatPage = () => {
           const dataStr = line.slice(6).trim(); if (dataStr === "[DONE]") { setIsTyping(false); break; }
           let parsed: { type: string; content?: string; conversation_id?: string };
           try { parsed = JSON.parse(dataStr); } catch { continue; }
-          if (parsed.type === "meta" && parsed.conversation_id) setConversationId(parsed.conversation_id);
+          if (parsed.type === "meta" && parsed.conversation_id) {
+            const isNew = !conversationId; setConversationId(parsed.conversation_id);
+            skipHistoryReload.current = true;
+            navigate(`/chat?conversationId=${parsed.conversation_id}`, { replace: true });
+            if (isNew) {
+              window.dispatchEvent(new CustomEvent("conversation-created"));
+            }
+          }
           if (parsed.type === "text" && parsed.content) {
             if (!messageAdded) { setMessages((prev) => [...prev, { id: aiMsgId, role: "assistant", content: parsed.content!, timestamp: new Date() }]); messageAdded = true; }
             else setMessages((prev) => prev.map((m) => m.id === aiMsgId ? { ...m, content: m.content + parsed.content } : m));
@@ -1417,12 +683,23 @@ const ChatPage = () => {
 
   const handleCopy = (text: string) => { navigator.clipboard.writeText(text); toast.success("Copied to clipboard!"); };
 
+  // ── Loading history spinner ───────────────────────────────────────────────
+  if (isLoadingHistory) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4">
+        <div className="w-8 h-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+        <p className="text-sm text-muted-foreground">Loading conversation...</p>
+      </div>
+    );
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Hidden file input — PDFs and all image types */}
       <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff" className="hidden" onChange={handleFileChange} />
 
+      {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 md:p-6 pb-2 space-y-4">
         {messages.map((msg) => {
 
@@ -1453,6 +730,7 @@ const ChatPage = () => {
             </div>
           );
 
+          if (msg.role === "assistant" && msg.content === "") return null;
           return (
             <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}>
               <div className="max-w-[85%] md:max-w-[70%]">

@@ -20,7 +20,7 @@ from app.models import (
 from app.services.gemini_service import embed_query, generate_mermaid, generate_image
 from app.services.search_service import retrieve_chunks
 from app.services.blob_service import upload_generated_image_to_blob
-from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams
+from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, ensure_conversation
 
 router = APIRouter(prefix="/diagrams", tags=["diagrams"])
 
@@ -81,7 +81,18 @@ async def generate_diagram(req: DiagramGenerateRequest):
     if not mermaid_code or len(mermaid_code.strip()) < 10:
         raise HTTPException(status_code=500, detail="Gemini returned an empty diagram. Please try again.")
 
-    # Step 3 — save to Cosmos DB (diagrams container, independent of conversation)
+    # Step 3 — ensure conversation document exists so it appears in the sidebar
+    if req.conversation_id:
+        try:
+            await ensure_conversation(
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                title=f"{req.diagram_type.capitalize()}: {req.topic}",
+            )
+        except Exception:
+            pass  # Non-critical — don't fail diagram generation over this
+
+    # Step 4 — save to Cosmos DB (diagrams container, independent of conversation)
     try:
         saved = await save_diagram(
             user_id=req.user_id,

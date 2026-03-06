@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   LayoutDashboard,
   MessageSquare,
@@ -24,6 +25,9 @@ import {
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 
+const USER_ID = "student-001";
+const API_BASE = "http://localhost:8000";
+
 const menuItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Chat", url: "/chat", icon: MessageSquare },
@@ -33,20 +37,51 @@ const menuItems = [
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
-const RECENT_CHATS = [
-  { id: "1", title: "Photosynthesis Explained" },
-  { id: "2", title: "Newton's Laws of Motion" },
-  { id: "3", title: "World War II Timeline" },
-  { id: "4", title: "Python Data Structures" },
-  { id: "5", title: "Organic Chemistry Basics" },
-  { id: "6", title: "Calculus Integration" },
-];
+interface Conversation {
+  conversation_id: string;
+  title: string;
+  created_at: string;
+}
 
 const AppSidebar = () => {
   const { state, toggleSidebar } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
+
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  const fetchConversations = async () => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/chat/conversations?user_id=${USER_ID}`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setConversations(data.conversations || []);
+    } catch {
+      // Silently fail — sidebar is non-critical
+    }
+  };
+
+  // Fetch once on first mount only
+  useEffect(() => {
+    fetchConversations();
+  }, []);
+
+  // Listen for new conversation — wait 800ms so backend has saved the first
+  // message before we fetch, ensuring the title shows correctly
+  useEffect(() => {
+    const handler = () => {
+      setTimeout(() => fetchConversations(), 800);
+    };
+    window.addEventListener("conversation-created", handler);
+    return () => window.removeEventListener("conversation-created", handler);
+  }, []);
+
+  // Get the active conversation id from URL
+  const params = new URLSearchParams(location.search);
+  const activeConversationId = params.get("conversationId");
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border">
@@ -68,7 +103,9 @@ const AppSidebar = () => {
           <SidebarGroupContent>
             <SidebarMenu>
               {menuItems.map((item) => {
-                const isActive = location.pathname === item.url || (item.url === "/chat" && location.pathname === "/");
+                const isActive =
+                  location.pathname === item.url ||
+                  (item.url === "/chat" && location.pathname === "/");
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton asChild>
@@ -84,7 +121,9 @@ const AppSidebar = () => {
                       >
                         <item.icon className="w-5 h-5 shrink-0" />
                         {!collapsed && (
-                          <span className="text-sm font-medium">{item.title}</span>
+                          <span className="text-sm font-medium">
+                            {item.title}
+                          </span>
                         )}
                       </NavLink>
                     </SidebarMenuButton>
@@ -114,19 +153,31 @@ const AppSidebar = () => {
                 </Button>
               </div>
               <SidebarMenu>
-                {RECENT_CHATS.map((chat) => (
-                  <SidebarMenuItem key={chat.id}>
-                    <SidebarMenuButton asChild>
-                      <button
-                        onClick={() => navigate("/chat")}
-                        className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sidebar-foreground hover:bg-secondary hover:text-foreground transition-all duration-200 w-full text-left"
-                      >
-                        <Clock className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
-                        <span className="text-xs truncate">{chat.title}</span>
-                      </button>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
+                {conversations.map((chat) => {
+                  const isActive =
+                    activeConversationId === chat.conversation_id;
+                  return (
+                    <SidebarMenuItem key={chat.conversation_id}>
+                      <SidebarMenuButton asChild>
+                        <button
+                          onClick={() =>
+                            navigate(
+                              `/chat?conversationId=${chat.conversation_id}`
+                            )
+                          }
+                          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all duration-200 w-full text-left ${
+                            isActive
+                              ? "bg-primary/15 text-primary"
+                              : "text-sidebar-foreground hover:bg-secondary hover:text-foreground"
+                          }`}
+                        >
+                          <Clock className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                          <span className="text-xs truncate">{chat.title}</span>
+                        </button>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

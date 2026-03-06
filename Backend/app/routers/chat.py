@@ -1,7 +1,7 @@
 import io
 import json
 import re
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
@@ -13,10 +13,10 @@ from app.services.cosmos_service import (
     create_conversation,
     save_message,
     get_messages,
+    list_conversations,
 )
 from app.services.translator_service import translate_text
 from app.services.tts_service import synthesize_speech
-
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
 
@@ -159,6 +159,45 @@ async def chat_history(conversation_id: str):
         conversation_id=conversation_id,
         messages=messages,
     )
+
+
+
+# ── GET /chat/conversations ───────────────────────────────────────────────────
+
+@router.get("/conversations")
+async def get_conversations(user_id: str = Query(...)):
+    """
+    Returns all conversations for a user, newest first.
+    Uses the first user message as the conversation title.
+    """
+    try:
+        raw = await list_conversations(user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch conversations: {str(e)}")
+
+    conversations = []
+    for conv in raw:
+        messages = conv.get("messages", [])
+        # Find the first message sent by the user
+        first_user_msg = next(
+            (m for m in messages if m.get("role") == "user"), None
+        )
+        # Use first 45 chars of that message as the title
+        if first_user_msg:
+            raw_title = first_user_msg.get("content", "Untitled Chat")
+            title = raw_title[:45] + ("..." if len(raw_title) > 45 else "")
+        elif conv.get("title"):
+            title = conv["title"]
+        else:
+            title = "New Conversation"
+
+        conversations.append({
+            "conversation_id": conv.get("conversation_id"),
+            "title": title,
+            "created_at": conv.get("created_at", ""),
+        })
+
+    return {"conversations": conversations}
 
 
 # ── POST /chat/translate ───────────────────────────────────────────────────────

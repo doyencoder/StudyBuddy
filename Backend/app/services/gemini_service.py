@@ -424,3 +424,32 @@ STUDY MATERIAL CONTEXT:
         cleaned = "\n".join(lines).strip()
 
     return cleaned
+
+
+def classify_weak_area(question: str) -> str:
+    """
+    Uses Gemini to classify a wrong quiz question into a short
+    academic subtopic label e.g. 'Electromagnetic Induction', 'Cell Division'.
+    Falls back to 'General' if classification fails.
+    """
+    client = _get_client()
+
+    prompt = f"""A student answered this quiz question incorrectly:
+"{question}"
+
+What single academic subtopic or concept does this question test?
+Reply with ONLY 2-5 words. No explanation. No punctuation. Just the topic name."""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.1),
+        )
+
+    try:
+        response = _call_with_retry(_generate)
+        label = response.text.strip().strip(".,!?\"'")
+        return label if label else "General"
+    except Exception:
+        return "General"    

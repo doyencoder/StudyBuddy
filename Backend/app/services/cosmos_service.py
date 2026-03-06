@@ -55,6 +55,21 @@ async def create_conversation(user_id: str) -> str:
     return conversation_id
 
 
+async def ensure_conversation(user_id: str, conversation_id: str, title: str = "") -> None:
+    document = {
+        "id": conversation_id,
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "messages": [],
+        "title": title,
+    }
+
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+        await container.upsert_item(body=document)
+
 async def save_message(
     conversation_id: str,
     user_id: str,
@@ -141,7 +156,7 @@ async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(CONVERSATIONS_CONTAINER)
 
-        query = "SELECT c.conversation_id, c.created_at FROM c WHERE c.user_id = @user_id"
+        query = "SELECT c.conversation_id, c.created_at, c.messages, c.title FROM c WHERE c.user_id = @user_id ORDER BY c.created_at DESC"
         parameters = [{"name": "@user_id", "value": user_id}]
 
         results = []

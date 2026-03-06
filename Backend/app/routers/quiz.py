@@ -1,4 +1,5 @@
 import uuid
+import re
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models import (
@@ -11,13 +12,13 @@ from app.models import (
     QuizHistoryResponse,
     QuizHistoryItem,
 )
-from app.services.gemini_service import embed_query, generate_quiz_questions
+from app.services.gemini_service import embed_query, generate_quiz_questions, classify_weak_area
 from app.services.search_service import (
     retrieve_chunks,
     retrieve_chunks_hybrid,
     conversation_has_documents,
 )
-from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes
+from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message
 
 router = APIRouter(prefix="/quiz", tags=["Quiz"])
 
@@ -103,6 +104,30 @@ async def quiz_generate(request: QuizGenerateRequest):
     quiz_id = str(uuid.uuid4())
     topic_label = request.topic if request.topic else "General Quiz"
 
+    # Clean trailing conjunctions/prepositions left by frontend topic extraction
+    topic_label_clean = re.sub(
+        r'\b(and|or|the|a|an|for|of|in|on|with|about)\s*$',
+        '', topic_label, flags=re.IGNORECASE
+    ).strip() or topic_label
+
+    # Ensure a conversation document exists so this chat appears in the sidebar
+    if request.conversation_id:
+        try:
+            await ensure_conversation(
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                title=f"Quiz: {topic_label_clean}",
+            )
+            # Save the user's quiz request as a message so the chat isn't empty
+            await save_message(
+                conversation_id=request.conversation_id,
+                user_id=request.user_id,
+                role="user",
+                content=f"Generate Quiz on: {topic_label_clean}",
+            )
+        except Exception:
+            pass  # Non-critical — don't fail quiz generation over this
+
     try:
         await save_quiz(
             user_id=request.user_id,
@@ -166,7 +191,7 @@ async def quiz_submit(request: QuizSubmitRequest):
         if is_correct:
             correct_count += 1
         else:
-            weak_label = q["question"][:60] + "..." if len(q["question"]) > 60 else q["question"]
+            weak_label = classify_weak_area(q["question"])
             weak_areas.append(weak_label)
 
         results.append({
