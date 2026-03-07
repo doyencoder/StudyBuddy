@@ -65,6 +65,11 @@ async def chat_message(request: ChatRequest):
     if not conversation_id:
         conversation_id = await create_conversation(request.user_id)
 
+    # Fetch prior history BEFORE saving the new user message so the history
+    # list contains only the previous turns — the current question is passed
+    # separately as `question` and appended last inside chat_stream().
+    prior_messages = await get_messages(conversation_id)
+
     await save_message(
         conversation_id=conversation_id,
         user_id=request.user_id,
@@ -80,6 +85,20 @@ async def chat_message(request: ChatRequest):
             conversation_id=conversation_id,
             top_k=5,
         )
+        # If the strict 0.75 search found nothing, retry with a more lenient
+        # 0.5 threshold. This handles vague questions like "what are the main
+        # topics?" whose embeddings don't score high against specific document
+        # content. Safe to always attempt because conversation_id scoping
+        # ensures we only ever search this conversation's own uploaded files —
+        # if no files were uploaded both searches return empty anyway.
+        if not context_chunks:
+            context_chunks = retrieve_chunks(
+                query_embedding=query_embedding,
+                user_id=request.user_id,
+                conversation_id=conversation_id,
+                top_k=5,
+                score_threshold=0.5,
+            )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -96,6 +115,7 @@ async def chat_message(request: ChatRequest):
             for chunk in chat_stream(
                 question=request.message,
                 context_chunks=context_chunks,
+                history=prior_messages,
             ):
                 full_reply += chunk
                 payload = json.dumps({"type": "text", "content": chunk})

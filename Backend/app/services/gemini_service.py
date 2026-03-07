@@ -27,7 +27,15 @@ Answer ONLY based on the context provided from the student's own study material.
 If the answer is not in the context, say: I could not find this in your uploaded material.
 If the question is ambiguous, ask ONE clarifying question before answering.
 Never fabricate facts, formulas, dates, or citations.
-Keep answers clear, structured, and student-friendly."""
+Keep answers clear, structured, and student-friendly.
+
+CRITICAL — Conversation memory rule:
+The conversation history above contains facts the student has shared about themselves
+(e.g. their name, favourite players, preferences, goals). You MUST treat these as
+established facts and reference them accurately when asked, regardless of how many
+messages have passed since they were mentioned. Never say you do not have access to
+personal information if the student already told you that information earlier in this
+conversation."""
 
 # When no uploaded material exists or nothing relevant was found
 SYSTEM_PROMPT_GENERAL = """You are StudyBuddy, an educational AI assistant.
@@ -35,7 +43,55 @@ Answer the student's question using your general knowledge.
 Be accurate, clear, and student-friendly.
 If the question is ambiguous, ask ONE clarifying question before answering.
 Never fabricate facts, formulas, dates, or citations.
-Keep answers structured and easy to understand."""
+Keep answers structured and easy to understand.
+
+CRITICAL — Conversation memory rule:
+The conversation history above contains facts the student has shared about themselves
+(e.g. their name, favourite players, preferences, goals). You MUST treat these as
+established facts and reference them accurately when asked, regardless of how many
+messages have passed since they were mentioned. Never say you do not have access to
+personal information if the student already told you that information earlier in this
+conversation."""
+
+
+def _sanitize_and_parse_json(raw: str) -> any:
+    """
+    Robustly parses JSON that Gemini may have polluted with:
+      - Markdown code fences  (```json ... ```)
+      - Invalid control characters inside string values (\x00-\x1f except \t \n \r)
+    Falls back to a second pass with aggressive whitespace normalisation.
+    """
+    import re
+
+    # Strip markdown fences Gemini sometimes adds despite instructions
+    text = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    text = re.sub(r"```\s*$", "", text.strip())
+    text = text.strip()
+
+    # First attempt — plain parse (fast path, works most of the time)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Second attempt — strip invalid control chars (\x00-\x08, \x0b, \x0c, \x0e-\x1f)
+    # We keep \t (\x09), \n (\x0a), \r (\x0d) which are legal in JSON outside strings.
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Third attempt — replace literal newlines/tabs INSIDE string literals only,
+    # converting them to their escaped equivalents so the JSON becomes valid.
+    def _escape_inner(m):
+        s = m.group(0)
+        s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        return s
+
+    # Match JSON string values (simplified — handles the common Gemini output pattern)
+    escaped = re.sub(r'"(?:[^"\\]|\\.)*"', _escape_inner, cleaned)
+    return json.loads(escaped)
 
 
 def _get_client() -> genai.Client:
@@ -109,30 +165,40 @@ def _is_latin_script(text: str) -> bool:
     return (latin_count / len(alpha_chars)) > 0.8
 
 
-def chat_stream(question: str, context_chunks: List[str]) -> Generator[str, None, None]:
+def chat_stream(
+    question: str,
+    context_chunks: List[str],
+    history: List[dict] = None,
+) -> Generator[str, None, None]:
+    """
+    Streams a Gemini reply with full multi-turn conversation memory.
+
+    history: list of prior messages [{\"role\": \"user\"|\"assistant\", \"content\": str}]
+             fetched from Cosmos BEFORE the current user message was saved.
+             If None or empty, behaves exactly as before (single-turn).
+
+    The current user message (question) is always the final turn in the
+    contents list so Gemini sees the complete conversation in order.
+    """
     client = _get_client()
 
+    # ── Build system prompt ───────────────────────────────────────────────────
     if context_chunks:
         context_text = "\n\n---\n\n".join(
             f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
         )
-        prompt = f"""Use the following context from the student's study material to answer the question.
-
-CONTEXT:
-{context_text}
-
-QUESTION:
-{question}
-"""
+        # Inject RAG context into the current user turn only
+        current_user_text = (
+            f"Use the following context from the student's study material to answer the question.\n\n"
+            f"CONTEXT:\n{context_text}\n\n"
+            f"QUESTION:\n{question}"
+        )
         system_instruction = SYSTEM_PROMPT_RAG
     else:
-        prompt = question
+        current_user_text = question
         system_instruction = SYSTEM_PROMPT_GENERAL
 
     # ── Script mirroring ──────────────────────────────────────────────────────
-    # If the user wrote in Roman/Latin script (e.g. Hinglish: "mujhe batao"),
-    # Gemini tends to reply in Devanagari. We explicitly tell it to mirror the
-    # user's script so Hinglish input gets a Hinglish response.
     if _is_latin_script(question):
         system_instruction += (
             "\n\nIMPORTANT — Script rule: The user has written in Roman/Latin script. "
@@ -143,10 +209,69 @@ QUESTION:
             "Match the user's exact language style."
         )
 
+    # ── Build multi-turn contents list ────────────────────────────────────────
+    # Strategy: "anchor + recent" windowing to prevent context being lost.
+    #
+    # LLMs suffer from "lost in the middle" — facts mentioned early in a long
+    # conversation get deprioritized once many later messages accumulate.
+    # Fix: always send the FIRST 4 messages (where users establish personal
+    # context like names, favourite players, preferences) AND the LAST 10
+    # messages (recent conversational thread), deduplicating any overlap.
+    # This keeps early facts anchored at the top of the history regardless of
+    # how long the conversation has grown.
+    #
+    # Additionally, we skip assistant messages whose content looks like a
+    # JSON-embedded rich card (quiz/diagram/study_plan) — these are long
+    # structured blobs that waste the context window and confuse the model.
+
+    ANCHOR_COUNT = 4   # always include this many messages from the start
+    RECENT_COUNT = 10  # always include this many messages from the end
+
+    def _is_rich_card(msg: dict) -> bool:
+        """Returns True for JSON-embedded quiz/diagram/study_plan assistant messages."""
+        c = str(msg.get("content", ""))
+        return msg.get("role") == "assistant" and c.startswith('{"__type":')
+
+    contents = []
+
+    if history:
+        # Filter out rich-card messages entirely — they are not readable prose
+        readable = [m for m in history if not _is_rich_card(m)]
+
+        anchor  = readable[:ANCHOR_COUNT]
+        recent  = readable[-RECENT_COUNT:] if len(readable) > ANCHOR_COUNT else []
+
+        # Combine, preserving chronological order and deduplicating by index
+        anchor_indices = set(range(len(anchor)))
+        recent_start   = max(0, len(readable) - RECENT_COUNT)
+        seen = set(anchor_indices)
+        windowed = list(anchor)
+        for i, msg in enumerate(readable[recent_start:], start=recent_start):
+            if i not in seen:
+                windowed.append(msg)
+                seen.add(i)
+
+        for msg in windowed:
+            gemini_role = "user" if msg["role"] == "user" else "model"
+            contents.append(
+                types.Content(
+                    role=gemini_role,
+                    parts=[types.Part(text=str(msg.get("content", "")))],
+                )
+            )
+
+    # Append the current user turn (always last)
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[types.Part(text=current_user_text)],
+        )
+    )
+
     def _stream():
         return client.models.generate_content_stream(
             model=CHAT_MODEL,
-            contents=prompt,
+            contents=contents,
             config=types.GenerateContentConfig(system_instruction=system_instruction),
         )
 
@@ -232,7 +357,7 @@ Each item must have exactly these fields:
 
     import json
     raw = response.text.strip()
-    questions = json.loads(raw)
+    questions = _sanitize_and_parse_json(raw)
 
     sanitized = []
     for i, q in enumerate(questions[:num_questions]):
@@ -505,7 +630,7 @@ STRICT OUTPUT RULES:
 
     response = _call_with_retry(_generate)
     raw = response.text.strip()
-    plan = json.loads(raw)
+    plan = _sanitize_and_parse_json(raw)
 
     return plan
 
@@ -551,7 +676,7 @@ STRICT RULES:
 
     response = _call_with_retry(_generate)
     raw = response.text.strip()
-    result = json.loads(raw)
+    result = _sanitize_and_parse_json(raw)
 
     return {
         "topic": result.get("topic"),
@@ -586,4 +711,4 @@ Reply with ONLY 2-5 words. No explanation. No punctuation. Just the topic name."
         label = response.text.strip().strip(".,!?\"'")
         return label if label else "General"
     except Exception:
-        return "General"    
+        return "General"

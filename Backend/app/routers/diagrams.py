@@ -20,7 +20,8 @@ from app.models import (
 from app.services.gemini_service import embed_query, generate_mermaid, generate_image
 from app.services.search_service import retrieve_chunks
 from app.services.blob_service import upload_generated_image_to_blob
-from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, ensure_conversation
+import json
+from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, ensure_conversation, save_message
 
 router = APIRouter(prefix="/diagrams", tags=["diagrams"])
 
@@ -89,6 +90,26 @@ async def generate_diagram(req: DiagramGenerateRequest):
                 conversation_id=req.conversation_id,
                 title=f"{req.diagram_type.capitalize()}: {req.topic}",
             )
+            type_label = "Flowchart" if diagram_type == "flowchart" else "Mindmap"
+            await save_message(
+                conversation_id=req.conversation_id,
+                user_id=req.user_id,
+                role="user",
+                content=f"Generate {type_label} for: {req.topic}",
+            )
+            # Assistant message embeds the diagram data so history can
+            # reconstruct the full DiagramCard when the session is reopened.
+            # mermaid_code is added after Step 4 saves the diagram; we use
+            # the local variable here since it was just generated above.
+            diagram_payload = json.dumps({
+                "__type": "diagram",
+                "diagram_id": None,  # filled after save below
+                "type": diagram_type,
+                "topic": req.topic,
+                "mermaid_code": mermaid_code,
+                "created_at": "",
+            })
+            # placeholder — updated after save_diagram returns
         except Exception:
             pass  # Non-critical — don't fail diagram generation over this
 
@@ -103,6 +124,26 @@ async def generate_diagram(req: DiagramGenerateRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save diagram: {str(e)}")
+
+    # Step 5 — save assistant message to conversations with full diagram data
+    if req.conversation_id:
+        try:
+            diagram_payload = json.dumps({
+                "__type": "diagram",
+                "diagram_id": saved["diagram_id"],
+                "type": saved["type"],
+                "topic": saved["topic"],
+                "mermaid_code": saved["mermaid_code"],
+                "created_at": saved["created_at"],
+            })
+            await save_message(
+                conversation_id=req.conversation_id,
+                user_id=req.user_id,
+                role="assistant",
+                content=diagram_payload,
+            )
+        except Exception:
+            pass  # Non-critical
 
     return DiagramGenerateResponse(
         diagram_id=saved["diagram_id"],
@@ -199,6 +240,37 @@ async def generate_diagram_image(req: ImageGenerateRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save image record: {str(e)}")
+
+    # Save conversation messages so image sessions appear in sidebar + history
+    if req.conversation_id:
+        try:
+            await ensure_conversation(
+                user_id=req.user_id,
+                conversation_id=req.conversation_id,
+                title=f"Image: {req.topic}",
+            )
+            await save_message(
+                conversation_id=req.conversation_id,
+                user_id=req.user_id,
+                role="user",
+                content=f"Generate Diagram for: {req.topic}",
+            )
+            image_payload = json.dumps({
+                "__type": "image",
+                "diagram_id": saved["diagram_id"],
+                "type": "image",
+                "topic": saved["topic"],
+                "image_url": saved["image_url"],
+                "created_at": saved["created_at"],
+            })
+            await save_message(
+                conversation_id=req.conversation_id,
+                user_id=req.user_id,
+                role="assistant",
+                content=image_payload,
+            )
+        except Exception:
+            pass  # Non-critical
 
     return ImageGenerateResponse(
         diagram_id=saved["diagram_id"],

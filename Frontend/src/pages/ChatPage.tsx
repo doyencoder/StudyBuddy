@@ -83,6 +83,7 @@ interface StudyPlanData {
   end_date: string;
   weeks: WeekPlanData[];
   summary: string;
+  goal_saved?: boolean;
 }
 
 interface ImageData {
@@ -435,7 +436,9 @@ const StudyPlanCard = ({
 }) => {
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([1]));
   const [isSaving, setIsSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  // Initialise from persisted goal_saved flag so the button stays locked
+  // when the user reopens this conversation from the sidebar.
+  const [saved, setSaved] = useState(studyPlanData.goal_saved ?? false);
 
   const toggleWeek = (weekNum: number) => {
     setExpandedWeeks((prev) => {
@@ -465,6 +468,18 @@ const StudyPlanCard = ({
       if (!resp.ok) throw new Error("Failed to save goal");
       setSaved(true);
       toast.success("Study plan saved as a goal! View it on the Goals page.");
+      // Persist goal_saved flag to conversation history so state survives refresh
+      if (conversationId) {
+        fetch(`${API_BASE}/study_plans/mark_goal_saved`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: USER_ID,
+            plan_id: studyPlanData.plan_id,
+            conversation_id: conversationId,
+          }),
+        }).catch(() => {}); // fire-and-forget — non-critical
+      }
     } catch (err: any) {
       toast.error(`Could not save goal: ${err.message}`);
     } finally {
@@ -672,12 +687,73 @@ const ChatPage = () => {
         if (!res.ok) return;
         const data = await res.json();
 
-        const loadedMessages: Message[] = data.messages.map((m: any) => ({
-          id: m.id,
-          role: m.role as "user" | "assistant",
-          content: m.content,
-          timestamp: new Date(m.timestamp),
-        }));
+        const loadedMessages: Message[] = data.messages.map((m: any) => {
+          // Detect rich message types embedded as JSON by '+' button features
+          let parsed: any = null;
+          if (m.role === "assistant" && typeof m.content === "string" && m.content.startsWith('{"__type":')) {
+            try { parsed = JSON.parse(m.content); } catch { /* not JSON, render as text */ }
+          }
+          if (parsed?.__type === "quiz") {
+            return {
+              id: m.id, role: "quiz" as const, content: "",
+              quizData: {
+                quiz_id: parsed.quiz_id, topic: parsed.topic,
+                // Always use questions from history; after submission the
+                // backend updates this message so submitted/score/results
+                // are persisted and the card reopens in read-only state.
+                questions: parsed.questions ?? [],
+                submitted: parsed.submitted ?? false,
+                score: parsed.score,
+                correct_count: parsed.correct_count,
+                total_questions: parsed.total_questions,
+                weak_areas: parsed.weak_areas ?? [],
+                results: parsed.results ?? [],
+              },
+              timestamp: new Date(m.timestamp),
+            };
+          }
+          if (parsed?.__type === "diagram") {
+            return {
+              id: m.id, role: "diagram" as const, content: "",
+              diagramData: {
+                diagram_id: parsed.diagram_id, type: parsed.type as "flowchart" | "diagram",
+                topic: parsed.topic, mermaid_code: parsed.mermaid_code,
+                created_at: parsed.created_at,
+              },
+              timestamp: new Date(m.timestamp),
+            };
+          }
+          if (parsed?.__type === "image") {
+            return {
+              id: m.id, role: "image" as const, content: "",
+              imageData: {
+                diagram_id: parsed.diagram_id, type: "image" as const,
+                topic: parsed.topic, image_url: parsed.image_url,
+                created_at: parsed.created_at,
+              },
+              timestamp: new Date(m.timestamp),
+            };
+          }
+          if (parsed?.__type === "study_plan") {
+            return {
+              id: m.id, role: "study_plan" as const, content: "",
+              studyPlanData: {
+                plan_id: parsed.plan_id, title: parsed.title,
+                start_date: parsed.start_date, end_date: parsed.end_date,
+                weeks: parsed.weeks, summary: parsed.summary,
+                goal_saved: parsed.goal_saved ?? false,
+              },
+              timestamp: new Date(m.timestamp),
+            };
+          }
+          // Default: regular text message
+          return {
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+          };
+        });
 
         if (loadedMessages.length > 0) {
           setMessages([INITIAL_MESSAGES[0], ...loadedMessages]);
@@ -693,6 +769,23 @@ const ChatPage = () => {
     loadHistory();
   }, [searchParams]);
 
+  // ── Sync conversation ID to URL + sidebar ───────────────────────────────
+  // Called after any '+' feature successfully generates content so that:
+  //   1. The URL gets the conversationId param (matches normal chat behaviour)
+  //   2. skipHistoryReload prevents the URL change from wiping live content
+  //   3. The sidebar receives the 'conversation-created' event and refreshes
+  const syncConversationToUrl = (cid: string, isNew: boolean) => {
+    skipHistoryReload.current = true;
+    navigate(`/chat?conversationId=${cid}`, { replace: true });
+    if (isNew) {
+      // Delay the sidebar refresh event slightly so the Cosmos write has time
+      // to commit before the sidebar fetches the conversation list.
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent("conversation-created"));
+      }, 700);
+    }
+  };
+
   // ── Generate Study Plan ────────────────────────────────────────────────
 
   const generateStudyPlan = async (
@@ -701,6 +794,7 @@ const ChatPage = () => {
     hoursPerWeek: number = 8,
     skipUserMsg: boolean = false
   ) => {
+    const wasNew = !conversationId;
     let activeConversationId = conversationId;
     if (!activeConversationId) {
       activeConversationId = generateUUID();
@@ -750,6 +844,7 @@ const ChatPage = () => {
           timestamp: new Date(),
         },
       ]);
+      syncConversationToUrl(activeConversationId, wasNew);
     } catch (err: any) {
       toast.error(`Could not generate study plan: ${err.message}`);
       setMessages((prev) => [
@@ -874,6 +969,7 @@ const ChatPage = () => {
 
   const generateQuiz = async (topic: string, numQuestions: number = 5) => {
     if (!topic && !conversationId) { toast.error("Please provide a topic, e.g. 'make a quiz about cricket'"); return; }
+    const wasNew = !conversationId;
     let cid = conversationId; if (!cid) { cid = generateUUID(); setConversationId(cid); }
     const quizUserMsgId = generateUUID();
     const quizMsgId     = generateUUID();
@@ -884,21 +980,26 @@ const ChatPage = () => {
       if (!r.ok) { const err = await r.json(); throw new Error(err.detail || "Quiz generation failed"); }
       const data = await r.json();
       setMessages((prev) => [...prev, { id: quizMsgId, role: "quiz", content: "", quizData: { quiz_id: data.quiz_id, topic: data.topic, questions: data.questions, submitted: false }, timestamp: new Date() }]);
+      syncConversationToUrl(cid, wasNew);
     } catch (err: any) { setMessages((prev) => [...prev, { id: generateUUID(), role: "assistant", content: `❌ Could not generate quiz: ${err.message}`, timestamp: new Date() }]); }
     finally { setIsTyping(false); }
   };
 
   const generateDiagram = async (topic: string, diagramType: "flowchart" | "diagram") => {
     if (!topic.trim()) { toast.error("Please specify a topic for the diagram."); return; }
+    const wasNew = !conversationId;
+    const cid = conversationId ?? generateUUID();
+    if (wasNew) setConversationId(cid);
     const diagUserMsgId = generateUUID();
     const diagMsgId     = generateUUID();
     setMessages((prev) => [...prev, { id: diagUserMsgId, role: "user", content: diagramType === "flowchart" ? `Generate Flowchart for: ${topic.trim()}` : `Generate Mindmap for: ${topic.trim()}`, timestamp: new Date() }]);
     setInput(""); setIsTyping(true);
     try {
-      const r = await fetch(`${API_BASE}/diagrams/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: USER_ID, conversation_id: conversationId, topic: topic.trim(), diagram_type: diagramType }) });
+      const r = await fetch(`${API_BASE}/diagrams/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: USER_ID, conversation_id: cid, topic: topic.trim(), diagram_type: diagramType }) });
       if (!r.ok) { const err = await r.json(); throw new Error(err.detail || "Diagram generation failed"); }
       const data: DiagramData = await r.json();
       setMessages((prev) => [...prev, { id: diagMsgId, role: "diagram", content: "", diagramData: data, timestamp: new Date() }]);
+      syncConversationToUrl(cid, wasNew);
     } catch (err: any) { toast.error(`Could not generate diagram: ${err.message}`); setMessages((prev) => [...prev, { id: generateUUID(), role: "assistant", content: `Sorry, I couldn't generate the diagram. ${err.message}`, timestamp: new Date() }]); }
     finally { setIsTyping(false); }
   };
@@ -934,15 +1035,19 @@ const ChatPage = () => {
 
   const generateImage = async (topic: string) => {
     if (!topic.trim()) { toast.error("Please specify a topic for the image."); return; }
+    const wasNew = !conversationId;
+    const cid = conversationId ?? generateUUID();
+    if (wasNew) setConversationId(cid);
     const imgUserMsgId = generateUUID();
     const imgMsgId     = generateUUID();
     setMessages((prev) => [...prev, { id: imgUserMsgId, role: "user", content: `Generate Diagram for: ${topic.trim()}`, timestamp: new Date() }]);
     setInput(""); setIsTyping(true);
     try {
-      const r = await fetch(`${API_BASE}/diagrams/generate-image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: USER_ID, conversation_id: conversationId, topic: topic.trim() }) });
+      const r = await fetch(`${API_BASE}/diagrams/generate-image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: USER_ID, conversation_id: cid, topic: topic.trim() }) });
       if (!r.ok) { const err = await r.json(); throw new Error(err.detail || "Image generation failed"); }
       const data: ImageData = await r.json();
       setMessages((prev) => [...prev, { id: imgMsgId, role: "image", content: "", imageData: data, timestamp: new Date() }]);
+      syncConversationToUrl(cid, wasNew);
     } catch (err: any) { toast.error(`Could not generate image: ${err.message}`); setMessages((prev) => [...prev, { id: generateUUID(), role: "assistant", content: `Sorry, I couldn't generate the image. ${err.message}`, timestamp: new Date() }]); }
     finally { setIsTyping(false); }
   };
@@ -1154,6 +1259,7 @@ const ChatPage = () => {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return; e.target.value = "";
+    const wasNew = !conversationId;
     let cid = conversationId; if (!cid) { cid = generateUUID(); setConversationId(cid); }
     setIsUploading(true); toast.info(`Uploading "${file.name}"...`);
     const formData = new FormData(); formData.append("file", file); formData.append("user_id", USER_ID); formData.append("conversation_id", cid);
@@ -1162,6 +1268,7 @@ const ChatPage = () => {
       if (!r.ok) { const err = await r.json(); throw new Error(err.detail || "Upload failed"); }
       const data = await r.json(); toast.success(`"${file.name}" uploaded! ${data.chunks_stored} chunks indexed.`);
       setMessages((prev) => [...prev, { id: generateUUID(), role: "assistant", content: `📎 I've processed **${file.name}** (${data.chunks_stored} chunks indexed). You can now ask me questions about it, or generate a flowchart / diagram from it!`, timestamp: new Date() }]);
+      syncConversationToUrl(cid, wasNew);
     } catch (err: any) { toast.error(`Upload failed: ${err.message}`); }
     finally { setIsUploading(false); }
   };

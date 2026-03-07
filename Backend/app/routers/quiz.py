@@ -1,5 +1,6 @@
 import uuid
 import re
+import json
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models import (
@@ -18,7 +19,7 @@ from app.services.search_service import (
     retrieve_chunks_hybrid,
     conversation_has_documents,
 )
-from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message
+from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message, update_message_json
 
 router = APIRouter(prefix="/quiz", tags=["Quiz"])
 
@@ -125,6 +126,25 @@ async def quiz_generate(request: QuizGenerateRequest):
                 role="user",
                 content=f"Generate Quiz on: {topic_label_clean}",
             )
+            # Save assistant message with quiz data embedded as JSON so that
+            # when the user reopens this conversation from the sidebar, the
+            # full interactive quiz card is reconstructed from history.
+            quiz_payload = json.dumps({
+                "__type": "quiz",
+                "quiz_id": quiz_id,
+                "topic": topic_label,
+                "submitted": False,
+                "questions": [
+                    {"id": q["id"], "question": q["question"], "options": q["options"]}
+                    for q in raw_questions
+                ],
+            })
+            await save_message(
+                conversation_id=request.conversation_id,
+                user_id=request.user_id,
+                role="assistant",
+                content=quiz_payload,
+            )
         except Exception:
             pass  # Non-critical — don't fail quiz generation over this
 
@@ -134,6 +154,7 @@ async def quiz_generate(request: QuizGenerateRequest):
             quiz_id=quiz_id,
             topic=topic_label,
             questions=raw_questions,
+            conversation_id=request.conversation_id or "",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save quiz: {str(e)}")
@@ -220,6 +241,27 @@ async def quiz_submit(request: QuizSubmitRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save results: {str(e)}")
+
+    # Update the conversation history message so reopening the chat shows
+    # the quiz in its submitted/read-only state instead of resetting it.
+    if quiz_doc.get("conversation_id"):
+        try:
+            await update_message_json(
+                conversation_id=quiz_doc["conversation_id"],
+                user_id=request.user_id,
+                match_key="quiz_id",
+                match_value=request.quiz_id,
+                patch={
+                    "submitted": True,
+                    "score": score,
+                    "correct_count": correct_count,
+                    "total_questions": total,
+                    "weak_areas": weak_areas,
+                    "results": results,
+                },
+            )
+        except Exception:
+            pass  # Non-critical — quiz score is already saved above
 
     return QuizSubmitResponse(
         quiz_id=request.quiz_id,

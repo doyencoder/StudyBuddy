@@ -1,3 +1,4 @@
+import json as _json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -148,6 +149,51 @@ async def get_messages(conversation_id: str) -> List[Dict[str, Any]]:
             return []
 
 
+async def update_message_json(
+    conversation_id: str,
+    user_id: str,
+    match_key: str,
+    match_value: str,
+    patch: Dict[str, Any],
+) -> bool:
+    """
+    Finds the first assistant message in the conversation whose content is JSON
+    containing match_key == match_value, merges patch into it, and saves back.
+    Returns True if a message was found and updated, False otherwise.
+    Used to persist quiz submission results and study plan goal-saved state.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+
+        try:
+            item = await container.read_item(item=conversation_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            return False
+
+        updated = False
+        for msg in item.get("messages", []):
+            if msg.get("role") != "assistant":
+                continue
+            raw = msg.get("content", "")
+            if not raw.startswith('{"__type":'):
+                continue
+            try:
+                parsed = _json.loads(raw)
+            except Exception:
+                continue
+            if str(parsed.get(match_key)) == str(match_value):
+                parsed.update(patch)
+                msg["content"] = _json.dumps(parsed)
+                updated = True
+                break
+
+        if updated:
+            await container.replace_item(item=conversation_id, body=item)
+
+        return updated
+
+
 async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     """
     Returns all conversations for a given user (lightweight — no messages).
@@ -179,10 +225,13 @@ async def save_quiz(
     quiz_id: str,
     topic: str,
     questions: list,
+    conversation_id: str = "",
 ) -> None:
     """
     Creates a new quiz document in Cosmos DB when a quiz is generated.
     Stores questions with their correct answers (never sent to frontend).
+    conversation_id is stored so the submit endpoint can update the
+    conversation history message with the final submitted state.
     """
     document = {
         "id": quiz_id,
@@ -196,6 +245,7 @@ async def save_quiz(
         "total_questions": len(questions),
         "weak_areas": [],
         "results": [],
+        "conversation_id": conversation_id,
     }
 
     async with _get_client() as client:

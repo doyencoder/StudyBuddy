@@ -15,6 +15,7 @@ from app.services.doc_intelligence_service import extract_text_from_url
 from app.services.gemini_service import embed_text
 from app.services.search_service import store_chunks, create_index_if_not_exists
 from app.utils.chunking import chunk_text
+from app.services.cosmos_service import ensure_conversation, save_message
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
@@ -102,10 +103,30 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search indexing failed: {str(e)}")
 
+    # ── Persist upload confirmation to Cosmos so it survives page refresh ───
+    if conversation_id and conversation_id != "no-conversation":
+        try:
+            await ensure_conversation(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                title="",  # let chat.py title logic use first user message naturally
+            )
+            await save_message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="assistant",
+                content=(
+                    f"📎 I\'ve processed **{filename}** ({len(chunks)} chunks indexed). "
+                    f"You can now ask me questions about it, or generate a flowchart / diagram from it!"
+                ),
+            )
+        except Exception:
+            pass  # Non-critical — don\'t fail the upload over a Cosmos write
+
     return UploadResponse(
         file_id=file_id,
         filename=filename,
         blob_url=blob_url,
         chunks_stored=len(chunks),
-        message=f"Successfully processed '{filename}' — {len(chunks)} chunks indexed.",
+        message=f"Successfully processed \'{filename}\' — {len(chunks)} chunks indexed.",
     )
