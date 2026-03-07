@@ -653,22 +653,30 @@ const GoalsPage = () => {
           </div>
 
           {loadingGoals ? (
-            <div className="text-center py-12">
-              <div className="flex justify-center gap-1.5 mb-3">
-                <span
-                  className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"
-                  style={{ animationDelay: "0ms" }}
-                />
-                <span
-                  className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"
-                  style={{ animationDelay: "150ms" }}
-                />
-                <span
-                  className="w-2 h-2 bg-primary/60 rounded-full animate-bounce"
-                  style={{ animationDelay: "300ms" }}
-                />
-              </div>
-              <p className="text-sm text-muted-foreground">Loading goals...</p>
+            <div className="space-y-4">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="bg-card border border-border rounded-2xl p-5 space-y-4 animate-pulse">
+                  <div className="flex items-center justify-between">
+                    <div className="h-5 w-48 bg-secondary/60 rounded-lg" />
+                    <div className="flex gap-2">
+                      <div className="h-7 w-7 bg-secondary/40 rounded-lg" />
+                      <div className="h-7 w-7 bg-secondary/40 rounded-lg" />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <div className="h-5 w-32 bg-secondary/40 rounded-full" />
+                    <div className="h-5 w-24 bg-secondary/40 rounded-full" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between">
+                      <div className="h-3 w-28 bg-secondary/40 rounded" />
+                      <div className="h-3 w-8 bg-secondary/60 rounded" />
+                    </div>
+                    <div className="h-2 w-full bg-secondary/40 rounded-full" />
+                  </div>
+                  <div className="h-8 w-48 bg-secondary/30 rounded-xl mx-auto" />
+                </div>
+              ))}
             </div>
           ) : longTermGoals.length === 0 ? (
             <Card className="bg-card border-border border-dashed">

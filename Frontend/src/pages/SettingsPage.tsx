@@ -272,8 +272,38 @@ const SettingsPage = () => {
 
   if (loading) {
     return (
-      <div className="p-4 md:p-6 overflow-y-auto h-full flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
+        {/* Header skeleton */}
+        <div className="space-y-2">
+          <div className="h-8 w-32 bg-secondary/60 rounded-xl animate-pulse" />
+          <div className="h-4 w-56 bg-secondary/40 rounded-lg animate-pulse" />
+        </div>
+        <div className="flex gap-6">
+          {/* Sidebar skeleton */}
+          <div className="w-48 shrink-0 space-y-2">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="h-10 w-full bg-secondary/40 rounded-xl animate-pulse" />
+            ))}
+          </div>
+          {/* Content skeleton */}
+          <div className="flex-1 space-y-4">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="bg-card border border-border rounded-2xl p-6 space-y-4 animate-pulse">
+                <div className="h-5 w-24 bg-secondary/60 rounded-lg" />
+                <div className="h-px w-full bg-border" />
+                {[...Array(2)].map((_, j) => (
+                  <div key={j} className="flex items-center justify-between">
+                    <div className="space-y-1.5">
+                      <div className="h-4 w-32 bg-secondary/60 rounded" />
+                      <div className="h-3 w-48 bg-secondary/40 rounded" />
+                    </div>
+                    <div className="h-8 w-24 bg-secondary/40 rounded-lg" />
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
