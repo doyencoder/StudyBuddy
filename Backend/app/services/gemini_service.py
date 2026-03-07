@@ -309,14 +309,14 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
     if context_chunks:
         context_summary = " ".join(context_chunks[:3])[:400]
         prompt = (
-            f"Educational diagram or illustration about: {topic}. "
-            f"Based on these study notes: {context_summary}. "
-            "Style: clean infographic, white background, clearly labelled, educational, suitable for students."
-        )
+        f"Detailed anatomical and scientific illustration of: {topic}. "
+        f"Based on these study notes: {context_summary}. "
+        "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
+    )
     else:
         prompt = (
-            f"Educational diagram or illustration about: {topic}. "
-            "Style: clean infographic, white background, clearly labelled, educational, suitable for students."
+            f"Detailed anatomical and scientific illustration of: {topic}. "
+            "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
         )
 
     api_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
