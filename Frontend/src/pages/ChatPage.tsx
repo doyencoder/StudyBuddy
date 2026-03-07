@@ -1191,7 +1191,7 @@ const ChatPage = () => {
       <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff" className="hidden" onChange={handleFileChange} />
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 md:p-6 pb-2 space-y-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 md:p-6 pb-24 space-y-4">
         {messages.map((msg) => {
 
           if (msg.role === "quiz" && msg.quizData) return (
@@ -1330,7 +1330,7 @@ const ChatPage = () => {
       </div>
 
       {/* Input bar */}
-      <div className="flex-none w-full sticky bottom-0 z-20 pb-4 pt-2 px-4 bg-transparent">
+      <div className="flex-none w-full sticky bottom-0 z-20 pb-4 pt-2 px-4 bg-background/95 backdrop-blur-md">
         <div className="w-full max-w-4xl mx-auto">
           <div className={`flex items-end bg-secondary/95 backdrop-blur-md border rounded-2xl shadow-2xl px-1 py-1 transition-all duration-200 ${isListening ? "border-red-500/60 shadow-red-500/10" : "border-border/70 focus-within:border-primary/50"}`}>
             <div className="flex items-end pb-1 shrink-0">
