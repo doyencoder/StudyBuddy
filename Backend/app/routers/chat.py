@@ -30,6 +30,7 @@ class TranslateRequest(BaseModel):
 class TTSRequest(BaseModel):
     text: str
     language: str          # one of: en, hi, mr, ta, te, bn, gu, kn
+    voice_style: str = "buttery"  # one of: buttery, airy, mellow, glassy, rounded
 
 
 class InferTopicRequest(BaseModel):
@@ -259,7 +260,11 @@ async def text_to_speech(request: TTSRequest):
         raise HTTPException(status_code=400, detail="No speakable text after cleaning.")
 
     try:
-        mp3_bytes = synthesize_speech(text=clean_text, language=request.language)
+        mp3_bytes = synthesize_speech(
+            text=clean_text,
+            language=request.language,
+            voice_style=request.voice_style,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:

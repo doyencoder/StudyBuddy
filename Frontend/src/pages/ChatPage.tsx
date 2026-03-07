@@ -20,6 +20,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useAppearance } from "@/contexts/AppearanceContext";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
 mermaid.initialize({
@@ -594,6 +595,7 @@ async function parseStudyPlanInput(rawInput: string): Promise<{
 // ── Main Component ────────────────────────────────────────────────────────────
 const ChatPage = () => {
   const { language } = useLanguage();
+  const { voice } = useAppearance();
   const [messages,          setMessages]          = useState<Message[]>(INITIAL_MESSAGES);
   const [input,             setInput]             = useState("");
   const [isTyping,          setIsTyping]          = useState(false);
@@ -812,7 +814,7 @@ const ChatPage = () => {
     setLoadingAudioMsgId(msgId);
     const controller = new AbortController(); abortRef.current = controller;
     try {
-      const response = await fetch(`${API_BASE}/chat/tts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: cleanText, language: targetLang }), signal: controller.signal });
+      const response = await fetch(`${API_BASE}/chat/tts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: cleanText, language: targetLang, voice_style: voice }), signal: controller.signal });
       if (!response.ok) { const err = await response.json().catch(() => ({ detail: "TTS failed" })); throw new Error(err.detail ?? "TTS request failed"); }
       const blob = await response.blob(); const objectURL = URL.createObjectURL(blob); const audio = new Audio(objectURL);
       audioRef.current = audio;

@@ -99,6 +99,13 @@ async def _print_cors_info():
         print("  -", o)
     print("CORS configured with allow_origin_regex:", allow_origin_regex)
 
+    # Ensure settings container exists in Cosmos DB
+    try:
+        from app.services.settings_service import ensure_settings_container
+        await ensure_settings_container()
+    except Exception as e:
+        print(f"[startup] Settings container init error (non-fatal): {e}")
+
 # ── Routers ────────────────────────────────────────────────────────────────────
 from app.routers.upload import router as upload_router
 app.include_router(upload_router)
@@ -109,11 +116,13 @@ from app.routers.quiz import router as quiz_router
 from app.routers.diagrams import router as diagrams_router
 from app.routers.study_plans import router as study_plans_router
 from app.routers.goals import router as goals_router
+from app.routers.settings import router as settings_router
 app.include_router(chat_router)
 app.include_router(quiz_router)
 app.include_router(diagrams_router)
 app.include_router(study_plans_router)
 app.include_router(goals_router)
+app.include_router(settings_router)
 
 
 @app.get("/health")

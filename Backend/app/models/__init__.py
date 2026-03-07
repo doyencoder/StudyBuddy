@@ -218,3 +218,89 @@ class GoalItem(BaseModel):
 
 class GoalsListResponse(BaseModel):
     goals: List[GoalItem]
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+class NotificationSettings(BaseModel):
+    goal_reminders: bool = False
+    quiz_reminders: bool = False
+    study_streak_alerts: bool = False
+
+
+class AIPreferences(BaseModel):
+    simplified_explanations: bool = True
+    auto_generate_flashcards: bool = False
+
+
+class AppearanceSettings(BaseModel):
+    color_mode: Literal["light", "auto", "dark"] = "auto"
+    chat_font: Literal["default", "sans", "system", "dyslexic"] = "default"
+    voice: Literal["buttery", "airy", "mellow", "glassy", "rounded"] = "buttery"
+
+
+class ProfileSettings(BaseModel):
+    full_name: str = ""
+    display_name: str = ""
+
+
+class UserSettings(BaseModel):
+    user_id: str
+    profile: ProfileSettings = ProfileSettings()
+    notifications: NotificationSettings = NotificationSettings()
+    ai_preferences: AIPreferences = AIPreferences()
+    appearance: AppearanceSettings = AppearanceSettings()
+    updated_at: Optional[str] = None
+
+
+class SettingsUpdateRequest(BaseModel):
+    profile: Optional[ProfileSettings] = None
+    notifications: Optional[NotificationSettings] = None
+    ai_preferences: Optional[AIPreferences] = None
+    appearance: Optional[AppearanceSettings] = None
+
+
+class ActiveSession(BaseModel):
+    device: str
+    location: str
+    created: str
+    updated: str
+    is_current: bool = False
+
+
+class AccountInfo(BaseModel):
+    user_id: str
+    organization_id: str
+    sessions: List[ActiveSession] = []
+
+
+class ConnectorItem(BaseModel):
+    id: str
+    name: str
+    icon: str              # icon identifier for frontend
+    connected: bool = False
+    connected_at: Optional[str] = None
+
+
+class ConnectorsResponse(BaseModel):
+    connectors: List[ConnectorItem]
+
+
+class ConnectorToggleRequest(BaseModel):
+    connector_id: str
+    action: Literal["connect", "disconnect"]
+
+
+class BillingPlan(BaseModel):
+    id: str
+    name: str
+    tagline: str
+    price: str
+    period: str
+    features: List[str]
+    is_current: bool = False
+
+
+class BillingResponse(BaseModel):
+    current_plan: str
+    plans: List[BillingPlan]

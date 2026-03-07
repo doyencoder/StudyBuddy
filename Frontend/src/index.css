@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -56,6 +57,56 @@
     --info: 199 89% 48%;
     --info-foreground: 0 0% 98%;
   }
+
+  /* Light theme */
+  .light {
+    --background: 0 0% 98%;
+    --foreground: 224 10% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 224 10% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 10% 15%;
+
+    --primary: 217 91% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 14% 92%;
+    --secondary-foreground: 224 10% 25%;
+
+    --muted: 220 14% 95%;
+    --muted-foreground: 220 8% 46%;
+
+    --accent: 217 80% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 87%;
+    --input: 220 13% 90%;
+    --ring: 217 91% 55%;
+
+    --sidebar-background: 220 14% 96%;
+    --sidebar-foreground: 220 8% 46%;
+    --sidebar-primary: 217 91% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217 91% 55%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 220 13% 87%;
+    --sidebar-ring: 217 91% 55%;
+
+    --glow-primary: 217 91% 55%;
+    --surface-raised: 0 0% 100%;
+    --surface-overlay: 220 14% 96%;
+    --success: 142 71% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 5%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+  }
 }
 
 @layer base {
@@ -104,4 +155,20 @@
   .bg-surface-overlay {
     background-color: hsl(var(--surface-overlay));
   }
+}
+
+/* ── Chat font classes ────────────────────────────────────────────────────── */
+body.font-default {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+body.font-sans-custom {
+  font-family: 'Lexend', 'Segoe UI', 'Helvetica Neue', sans-serif;
+}
+body.font-system {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+body.font-dyslexic {
+  font-family: 'Lexend', 'Comic Sans MS', 'Comic Neue', cursive, sans-serif;
+  letter-spacing: 0.05em;
+  word-spacing: 0.1em;
 }

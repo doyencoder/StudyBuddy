@@ -28,6 +28,7 @@ load_dotenv()
 TTS_ENDPOINT_TEMPLATE = "https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
 
 # Map our LanguageContext codes → Azure Neural voice names
+# Default voice map (used for "buttery" style)
 VOICE_MAP: dict[str, str] = {
     "en": "en-US-JennyNeural",
     "hi": "hi-IN-SwaraNeural",
@@ -37,6 +38,62 @@ VOICE_MAP: dict[str, str] = {
     "bn": "bn-IN-TanishaaNeural",
     "gu": "gu-IN-DhwaniNeural",
     "kn": "kn-IN-SapnaNeural",
+}
+
+# Voice style variants — maps style name → per-language override voice
+# Each style uses a different Azure Neural voice for a distinct feel.
+# For Indian languages with fewer voice options, some styles may share the same voice.
+VOICE_STYLE_MAP: dict[str, dict[str, str]] = {
+    "buttery": {
+        "en": "en-US-JennyNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "mr": "mr-IN-AarohiNeural",
+        "ta": "ta-IN-PallaviNeural",
+        "te": "te-IN-ShrutiNeural",
+        "bn": "bn-IN-TanishaaNeural",
+        "gu": "gu-IN-DhwaniNeural",
+        "kn": "kn-IN-SapnaNeural",
+    },
+    "airy": {
+        "en": "en-US-AriaNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "mr": "mr-IN-AarohiNeural",
+        "ta": "ta-IN-PallaviNeural",
+        "te": "te-IN-ShrutiNeural",
+        "bn": "bn-IN-TanishaaNeural",
+        "gu": "gu-IN-DhwaniNeural",
+        "kn": "kn-IN-SapnaNeural",
+    },
+    "mellow": {
+        "en": "en-US-GuyNeural",
+        "hi": "hi-IN-MadhurNeural",
+        "mr": "mr-IN-ManoharNeural",
+        "ta": "ta-IN-ValluvarNeural",
+        "te": "te-IN-MohanNeural",
+        "bn": "bn-IN-BashkarNeural",
+        "gu": "gu-IN-NiranjanNeural",
+        "kn": "kn-IN-GaganNeural",
+    },
+    "glassy": {
+        "en": "en-US-SaraNeural",
+        "hi": "hi-IN-SwaraNeural",
+        "mr": "mr-IN-AarohiNeural",
+        "ta": "ta-IN-PallaviNeural",
+        "te": "te-IN-ShrutiNeural",
+        "bn": "bn-IN-TanishaaNeural",
+        "gu": "gu-IN-DhwaniNeural",
+        "kn": "kn-IN-SapnaNeural",
+    },
+    "rounded": {
+        "en": "en-US-DavisNeural",
+        "hi": "hi-IN-MadhurNeural",
+        "mr": "mr-IN-ManoharNeural",
+        "ta": "ta-IN-ValluvarNeural",
+        "te": "te-IN-MohanNeural",
+        "bn": "bn-IN-BashkarNeural",
+        "gu": "gu-IN-NiranjanNeural",
+        "kn": "kn-IN-GaganNeural",
+    },
 }
 
 # Locale codes that match each voice (required in SSML)
@@ -52,14 +109,16 @@ LOCALE_MAP: dict[str, str] = {
 }
 
 
-def synthesize_speech(text: str, language: str) -> bytes:
+def synthesize_speech(text: str, language: str, voice_style: str = "buttery") -> bytes:
     """
     Converts text to speech using Azure Neural TTS.
 
     Args:
-        text:     The plain text to speak. Markdown symbols should be stripped
-                  before calling this (the router does that).
-        language: One of our LanguageContext codes: en, hi, mr, ta, te, bn, gu, kn.
+        text:        The plain text to speak. Markdown symbols should be stripped
+                     before calling this (the router does that).
+        language:    One of our LanguageContext codes: en, hi, mr, ta, te, bn, gu, kn.
+        voice_style: One of: buttery, airy, mellow, glassy, rounded.
+                     Maps to different Azure Neural voices for variety.
 
     Returns:
         Raw MP3 bytes ready to stream back to the browser.
@@ -76,7 +135,9 @@ def synthesize_speech(text: str, language: str) -> bytes:
             "AZURE_SPEECH_KEY and AZURE_SPEECH_REGION must be set in .env"
         )
 
-    voice  = VOICE_MAP.get(language)
+    # Select voice based on style + language, fallback to default map
+    style_voices = VOICE_STYLE_MAP.get(voice_style, VOICE_STYLE_MAP["buttery"])
+    voice  = style_voices.get(language) or VOICE_MAP.get(language)
     locale = LOCALE_MAP.get(language)
 
     if not voice or not locale:
