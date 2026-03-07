@@ -85,7 +85,7 @@ const AppSidebar = () => {
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border">
-      <SidebarContent className="pt-2">
+      <SidebarContent className="pt-2 flex flex-col h-full overflow-hidden">
 
         {/* Sidebar toggle button — lives inside the sidebar itself */}
         <div className={`flex ${collapsed ? "justify-center" : "justify-end"} px-2 pb-1`}>
@@ -136,12 +136,12 @@ const AppSidebar = () => {
 
         {/* Recent Chats Section */}
         {!collapsed && (
-          <SidebarGroup>
-            <SidebarGroupLabel className="text-xs text-muted-foreground uppercase tracking-wider px-3">
+          <SidebarGroup className="flex flex-col flex-1 overflow-hidden min-h-0">
+            <SidebarGroupLabel className="text-xs text-muted-foreground uppercase tracking-wider px-3 shrink-0">
               Your chats
             </SidebarGroupLabel>
-            <SidebarGroupContent>
-              <div className="px-2 mb-2">
+            <SidebarGroupContent className="flex flex-col flex-1 overflow-hidden min-h-0">
+              <div className="px-2 mb-2 shrink-0">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -151,8 +151,9 @@ const AppSidebar = () => {
                   <Plus className="w-3.5 h-3.5" />
                   New chat
                 </Button>
+                <hr className="border-t border-sidebar-border mt-2" />
               </div>
-              <SidebarMenu>
+              <SidebarMenu className="overflow-y-auto flex-1">
                 {conversations.map((chat) => {
                   const isActive =
                     activeConversationId === chat.conversation_id;
