@@ -18,7 +18,6 @@ import {
 import { toast } from "sonner";
 
 const USER_ID = "student-001";
-const DISPLAY_NAME = "Leo"; // later here name will be rendered after auth is done
 const API_BASE = "http://localhost:8000";
 
 interface QuizHistoryItem {
@@ -36,6 +35,23 @@ const DashboardPage = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [quizzes, setQuizzes] = useState<QuizHistoryItem[]>([]);
+  const [displayName, setDisplayName] = useState("");
+
+  // ── Fetch display name from settings ──────────────────────────────────────
+  useEffect(() => {
+    const fetchDisplayName = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`);
+        if (res.ok) {
+          const data = await res.json();
+          setDisplayName(data.profile?.display_name || "");
+        }
+      } catch {
+        // silently ignore – displayName stays blank
+      }
+    };
+    fetchDisplayName();
+  }, []);
 
   // ── Fetch quiz history on mount ───────────────────────────────────────────
   useEffect(() => {
@@ -262,7 +278,7 @@ const DashboardPage = () => {
   return (
     <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-foreground">Welcome back, {DISPLAY_NAME}! 👋</h1>
+        <h1 className="text-2xl font-bold text-foreground">Welcome back{displayName ? `, ${displayName}` : ""}! 👋</h1>
         <p className="text-muted-foreground mt-1">
           Here's your learning progress at a glance.
         </p>
