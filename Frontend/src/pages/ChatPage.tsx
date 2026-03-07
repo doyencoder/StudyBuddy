@@ -774,6 +774,7 @@ const ChatPage = () => {
   const [translatedContent,   setTranslatedContent]   = useState<Record<string, string>>({});
   const [translatedLang,      setTranslatedLang]      = useState<Record<string, string>>({});
   const [showTranslatePicker, setShowTranslatePicker] = useState<string | null>(null);
+  const [translatePickerUp, setTranslatePickerUp] = useState(false);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -1300,14 +1301,19 @@ const ChatPage = () => {
 
                     <div className="relative">
                       <Button variant="ghost" size="sm"
-                        onClick={() => setShowTranslatePicker(showTranslatePicker === msg.id ? null : msg.id)}
+                        onClick={(e) => {
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                          const spaceBelow = window.innerHeight - rect.bottom;
+                          setTranslatePickerUp(spaceBelow < 280);
+                          setShowTranslatePicker(showTranslatePicker === msg.id ? null : msg.id);
+                        }}
                         disabled={translatingMsgId === msg.id || !!regeneratingMsgId}
                         className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40">
                         <Globe className="w-3.5 h-3.5" />
                         <span className="hidden sm:inline">{translatingMsgId === msg.id ? "Translating..." : "Translate"}</span>
                       </Button>
                       {showTranslatePicker === msg.id && (
-                        <div className="absolute bottom-9 left-0 z-50 bg-card border border-border rounded-xl shadow-xl p-1.5 min-w-[140px]">
+                        <div className={`absolute ${translatePickerUp ? "bottom-9" : "top-9"} right-0 z-50 bg-card border border-border rounded-xl shadow-xl p-1.5 min-w-[140px]`}>
                           {[{ code: "en", label: "English" }, { code: "hi", label: "हिन्दी" }, { code: "mr", label: "मराठी" }, { code: "ta", label: "தமிழ்" }, { code: "te", label: "తెలుగు" }, { code: "bn", label: "বাংলা" }, { code: "gu", label: "ગુજરાતી" }, { code: "kn", label: "ಕನ್ನಡ" }].map((lang) => (
                             <button key={lang.code} onClick={() => translateMessage(msg.id, msg.content, lang.code)}
                               className="w-full text-left text-xs px-3 py-2 rounded-lg text-foreground hover:bg-primary/10 hover:text-primary transition-colors">{lang.label}</button>
