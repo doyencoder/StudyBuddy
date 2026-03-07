@@ -298,7 +298,12 @@ const QuizCard = ({ messageId, quizData, onQuizComplete }: { messageId: string; 
             disabled={!allAnswered || isSubmitting}
             className="text-xs bg-primary hover:bg-primary/90 disabled:opacity-40"
           >
-            {isSubmitting ? "Submitting..." : "Submit Quiz"}
+            {isSubmitting ? (
+              <span className="flex items-center gap-2">
+                <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                Submitting...
+              </span>
+            ) : "Submit Quiz"}
           </Button>
         )}
       </div>
@@ -1131,7 +1136,9 @@ const ChatPage = () => {
       ]);
 
       // Parse the reply for missing info via LLM
+      setIsTyping(true);
       const parsed = await parseStudyPlanInput(userMessage);
+      setIsTyping(false);
 
       if (!pending.topic && parsed.topic) pending.topic = parsed.topic;
       if (!pending.weeks && parsed.weeks) pending.weeks = parsed.weeks;
@@ -1172,24 +1179,28 @@ const ChatPage = () => {
     if (isQuiz) { await generateQuiz(topic, numQuestions); return; }
 
     // ── Study plan intent (smart parsing) ────────────────────────────────
+    // ── Study plan intent (smart parsing) ────────────────────────────────
     if (/^create study plan/i.test(userMessage)) {
       const rawMatch = userMessage.match(/^create study plan(?:\s+for)?:?\s*(.*)/i);
       const rawInput = rawMatch?.[1]?.trim() || "";
+
+      // Show user message IMMEDIATELY before any async work
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), role: "user" as const, content: userMessage, timestamp: new Date() },
+      ]);
+
+      setIsTyping(true);
       const parsed = await parseStudyPlanInput(rawInput);
+      setIsTyping(false);
 
       const hasValidTopic = !!parsed.topic && parsed.topic.length > 2 && !/^\d+$/.test(parsed.topic);
       const hasWeeks = parsed.weeks !== null && parsed.weeks > 0;
 
       if (hasValidTopic && hasWeeks) {
-        await generateStudyPlan(parsed.topic, parsed.weeks!, parsed.hoursPerWeek || 8);
+        await generateStudyPlan(parsed.topic, parsed.weeks!, parsed.hoursPerWeek || 8, true);
         return;
       }
-
-      // Show user message first
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now().toString(), role: "user" as const, content: userMessage, timestamp: new Date() },
-      ]);
 
       if (hasValidTopic && !hasWeeks) {
         setPendingStudyPlan({ topic: parsed.topic, hoursPerWeek: parsed.hoursPerWeek || undefined });
