@@ -312,3 +312,55 @@ async def toggle_connector_endpoint(
     except Exception as e:
         print(f"[settings/connectors/toggle] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── GET /settings/dismissed-weak-topics ──────────────────────────────────────
+
+@router.get("/dismissed-weak-topics")
+async def get_dismissed_weak_topics(user_id: str = Query(...)):
+    """Returns the list of weak topic names the user has dismissed."""
+    try:
+        settings = await get_settings(user_id)
+        return {"dismissed_topics": settings.get("dismissed_weak_topics", [])}
+    except Exception as e:
+        print(f"[settings/dismissed-weak-topics/get] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── POST /settings/dismissed-weak-topics ─────────────────────────────────────
+
+class DismissWeakTopicRequest(BaseModel):
+    topic: str
+
+
+@router.post("/dismissed-weak-topics")
+async def dismiss_weak_topic(
+    request: DismissWeakTopicRequest,
+    user_id: str = Query(...),
+):
+    """Add a topic to the user's dismissed weak topics list."""
+    try:
+        settings = await get_settings(user_id)
+        dismissed = settings.get("dismissed_weak_topics", [])
+        if request.topic not in dismissed:
+            dismissed.append(request.topic)
+        # Store directly via update_settings won't handle custom fields,
+        # so we use the raw cosmos approach via settings_service update.
+        from app.services.settings_service import _get_client, DB_NAME, SETTINGS_CONTAINER
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError
+        async with _get_client() as client:
+            db = client.get_database_client(DB_NAME)
+            container = db.get_container_client(SETTINGS_CONTAINER)
+            try:
+                item = await container.read_item(item=user_id, partition_key=user_id)
+            except CosmosResourceNotFoundError:
+                item = {
+                    "id": user_id,
+                    "user_id": user_id,
+                }
+            item["dismissed_weak_topics"] = dismissed
+            await container.upsert_item(body=item)
+        return {"dismissed_topics": dismissed}
+    except Exception as e:
+        print(f"[settings/dismissed-weak-topics/post] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

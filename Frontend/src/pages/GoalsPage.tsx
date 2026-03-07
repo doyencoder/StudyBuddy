@@ -774,12 +774,27 @@ const GoalsPage = () => {
                 type="number"
                 min={1}
                 max={52}
-                value={createForm.numWeeks}
+                value={createForm.numWeeks === 0 ? "" : createForm.numWeeks}
                 onChange={(e) => {
-                  const n = Math.max(1, Math.min(52, parseInt(e.target.value) || 1));
+                  const raw = e.target.value;
+                  if (raw === "") {
+                    setCreateForm((f) => ({ ...f, numWeeks: 0 }));
+                    return;
+                  }
+                  const n = parseInt(raw);
+                  if (isNaN(n)) return;
                   setCreateForm((f) => {
                     const newWeeklyTasks = [...f.weeklyTasks];
-                    // Expand or shrink weeks array
+                    const clamped = Math.max(0, Math.min(52, n));
+                    while (newWeeklyTasks.length < clamped) newWeeklyTasks.push([""]);
+                    while (newWeeklyTasks.length > clamped) newWeeklyTasks.pop();
+                    return { ...f, numWeeks: clamped, weeklyTasks: newWeeklyTasks };
+                  });
+                }}
+                onBlur={() => {
+                  setCreateForm((f) => {
+                    const n = f.numWeeks < 1 ? 1 : f.numWeeks > 52 ? 52 : f.numWeeks;
+                    const newWeeklyTasks = [...f.weeklyTasks];
                     while (newWeeklyTasks.length < n) newWeeklyTasks.push([""]);
                     while (newWeeklyTasks.length > n) newWeeklyTasks.pop();
                     return { ...f, numWeeks: n, weeklyTasks: newWeeklyTasks };

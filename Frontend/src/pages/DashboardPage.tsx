@@ -1,8 +1,19 @@
 import { useState, useEffect, useMemo } from "react";
-import { BookOpen, Brain, Target, TrendingUp, MessageSquare, ClipboardList, AlertTriangle } from "lucide-react";
+import { BookOpen, Brain, Target, TrendingUp, MessageSquare, ClipboardList, AlertTriangle, CalendarDays, ChevronDown, ChevronUp, Clock, Save, Loader2, CheckCircle2, Sparkles } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { useNavigate } from "react-router-dom";
 import {
   LineChart,
@@ -20,6 +31,25 @@ import { toast } from "sonner";
 const USER_ID = "student-001";
 const API_BASE = "http://localhost:8000";
 
+// ── Types for study plan ────────────────────────────────────────────────────
+
+interface WeekPlanData {
+  week_number: number;
+  start_date: string;
+  end_date: string;
+  tasks: string[];
+  estimate_hours?: number;
+}
+
+interface StudyPlanData {
+  plan_id: string;
+  title: string;
+  start_date: string;
+  end_date: string;
+  weeks: WeekPlanData[];
+  summary: string;
+}
+
 interface QuizHistoryItem {
   quiz_id: string;
   topic: string;
@@ -31,11 +61,144 @@ interface QuizHistoryItem {
   weak_areas: string[];
 }
 
+// ── Dialog step type ────────────────────────────────────────────────────────
+type ImproveStep = "input" | "generating" | "plan" | "saving-goal" | "ask-remove" | "done";
+
 const DashboardPage = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [quizzes, setQuizzes] = useState<QuizHistoryItem[]>([]);
   const [displayName, setDisplayName] = useState("");
+
+  // ── Improve dialog state ──────────────────────────────────────────────────
+  const [improveDialogOpen, setImproveDialogOpen] = useState(false);
+  const [improveStep, setImproveStep] = useState<ImproveStep>("input");
+  const [improveTopic, setImproveTopic] = useState("");
+  const [improveWeeks, setImproveWeeks] = useState(4);
+  const [generatedPlan, setGeneratedPlan] = useState<StudyPlanData | null>(null);
+  const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([1]));
+  const [goalSaved, setGoalSaved] = useState(false);
+  const [dismissedTopics, setDismissedTopics] = useState<string[]>([]);
+
+  // ── Fetch dismissed topics ────────────────────────────────────────────────
+  useEffect(() => {
+    const fetchDismissed = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`);
+        if (res.ok) {
+          const data = await res.json();
+          setDismissedTopics(data.dismissed_topics || []);
+        }
+      } catch {
+        // silently ignore
+      }
+    };
+    fetchDismissed();
+  }, []);
+
+  // ── Improve dialog handlers ───────────────────────────────────────────────
+  const openImproveDialog = (topic: string) => {
+    setImproveTopic(topic);
+    setImproveWeeks(4);
+    setImproveStep("input");
+    setGeneratedPlan(null);
+    setGoalSaved(false);
+    setExpandedWeeks(new Set([1]));
+    setImproveDialogOpen(true);
+  };
+
+  const handleGeneratePlan = async () => {
+    if (!improveTopic.trim()) {
+      toast.error("Please enter a topic.");
+      return;
+    }
+    if (improveWeeks < 1 || improveWeeks > 52) {
+      toast.error("Weeks must be between 1 and 52.");
+      return;
+    }
+    setImproveStep("generating");
+    try {
+      const res = await fetch(`${API_BASE}/study_plans/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          conversation_id: null,
+          topic: improveTopic.trim(),
+          timeline_weeks: improveWeeks,
+          preferences: { hours_per_week: 8, focus_days: null },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to generate study plan");
+      }
+      const plan: StudyPlanData = await res.json();
+      setGeneratedPlan(plan);
+      setImproveStep("plan");
+    } catch (err: any) {
+      toast.error(`Failed to generate plan: ${err.message}`);
+      setImproveStep("input");
+    }
+  };
+
+  const handleSaveAsGoal = async () => {
+    if (!generatedPlan) return;
+    setImproveStep("saving-goal");
+    try {
+      const resp = await fetch(`${API_BASE}/goals/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          title: generatedPlan.title,
+          start_date: generatedPlan.start_date,
+          end_date: generatedPlan.end_date,
+          weekly_plan: generatedPlan.weeks,
+          progress: 0,
+          reminder: null,
+        }),
+      });
+      if (!resp.ok) throw new Error("Failed to save goal");
+      setGoalSaved(true);
+      toast.success("Study plan saved as a goal!");
+      setImproveStep("ask-remove");
+    } catch (err: any) {
+      toast.error(`Could not save goal: ${err.message}`);
+      setImproveStep("plan");
+    }
+  };
+
+  const handleSkipSaveGoal = () => {
+    setImproveStep("ask-remove");
+  };
+
+  const handleRemoveFromWeakTopics = async (shouldRemove: boolean) => {
+    if (shouldRemove) {
+      try {
+        await fetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ topic: improveTopic.trim() }),
+        });
+        setDismissedTopics((prev) => [...prev, improveTopic.trim()]);
+        toast.success("Topic removed from weak topics!");
+      } catch {
+        toast.error("Failed to dismiss topic.");
+      }
+    }
+    setImproveStep("done");
+    setImproveDialogOpen(false);
+  };
+
+  const toggleWeek = (weekNum: number) => {
+    setExpandedWeeks((prev) => {
+      const next = new Set(prev);
+      if (next.has(weekNum)) next.delete(weekNum);
+      else next.add(weekNum);
+      return next;
+    });
+  };
 
   // ── Fetch display name from settings ──────────────────────────────────────
   useEffect(() => {
@@ -244,10 +407,10 @@ const DashboardPage = () => {
           scores.reduce((a, b) => a + b, 0) / scores.length
         ),
       }))
-      .filter((t) => t.accuracy < 70)
+      .filter((t) => t.accuracy < 70 && !dismissedTopics.includes(t.topic))
       .sort((a, b) => a.accuracy - b.accuracy)
       .slice(0, 3);
-  }, [submittedQuizzes]);
+  }, [submittedQuizzes, dismissedTopics]);
 
   // ── Loading skeleton ──────────────────────────────────────────────────────
   if (loading) {
@@ -563,9 +726,7 @@ const DashboardPage = () => {
                   size="sm"
                   variant="ghost"
                   className="text-xs text-primary hover:bg-primary/10 shrink-0"
-                  onClick={() =>
-                    toast.info("Improvement plan generation coming soon!")
-                  }
+                  onClick={() => openImproveDialog(topic.topic)}
                 >
                   Improve
                 </Button>
@@ -583,6 +744,222 @@ const DashboardPage = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Improve Weak Topic Dialog ──────────────────────────────────────── */}
+      <Dialog open={improveDialogOpen} onOpenChange={(open) => {
+        if (!open && improveStep !== "generating" && improveStep !== "saving-goal") {
+          setImproveDialogOpen(false);
+        }
+      }}>
+        <DialogContent className="sm:max-w-[600px] max-h-[85vh] overflow-y-auto">
+          {/* Step 1: Input topic & weeks */}
+          {improveStep === "input" && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-primary" />
+                  Create Improvement Plan
+                </DialogTitle>
+                <DialogDescription>
+                  Generate a study plan to strengthen your weak topic. You can edit the topic and choose the duration.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="improve-topic">Topic</Label>
+                  <Input
+                    id="improve-topic"
+                    value={improveTopic}
+                    onChange={(e) => setImproveTopic(e.target.value)}
+                    placeholder="Enter the topic you want to improve"
+                    className="bg-background border-border"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="improve-weeks">Number of weeks</Label>
+                  <Input
+                    id="improve-weeks"
+                    type="number"
+                    min={1}
+                    max={52}
+                    value={improveWeeks === 0 ? "" : improveWeeks}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === "") { setImproveWeeks(0); return; }
+                      const n = parseInt(raw);
+                      if (!isNaN(n)) setImproveWeeks(n);
+                    }}
+                    onBlur={() => {
+                      if (improveWeeks < 1) setImproveWeeks(1);
+                      else if (improveWeeks > 52) setImproveWeeks(52);
+                    }}
+                    placeholder="e.g. 4"
+                    className="bg-background border-border w-32"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    How many weeks should the study plan cover? (1–52)
+                  </p>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setImproveDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleGeneratePlan} className="gap-2">
+                  <CalendarDays className="w-4 h-4" />
+                  Generate Study Plan
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {/* Step 2: Generating spinner */}
+          {improveStep === "generating" && (
+            <div className="flex flex-col items-center justify-center py-12 gap-4">
+              <Loader2 className="w-10 h-10 text-primary animate-spin" />
+              <div className="text-center">
+                <p className="text-sm font-medium text-foreground">Generating your study plan...</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Creating a {improveWeeks}-week plan for "{improveTopic}"
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Show generated plan */}
+          {improveStep === "plan" && generatedPlan && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <CalendarDays className="w-5 h-5 text-primary" />
+                  {generatedPlan.title}
+                </DialogTitle>
+                <DialogDescription>
+                  Your improvement plan is ready! Review it below and save it as a goal.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                {/* Overview badges */}
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline" className="text-xs border-primary/30 text-primary bg-primary/10">
+                    {generatedPlan.weeks.length} weeks
+                  </Badge>
+                  <Badge variant="outline" className="text-xs border-border text-muted-foreground">
+                    {generatedPlan.start_date} → {generatedPlan.end_date}
+                  </Badge>
+                  {(() => {
+                    const totalH = generatedPlan.weeks.reduce((s, w) => s + (w.estimate_hours || 0), 0);
+                    return totalH > 0 ? (
+                      <Badge variant="outline" className="text-xs border-border text-muted-foreground">
+                        <Clock className="w-3 h-3 mr-1" />
+                        ~{totalH}h total
+                      </Badge>
+                    ) : null;
+                  })()}
+                </div>
+
+                {/* Summary */}
+                {generatedPlan.summary && (
+                  <p className="text-xs text-muted-foreground bg-secondary/40 rounded-lg p-3">
+                    {generatedPlan.summary}
+                  </p>
+                )}
+
+                {/* Weekly breakdown */}
+                <div className="space-y-2">
+                  {generatedPlan.weeks.map((week) => (
+                    <div key={week.week_number} className="border border-border rounded-xl overflow-hidden">
+                      <button
+                        onClick={() => toggleWeek(week.week_number)}
+                        className="w-full flex items-center justify-between px-4 py-2.5 bg-secondary/30 hover:bg-secondary/50 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-foreground">Week {week.week_number}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {week.start_date} – {week.end_date}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {week.estimate_hours && (
+                            <span className="text-xs text-muted-foreground">{week.estimate_hours}h</span>
+                          )}
+                          {expandedWeeks.has(week.week_number)
+                            ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+                            : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                        </div>
+                      </button>
+                      {expandedWeeks.has(week.week_number) && (
+                        <div className="px-4 py-3 space-y-1.5">
+                          {week.tasks.map((task, i) => (
+                            <div key={i} className="flex items-start gap-2">
+                              <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 shrink-0" />
+                              <span className="text-xs text-foreground">{task}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter className="flex-col sm:flex-row gap-2">
+                <Button variant="outline" onClick={handleSkipSaveGoal} className="gap-2">
+                  Skip
+                </Button>
+                <Button onClick={handleSaveAsGoal} className="gap-2">
+                  <Save className="w-4 h-4" />
+                  Save as Goal
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {/* Step 4: Saving goal spinner */}
+          {improveStep === "saving-goal" && (
+            <div className="flex flex-col items-center justify-center py-12 gap-4">
+              <Loader2 className="w-10 h-10 text-primary animate-spin" />
+              <p className="text-sm font-medium text-foreground">Saving to your goals...</p>
+            </div>
+          )}
+
+          {/* Step 5: Ask to remove from weak topics */}
+          {improveStep === "ask-remove" && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-green-500" />
+                  {goalSaved ? "Study plan saved!" : "Study plan created!"}
+                </DialogTitle>
+                <DialogDescription>
+                  {goalSaved
+                    ? `Your improvement plan for "${improveTopic}" has been saved to your Goals.`
+                    : `Your improvement plan for "${improveTopic}" is ready.`
+                  }
+                </DialogDescription>
+              </DialogHeader>
+              <div className="py-6">
+                <div className="bg-secondary/50 rounded-xl p-4 text-center space-y-3">
+                  <p className="text-sm text-foreground font-medium">
+                    Would you like to remove "{improveTopic}" from your weak topics?
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    If you remove it, the next weak topic will take its place.
+                  </p>
+                </div>
+              </div>
+              <DialogFooter className="flex-col sm:flex-row gap-2">
+                <Button variant="outline" onClick={() => handleRemoveFromWeakTopics(false)}>
+                  No, keep it
+                </Button>
+                <Button onClick={() => handleRemoveFromWeakTopics(true)} className="gap-2">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Yes, remove it
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
