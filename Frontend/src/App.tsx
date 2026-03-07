@@ -12,6 +12,7 @@ import QuizzesPage from "@/pages/QuizzesPage";
 import GoalsPage from "@/pages/GoalsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import ImagesPage from "@/pages/ImagesPage";
+import LandingPage from "@/pages/LandingPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -21,22 +22,22 @@ const App = () => (
     <TooltipProvider>
       <LanguageProvider>
         <AppearanceProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            <Route element={<AppLayout />}>
-              <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/images" element={<ImagesPage />} />
-              <Route path="/quizzes" element={<QuizzesPage />} />
-              <Route path="/goals" element={<GoalsPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Route>
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
+          <Toaster />
+          <Sonner />
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<LandingPage />} />
+              <Route element={<AppLayout />}>
+                <Route path="/chat" element={<ChatPage />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/images" element={<ImagesPage />} />
+                <Route path="/quizzes" element={<QuizzesPage />} />
+                <Route path="/goals" element={<GoalsPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Route>
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </BrowserRouter>
         </AppearanceProvider>
       </LanguageProvider>
     </TooltipProvider>
