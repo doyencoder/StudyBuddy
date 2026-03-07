@@ -7,14 +7,17 @@ from pydantic import BaseModel
 from typing import List
 
 from app.models import ChatRequest, ChatHistoryResponse, ChatMessage
-from app.services.gemini_service import embed_query, chat_stream, infer_topic_from_messages
-from app.services.search_service import retrieve_chunks
+from app.services.gemini_service import embed_query, chat_stream, infer_topic_from_messages, embed_text
+from app.services.search_service import retrieve_chunks, store_chunks, create_index_if_not_exists
+from app.services.doc_intelligence_service import extract_text_from_url
+from app.utils.chunking import chunk_text
 from app.services.cosmos_service import (
     create_conversation,
     save_message,
     get_messages,
     list_conversations,
 )
+import uuid
 from app.services.translator_service import translate_text
 from app.services.tts_service import synthesize_speech
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -70,11 +73,24 @@ async def chat_message(request: ChatRequest):
     # separately as `question` and appended last inside chat_stream().
     prior_messages = await get_messages(conversation_id)
 
+    # If attachments are present, persist them as JSON so history can restore them
+    if request.attachments:
+        user_content = json.dumps({
+            "__type": "user_with_attachments",
+            "text": request.message,
+            "attachments": [
+                {"name": a.name, "blob_url": a.blob_url, "file_type": a.file_type}
+                for a in request.attachments
+            ]
+        })
+    else:
+        user_content = request.message
+
     await save_message(
         conversation_id=conversation_id,
         user_id=request.user_id,
         role="user",
-        content=request.message,
+        content=user_content,
     )
 
     try:
@@ -107,14 +123,44 @@ async def chat_message(request: ChatRequest):
 
     async def event_stream():
         full_reply = ""
+        active_context_chunks = context_chunks
 
         meta = json.dumps({"type": "meta", "conversation_id": conversation_id})
         yield f"data: {meta}\n\n"
 
+        # ── If a blob_url is attached, run full RAG pipeline now ─────────────
+        if request.blob_url and request.filename:
+            try:
+                yield f"data: {json.dumps({'type': 'status', 'content': 'reading_document'})}\n\n"
+
+                extracted_text = extract_text_from_url(request.blob_url)
+                if extracted_text.strip():
+                    chunks = chunk_text(extracted_text)
+                    embeddings = [embed_text(chunk) for chunk in chunks]
+                    create_index_if_not_exists()
+                    file_id = str(uuid.uuid4())
+                    store_chunks(
+                        chunks=chunks,
+                        embeddings=embeddings,
+                        user_id=request.user_id,
+                        conversation_id=conversation_id,
+                        file_id=file_id,
+                        filename=request.filename,
+                    )
+                    # Re-retrieve now that chunks are indexed
+                    q_emb = embed_query(request.message)
+                    active_context_chunks = retrieve_chunks(q_emb, request.user_id, conversation_id, top_k=5)
+                    if not active_context_chunks:
+                        active_context_chunks = retrieve_chunks(q_emb, request.user_id, conversation_id, top_k=5, score_threshold=0.5)
+
+                yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+
         try:
             for chunk in chat_stream(
                 question=request.message,
-                context_chunks=context_chunks,
+                context_chunks=active_context_chunks,
                 history=prior_messages,
             ):
                 full_reply += chunk
@@ -206,6 +252,13 @@ async def get_conversations(user_id: str = Query(...)):
         # Use first 45 chars of that message as the title
         if first_user_msg:
             raw_title = first_user_msg.get("content", "Untitled Chat")
+            # If content is a user_with_attachments JSON, extract just the text
+            try:
+                if '"__type"' in raw_title and '"user_with_attachments"' in raw_title:
+                    parsed = json.loads(raw_title)
+                    raw_title = parsed.get("text", "") or parsed.get("attachments", [{}])[0].get("name", "Untitled Chat")
+            except Exception:
+                pass
             title = raw_title[:45] + ("..." if len(raw_title) > 45 else "")
         elif conv.get("title"):
             title = conv["title"]

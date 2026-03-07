@@ -23,7 +23,7 @@ const App = () => (
       <LanguageProvider>
         <AppearanceProvider>
           <Toaster />
-          <Sonner />
+          <Sonner position="top-center" />
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<LandingPage />} />

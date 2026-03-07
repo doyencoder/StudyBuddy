@@ -19,6 +19,34 @@ from app.services.cosmos_service import ensure_conversation, save_message
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
+
+@router.post("/blob-only")
+async def upload_blob_only(
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+):
+    """
+    Lightweight upload — stores file in Azure Blob only.
+    Returns blob_url immediately. No text extraction or indexing.
+    The full RAG pipeline runs later inside /chat/message when the user sends their query.
+    """
+    filename = file.filename or "upload"
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File type '.{extension}' not supported.")
+
+    file_bytes = await file.read()
+    size_mb = len(file_bytes) / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        raise HTTPException(status_code=400, detail=f"File size {size_mb:.1f} MB exceeds {MAX_FILE_SIZE_MB} MB limit.")
+
+    try:
+        blob_info = upload_file_to_blob(file_bytes, filename, user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Blob upload failed: {str(e)}")
+
+    return {"blob_url": blob_info["blob_url"], "filename": filename}
+
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "webp", "tiff"}
 MAX_FILE_SIZE_MB = 20
 

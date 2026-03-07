@@ -97,6 +97,7 @@ interface ImageData {
 interface Message {
   id: string;
   role: "user" | "assistant" | "quiz" | "diagram" | "study_plan" | "image";
+  attachments?: { name: string; blobUrl: string; fileType: "image" | "pdf" | "document" }[];
   content: string;
   quizData?: QuizData;
   diagramData?: DiagramData;
@@ -666,6 +667,9 @@ const ChatPage = () => {
   const [input,             setInput]             = useState("");
   const [isTyping,          setIsTyping]          = useState(false);
   const [isUploading,       setIsUploading]       = useState(false);
+  const [attachedFiles,     setAttachedFiles]     = useState<{ id: string; name: string; status: "uploading" | "ready" | "error"; blobUrl: string; fileType: "image" | "pdf" | "document" }[]>([]);
+  const [isReadingDoc,      setIsReadingDoc]      = useState(false);
+  const [isDragging,        setIsDragging]        = useState(false);
   const [conversationId,    setConversationId]    = useState<string | null>(null);
   const [pendingStudyPlan, setPendingStudyPlan] = useState<{
     topic?: string;
@@ -797,6 +801,24 @@ const ChatPage = () => {
               timestamp: new Date(m.timestamp),
             };
           }
+          // Detect user messages with attachments
+          if (m.role === "user" && typeof m.content === "string" && m.content.includes('"__type"') && m.content.includes('"user_with_attachments"')) {
+            try {
+              const parsed = JSON.parse(m.content);
+              return {
+                id: m.id,
+                role: "user" as const,
+                content: parsed.text ?? "",
+                attachments: (parsed.attachments ?? []).map((a: any) => ({
+                  name: a.name,
+                  blobUrl: a.blob_url,
+                  fileType: a.file_type as "image" | "pdf" | "document",
+                })),
+                timestamp: new Date(m.timestamp),
+              };
+            } catch { /* fall through to default */ }
+          }
+
           // Default: regular text message
           return {
             id: m.id,
@@ -1168,8 +1190,10 @@ const ChatPage = () => {
 
   // ── sendMessage ───────────────────────────────────────────────────────────────
   const sendMessage = async () => {
-    if (!input.trim() || isTyping) return;
+    if ((!input.trim() && !attachedFiles.some(f => f.status === "ready")) || isTyping) return;
     const userMessage = input.trim(); setInput("");
+    const sentFiles = attachedFiles.filter(f => f.status === "ready");
+    setAttachedFiles([]);
 
     // ── Handle pending study plan clarification ──────────────────────────
     if (pendingStudyPlan) {
@@ -1280,11 +1304,23 @@ const ChatPage = () => {
 
     const userMsgId = generateUUID();
     const aiMsgId   = generateUUID();
-    setMessages((prev) => [...prev, { id: userMsgId, role: "user", content: userMessage, timestamp: new Date() }]);
+    
+    setMessages((prev) => [...prev, {
+      id: userMsgId,
+      role: "user",
+      content: userMessage,
+      attachments: sentFiles.map(f => ({ name: f.name, blobUrl: f.blobUrl, fileType: getFileType(f.name) })),
+      timestamp: new Date()
+    }]);
     setIsTyping(true);
     let messageAdded = false;
     try {
-      const response = await fetch(`${API_BASE}/chat/message`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: USER_ID, conversation_id: conversationId, message: userMessage }) });
+      const primaryFile = sentFiles[0];
+      const filePayload = primaryFile ? { blob_url: primaryFile.blobUrl, filename: primaryFile.name } : {};
+      const attachmentsPayload = sentFiles.length > 0 ? {
+        attachments: sentFiles.map(f => ({ name: f.name, blob_url: f.blobUrl, file_type: f.fileType ?? getFileType(f.name) }))
+      } : {};
+      const response = await fetch(`${API_BASE}/chat/message`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: USER_ID, conversation_id: conversationId, message: userMessage, ...filePayload, ...attachmentsPayload }) });
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
       const reader = response.body!.getReader(); const decoder = new TextDecoder();
       while (true) {
@@ -1307,6 +1343,9 @@ const ChatPage = () => {
             if (!messageAdded) { setMessages((prev) => [...prev, { id: aiMsgId, role: "assistant", content: parsed.content!, timestamp: new Date() }]); messageAdded = true; }
             else setMessages((prev) => prev.map((m) => m.id === aiMsgId ? { ...m, content: m.content + parsed.content } : m));
           }
+          if (parsed.type === "status") {
+            setIsReadingDoc(parsed.content === "reading_document");
+          }
           if (parsed.type === "error") { toast.error(`AI error: ${parsed.content}`); setIsTyping(false); break; }
         }
       }
@@ -1314,20 +1353,46 @@ const ChatPage = () => {
     finally { setIsTyping(false); }
   };
 
+  const processFiles = async (files: File[]) => {
+    if (!files.length) return;
+    const currentCount = attachedFiles.length;
+    const availableSlots = 5 - currentCount;
+    if (availableSlots <= 0) { toast.error("You can attach a maximum of 5 files at a time."); return; }
+    const toAdd = files.slice(0, availableSlots);
+    if (files.length > availableSlots) {
+      toast.error(`Only ${availableSlots} more file(s) can be added. ${files.length - availableSlots} file(s) were ignored.`);
+    }
+    const newEntries = toAdd.map((file) => ({
+      id: generateUUID(), name: file.name, status: "uploading" as const, blobUrl: "", fileType: getFileType(file.name),
+    }));
+    setAttachedFiles((prev) => [...prev, ...newEntries]);
+    await Promise.all(toAdd.map(async (file, i) => {
+      const entryId = newEntries[i].id;
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("user_id", USER_ID);
+      try {
+        const r = await fetch(`${API_BASE}/upload/blob-only`, { method: "POST", body: formData });
+        if (!r.ok) { const err = await r.json(); throw new Error(err.detail || "Upload failed"); }
+        const data = await r.json();
+        setAttachedFiles((prev) => prev.map((f) => f.id === entryId ? { ...f, status: "ready", blobUrl: data.blob_url } : f));
+      } catch (err: any) {
+        toast.error(`Could not upload "${file.name}". It has been removed.`);
+        setAttachedFiles((prev) => prev.filter((f) => f.id !== entryId));
+      }
+    }));
+  };
+
+  const getFileType = (name: string): "image" | "pdf" | "document" => {
+    const ext = name.split(".").pop()?.toLowerCase() ?? "";
+    if (["jpg","jpeg","png","webp","tiff"].includes(ext)) return "image";
+    if (ext === "pdf") return "pdf";
+    return "document";
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return; e.target.value = "";
-    const wasNew = !conversationId;
-    let cid = conversationId; if (!cid) { cid = generateUUID(); setConversationId(cid); }
-    setIsUploading(true); toast.info(`Uploading "${file.name}"...`);
-    const formData = new FormData(); formData.append("file", file); formData.append("user_id", USER_ID); formData.append("conversation_id", cid);
-    try {
-      const r = await fetch(`${API_BASE}/upload/file`, { method: "POST", body: formData });
-      if (!r.ok) { const err = await r.json(); throw new Error(err.detail || "Upload failed"); }
-      const data = await r.json(); toast.success(`"${file.name}" uploaded! ${data.chunks_stored} chunks indexed.`);
-      setMessages((prev) => [...prev, { id: generateUUID(), role: "assistant", content: `📎 I've processed **${file.name}** (${data.chunks_stored} chunks indexed). You can now ask me questions about it, or generate a flowchart / diagram from it!`, timestamp: new Date() }]);
-      syncConversationToUrl(cid, wasNew);
-    } catch (err: any) { toast.error(`Upload failed: ${err.message}`); }
-    finally { setIsUploading(false); }
+    const files = Array.from(e.target.files ?? []); if (!files.length) return; e.target.value = "";
+    await processFiles(files);
   };
 
   const handleToolClick = (tool: string) => {
@@ -1352,10 +1417,39 @@ const ChatPage = () => {
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault(); setIsDragging(false);
+    const files = Array.from(e.dataTransfer.files).filter(f => /\.(pdf|png|jpg|jpeg|webp|tiff)$/i.test(f.name));
+    if (!files.length) { toast.error("Only PDF and image files are supported."); return; }
+    await processFiles(files);
+  };
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData.files).filter(f => /\.(pdf|png|jpg|jpeg|webp|tiff)$/i.test(f.name) || f.type.startsWith("image/"));
+    if (!files.length) return; // no files in clipboard, let normal text paste happen
+    e.preventDefault();
+    await processFiles(files);
+  };
+
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div
+      className="flex flex-col h-full overflow-hidden relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Hidden file input — PDFs and all image types */}
-      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff" className="hidden" onChange={handleFileChange} />
+      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tiff" className="hidden" onChange={handleFileChange} multiple />
+
+      {/* Drag & drop overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-primary/10 backdrop-blur-sm border-2 border-dashed border-primary/50 rounded-2xl flex flex-col items-center justify-center gap-3 pointer-events-none">
+          <Paperclip className="w-10 h-10 text-primary animate-bounce" />
+          <p className="text-primary font-semibold text-lg">Drop files here</p>
+          <p className="text-muted-foreground text-sm">PDF, PNG, JPG, WEBP, TIFF · Max 5 files</p>
+        </div>
+      )}
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 p-4 md:p-6 pb-24 space-y-4">
@@ -1416,7 +1510,24 @@ const ChatPage = () => {
                 )}
                 {regeneratingMsgId === msg.id && msg.content.length < 5
                   ? <LoadingDots size={65} />
-                  : <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-card border border-glow text-card-foreground rounded-bl-md"}`}>
+                  : <>
+                      {msg.role === "user" && msg.attachments?.map((att) => (
+                        att.fileType === "image"
+                          ? <a key={att.name} href={att.blobUrl} target="_blank" rel="noopener noreferrer" className="block mb-1.5">
+                              <img src={att.blobUrl} alt={att.name} className="rounded-2xl max-h-56 max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity" />
+                            </a>
+                          : <a key={att.name} href={att.blobUrl} target="_blank" rel="noopener noreferrer"
+                              className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity">
+                              <div className="w-7 h-7 rounded-md bg-primary-foreground/20 flex items-center justify-center shrink-0">
+                                <Paperclip className="w-3.5 h-3.5 text-primary-foreground" />
+                              </div>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-xs font-medium text-primary-foreground truncate">{att.name}</span>
+                                <span className="text-xs text-primary-foreground/60">Click to open</span>
+                              </div>
+                            </a>
+                      ))}
+                      {msg.content && <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-card border border-glow text-card-foreground rounded-bl-md"}`}>
                       {msg.role === "user"
                         ? msg.content
                         : renderMarkdown(translatedContent[msg.id] ?? msg.content)
@@ -1427,7 +1538,8 @@ const ChatPage = () => {
                           <button onClick={() => { stopSpeech(); setTranslatedContent((prev) => { const n = { ...prev }; delete n[msg.id]; return n; }); setTranslatedLang((prev) => { const n = { ...prev }; delete n[msg.id]; return n; }); }} className="text-xs text-muted-foreground hover:text-primary">Show original</button>
                         </div>
                       )}
-                    </div>
+                    </div>}
+                    </>
                 }
 
                 {msg.role === "assistant" && regeneratingMsgId !== msg.id && (
@@ -1494,8 +1606,11 @@ const ChatPage = () => {
 
         {/* Typing indicator — hidden while regenerating (the bubble itself shows dots) */}
         {isTyping && !regeneratingMsgId && (
-          <div className="flex justify-start animate-fade-in">
+          <div className="flex justify-start items-center gap-3 animate-fade-in">
             <LoadingDots size={65} />
+            {isReadingDoc && (
+              <span className="text-xs text-muted-foreground/60 italic">Reading document...</span>
+            )}
           </div>
         )}
         <div ref={bottomRef} />
@@ -1504,15 +1619,33 @@ const ChatPage = () => {
       {/* Input bar */}
       <div className="flex-none w-full sticky bottom-0 z-20 pb-4 pt-2 px-4 bg-background/95 backdrop-blur-md">
         <div className="w-full max-w-4xl mx-auto">
-          <div className={`flex items-end bg-secondary/95 backdrop-blur-md border rounded-2xl shadow-2xl px-1 py-1 transition-all duration-200 ${isListening ? "border-red-500/60 shadow-red-500/10" : "border-border/70 focus-within:border-primary/50"}`}>
+          <div className={`flex flex-col bg-secondary/95 backdrop-blur-md border rounded-2xl shadow-2xl px-1 py-1 transition-all duration-200 ${isListening ? "border-red-500/60 shadow-red-500/10" : "border-border/70 focus-within:border-primary/50"}`}>
+            {attachedFiles.length > 0 && (
+              <div className="flex items-center gap-2 px-3 pt-2 pb-1 flex-wrap">
+                {attachedFiles.map((file) => (
+                  <div key={file.id} className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-2.5 py-1.5 text-xs text-foreground max-w-xs">
+                    <Paperclip className="w-3 h-3 text-primary shrink-0" />
+                    <span className="truncate max-w-[120px]">{file.name}</span>
+                    {file.status === "uploading" && (
+                      <div className="w-3 h-3 rounded-full border-2 border-primary/30 border-t-primary animate-spin shrink-0" />
+                    )}
+                    {file.status === "ready" && (
+                      <span className="text-green-500 shrink-0">✓</span>
+                    )}
+                    <button onClick={() => setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))} className="text-muted-foreground hover:text-foreground shrink-0 ml-0.5">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-end">
             <div className="flex items-end pb-1 shrink-0">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground hover:text-primary hover:bg-primary/10 h-9 w-9 rounded-xl"><Plus className="w-5 h-5" /></Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" side="top" className="bg-card border-border w-56 mb-1">
-                  <DropdownMenuItem onClick={() => fileInputRef.current?.click()} className="gap-3 text-foreground cursor-pointer" disabled={isUploading}>
-                    <Paperclip className={`w-4 h-4 text-primary ${isUploading ? "animate-pulse" : ""}`} />
+                  <DropdownMenuItem onClick={() => fileInputRef.current?.click()} className="gap-3 text-foreground cursor-pointer" disabled={attachedFiles.length >= 5}>
+                    <Paperclip className={`w-4 h-4 text-primary ${attachedFiles.some(f => f.status === "uploading") ? "animate-pulse" : ""}`} />
                     Add photos &amp; files
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="bg-border/50 my-1" />
@@ -1535,6 +1668,7 @@ const ChatPage = () => {
 
             <textarea ref={textareaRef} value={input} onChange={handleInputChange}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+              onPaste={handlePaste}
               placeholder="Ask anything..." rows={1}
               className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-3 py-2.5 resize-none outline-none min-h-[40px] max-h-[120px]" />
 
@@ -1542,7 +1676,8 @@ const ChatPage = () => {
               <Button variant="ghost" size="icon" onClick={toggleListening}
                 className={`h-9 w-9 rounded-xl transition-all duration-200 ${isListening ? "bg-red-500 text-white hover:bg-red-600 scale-110" : "text-muted-foreground hover:text-primary hover:bg-primary/10"}`}
                 title={isListening ? "Stop listening" : "Start voice input"}><Mic className="w-4 h-4" /></Button>
-              <Button onClick={sendMessage} disabled={!input.trim() || isTyping} size="icon" className="h-9 w-9 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"><Send className="w-4 h-4" /></Button>
+              <Button onClick={sendMessage} disabled={(!input.trim() && !attachedFiles.some(f => f.status === "ready")) || isTyping || attachedFiles.some(f => f.status === "uploading")} size="icon" className="h-9 w-9 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"><Send className="w-4 h-4" /></Button>
+            </div>
             </div>
           </div>
         </div>

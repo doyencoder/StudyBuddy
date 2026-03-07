@@ -15,10 +15,18 @@ class UploadResponse(BaseModel):
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
+class ChatAttachment(BaseModel):
+    name: str
+    blob_url: str
+    file_type: str  # "image" | "pdf" | "document"
+
 class ChatRequest(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None
     message: str
+    blob_url: Optional[str] = None
+    filename: Optional[str] = None
+    attachments: Optional[List["ChatAttachment"]] = None
 
 
 class ChatMessage(BaseModel):
