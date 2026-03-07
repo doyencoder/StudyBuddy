@@ -1346,11 +1346,19 @@ const ChatPage = () => {
                     Add photos &amp; files
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="bg-border/50 my-1" />
-                  {TOOLS.map((tool) => (
-                    <DropdownMenuItem key={tool.label} onClick={() => handleToolClick(tool.label)} className="gap-3 text-foreground cursor-pointer">
-                      <tool.icon className="w-4 h-4 text-primary" />{tool.label}
-                    </DropdownMenuItem>
-                  ))}
+                  {TOOLS.map((tool) => {
+                    const Icon = tool.icon;
+                    return (
+                      <DropdownMenuItem
+                        key={tool.label}
+                        onClick={() => handleToolClick(tool.label)}
+                        className="gap-3 text-foreground cursor-pointer"
+                      >
+                        <Icon className="w-4 h-4 text-primary" />
+                        {tool.label}
+                      </DropdownMenuItem>
+                    );
+                  })}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
