@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
-  ExternalLink, Sun, Moon, Monitor, Volume2,
+  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -396,6 +396,53 @@ interface GeneralTabProps {
 
 const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabProps) => {
   const { setColorMode, setChatFont, setVoice } = useAppearance();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
+
+  const playVoicePreview = async (voiceStyle: string) => {
+    // Stop any currently playing preview
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+
+    setPreviewingVoice(voiceStyle);
+    try {
+      const res = await fetch(
+        `${API_BASE}/settings/voice-preview?voice_style=${encodeURIComponent(voiceStyle)}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch voice preview");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        setPreviewingVoice(null);
+        audioRef.current = null;
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        setPreviewingVoice(null);
+        audioRef.current = null;
+      };
+      await audio.play();
+    } catch (err) {
+      console.error("Voice preview error:", err);
+      toast.error("Could not play voice preview");
+      setPreviewingVoice(null);
+    }
+  };
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
 
   const colorModes: { id: Appearance["color_mode"]; label: string; icon: React.ReactNode }[] = [
     { id: "light", label: "Light", icon: <Sun className="w-5 h-5" /> },
@@ -610,20 +657,28 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
           {/* Voice */}
           <div>
             <Label className="text-sm text-muted-foreground mb-3 block">Voice</Label>
+            <p className="text-xs text-muted-foreground mb-3">Click a voice to preview it</p>
             <div className="flex gap-3 flex-wrap">
               {voices.map((voice) => (
                 <button
                   key={voice}
-                  onClick={() => updateAppearance("voice", voice)}
+                  onClick={() => {
+                    updateAppearance("voice", voice);
+                    playVoicePreview(voice);
+                  }}
                   className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 transition-all ${
                     settings.appearance.voice === voice
                       ? "border-primary bg-primary/5"
                       : "border-border hover:border-muted-foreground/40 bg-card"
                   }`}
                 >
-                  <Volume2 className={`w-4 h-4 ${
-                    settings.appearance.voice === voice ? "text-primary" : "text-muted-foreground"
-                  }`} />
+                  {previewingVoice === voice ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                  ) : (
+                    <Volume2 className={`w-4 h-4 ${
+                      settings.appearance.voice === voice ? "text-primary" : "text-muted-foreground"
+                    }`} />
+                  )}
                   <span className={`text-sm font-medium capitalize ${
                     settings.appearance.voice === voice ? "text-primary" : "text-muted-foreground"
                   }`}>

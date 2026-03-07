@@ -3,12 +3,15 @@ Router: /settings
 Endpoints for user settings, account info, billing, and connectors.
 """
 
+import io
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
+from app.services.tts_service import synthesize_speech
 from app.models import (
     UserSettings,
     SettingsUpdateRequest,
@@ -86,6 +89,55 @@ PLANS = [
         is_current=False,
     ),
 ]
+
+
+# ── Voice preview sample phrases per style ───────────────────────────────────
+
+VOICE_PREVIEW_PHRASES: dict[str, str] = {
+    "buttery": "Hey there! I'm your Study Buddy. Let me help you learn something new today.",
+    "airy": "Welcome! I'm here to make studying easy and fun for you.",
+    "mellow": "Hello! Ready to dive into some learning? Let's get started together.",
+    "glassy": "Hi! I'll guide you through your study sessions step by step.",
+    "rounded": "Hey! Let's make today a great day for learning something awesome.",
+}
+
+
+# ── GET /settings/voice-preview ───────────────────────────────────────────────
+
+@router.get("/voice-preview")
+async def voice_preview(voice_style: str = Query(..., description="One of: buttery, airy, mellow, glassy, rounded")):
+    """
+    Returns a short MP3 audio sample so the user can preview a voice style
+    before selecting it in settings.
+    """
+    voice_style = voice_style.lower().strip()
+    if voice_style not in VOICE_PREVIEW_PHRASES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown voice style '{voice_style}'. Must be one of: {', '.join(VOICE_PREVIEW_PHRASES)}",
+        )
+
+    sample_text = VOICE_PREVIEW_PHRASES[voice_style]
+
+    try:
+        mp3_bytes = synthesize_speech(
+            text=sample_text,
+            language="en",
+            voice_style=voice_style,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    return StreamingResponse(
+        io.BytesIO(mp3_bytes),
+        media_type="audio/mpeg",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=86400",   # cache for 24 h — same phrase
+        },
+    )
 
 
 # ── GET /settings ─────────────────────────────────────────────────────────────
