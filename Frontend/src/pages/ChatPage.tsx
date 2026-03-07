@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import LoadingDots from "../components/LoadingDots";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import mermaid from "mermaid";
 import {
@@ -376,8 +377,9 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
         <div className="rounded-xl bg-secondary/60 border border-border p-4 overflow-x-auto min-h-[120px] flex items-center justify-center">
           {svg ? <div className="w-full" dangerouslySetInnerHTML={{ __html: svg }} />
           : renderError ? <div className="text-center space-y-2"><p className="text-sm text-destructive">Failed to render diagram.</p><p className="text-xs text-muted-foreground">Click "View code" to see the raw Mermaid syntax.</p></div>
-          : <div className="flex gap-1.5"><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} /><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} /><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} /></div>}
-        </div>
+          : <LoadingDots size={65} />
+          }
+          </div>
       )}
       {showCode && <div className="rounded-xl bg-secondary/80 border border-border p-4 overflow-x-auto"><pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">{diagramData.mermaid_code}</pre></div>}
       <p className="text-xs text-muted-foreground">Saved to your <span className="text-primary">Images</span> library ✓</p>
@@ -396,9 +398,25 @@ const ImageCard = ({ imageData }: { imageData: ImageData }) => {
         {loaded && <Button variant="ghost" size="sm" onClick={handleDownload} className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"><Download className="w-3.5 h-3.5" />Download</Button>}
       </div>
       <div className="rounded-xl overflow-hidden bg-secondary/50 min-h-[200px] flex items-center justify-center">
-        {error ? <div className="flex flex-col items-center gap-2 py-10"><ImageIcon className="w-8 h-8 text-muted-foreground/40" /><p className="text-xs text-destructive">Failed to load image.</p></div>
-        : <>{!loaded && <div className="flex gap-1.5 py-10"><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} /><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} /><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} /></div>}
-          <img src={imageData.image_url} alt={imageData.topic} className={`w-full rounded-xl object-contain transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0 absolute"}`} onLoad={() => setLoaded(true)} onError={() => setError(true)} /></>}
+        {error ? (
+          <div className="flex flex-col items-center gap-2 py-10">
+            <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
+            <p className="text-xs text-destructive">Failed to load image.</p>
+          </div>
+        ) : (
+          <>
+            {!loaded && <LoadingDots size={65} />}
+            <img
+              src={imageData.image_url}
+              alt={imageData.topic}
+              className={`w-full rounded-xl object-contain transition-opacity duration-300 ${
+                loaded ? "opacity-100" : "opacity-0 absolute"
+              }`}
+              onLoad={() => setLoaded(true)}
+              onError={() => setError(true)}
+            />
+          </>
+        )}
       </div>
       <p className="text-xs text-muted-foreground text-right">Saved to your Images library ✓</p>
     </div>
@@ -1222,28 +1240,28 @@ const ChatPage = () => {
             );
           }
 
-          if (msg.role === "assistant" && msg.content === "") return null;
+          if (msg.role === "assistant" && msg.content === "" && regeneratingMsgId !== msg.id) return null;
           return (
             <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}>
               <div className="max-w-[85%] md:max-w-[70%]">
                 {msg.role === "assistant" && (
                   <div className="flex items-center gap-2 mb-1.5"><div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center"><Bot className="w-3.5 h-3.5 text-primary" /></div><span className="text-xs text-muted-foreground font-medium">Study Buddy</span></div>
                 )}
-                <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-card border border-glow text-card-foreground rounded-bl-md"}`}>
-                  {msg.role === "user"
-                    ? msg.content
-                    : regeneratingMsgId === msg.id && msg.content === ""
-                      ? <div className="flex gap-1.5 py-1"><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} /><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} /><span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} /></div>
-                      : renderMarkdown(translatedContent[msg.id] ?? msg.content)
-                  }
-
-                  {msg.role === "assistant" && translatedContent[msg.id] && (
-                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/40">
-                      <span className="text-xs text-primary/70">🌐 Translated</span>
-                      <button onClick={() => { stopSpeech(); setTranslatedContent((prev) => { const n = { ...prev }; delete n[msg.id]; return n; }); setTranslatedLang((prev) => { const n = { ...prev }; delete n[msg.id]; return n; }); }} className="text-xs text-muted-foreground hover:text-primary">Show original</button>
+                {regeneratingMsgId === msg.id && msg.content.length < 5
+                  ? <LoadingDots size={65} />
+                  : <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-card border border-glow text-card-foreground rounded-bl-md"}`}>
+                      {msg.role === "user"
+                        ? msg.content
+                        : renderMarkdown(translatedContent[msg.id] ?? msg.content)
+                      }
+                      {msg.role === "assistant" && translatedContent[msg.id] && (
+                        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/40">
+                          <span className="text-xs text-primary/70">🌐 Translated</span>
+                          <button onClick={() => { stopSpeech(); setTranslatedContent((prev) => { const n = { ...prev }; delete n[msg.id]; return n; }); setTranslatedLang((prev) => { const n = { ...prev }; delete n[msg.id]; return n; }); }} className="text-xs text-muted-foreground hover:text-primary">Show original</button>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                }
 
                 {msg.role === "assistant" && regeneratingMsgId !== msg.id && (
                   <div className="flex items-center gap-1 mt-2 ml-1 flex-wrap relative">
@@ -1305,13 +1323,7 @@ const ChatPage = () => {
         {/* Typing indicator — hidden while regenerating (the bubble itself shows dots) */}
         {isTyping && !regeneratingMsgId && (
           <div className="flex justify-start animate-fade-in">
-            <div className="bg-card border border-glow rounded-2xl rounded-bl-md px-4 py-3">
-              <div className="flex gap-1.5">
-                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                <span className="w-2 h-2 bg-primary/60 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-              </div>
-            </div>
+            <LoadingDots size={65} />
           </div>
         )}
         <div ref={bottomRef} />
