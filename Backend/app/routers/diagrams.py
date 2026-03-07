@@ -8,6 +8,8 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
+import httpx
 
 from app.models import (
     DiagramGenerateRequest,
@@ -279,3 +281,36 @@ async def generate_diagram_image(req: ImageGenerateRequest):
         image_url=saved["image_url"],
         created_at=saved["created_at"],
     )
+
+
+@router.get("/download-image")
+async def download_image_proxy(
+    url: str = Query(..., description="Azure Blob SAS URL to proxy"),
+    filename: str = Query("image.png", description="Download filename"),
+):
+    """
+    Proxies an Azure Blob image through the backend so the browser can
+    download it directly. This bypasses CORS restrictions that prevent
+    the frontend from fetching cross-origin blob URLs.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                raise HTTPException(status_code=404, detail="Image not found")
+
+        async def stream():
+            async with httpx.AsyncClient(timeout=30) as client:
+                async with client.stream("GET", url) as r:
+                    async for chunk in r.aiter_bytes(chunk_size=8192):
+                        yield chunk
+
+        return StreamingResponse(
+            stream(),
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download proxy failed: {str(e)}")

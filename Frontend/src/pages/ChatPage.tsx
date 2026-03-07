@@ -396,36 +396,82 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
 
 // ── ImageCard ─────────────────────────────────────────────────────────────────
 const ImageCard = ({ imageData }: { imageData: ImageData }) => {
-  const [loaded, setLoaded] = useState(false); const [error, setError] = useState(false);
-  const handleDownload = () => { const a = document.createElement("a"); a.href = imageData.image_url; a.download = `${imageData.topic.replace(/\s+/g, "_")}.png`; a.target = "_blank"; a.click(); };
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const handleDownload = async () => {
+    try {
+      const res = await fetch(
+        `http://localhost:8000/diagrams/download-image?url=${encodeURIComponent(imageData.image_url)}&filename=${encodeURIComponent(imageData.topic.replace(/\s+/g, "_"))}.png`
+      );
+      if (!res.ok) throw new Error("proxy failed");
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = `${imageData.topic.replace(/\s+/g, "_")}.png`;
+      a.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      window.open(imageData.image_url, "_blank");
+    }
+  };
+
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-primary" /><span className="text-sm font-semibold text-foreground">{imageData.topic}</span><span className="text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary font-medium">AI Image</span></div>
-        {loaded && <Button variant="ghost" size="sm" onClick={handleDownload} className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"><Download className="w-3.5 h-3.5" />Download</Button>}
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
+          <span className="text-xs font-semibold text-foreground truncate">{imageData.topic}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-medium shrink-0">AI Image</span>
+        </div>
+        {loaded && (
+          <Button variant="ghost" size="sm" onClick={handleDownload} className="h-6 px-2 text-xs text-muted-foreground hover:text-primary gap-1 shrink-0">
+            <Download className="w-3 h-3" />Download
+          </Button>
+        )}
       </div>
-      <div className="rounded-xl overflow-hidden bg-secondary/50 min-h-[200px] flex items-center justify-center">
+
+      {/* Image — constrained, click to expand */}
+      <div
+        className="rounded-lg overflow-hidden bg-secondary/40 flex items-center justify-center cursor-pointer relative group"
+        style={{ minHeight: loaded ? undefined : "80px" }}
+        onClick={() => loaded && setExpanded(true)}
+      >
         {error ? (
-          <div className="flex flex-col items-center gap-2 py-10">
-            <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
+          <div className="flex flex-col items-center gap-1 py-4">
+            <ImageIcon className="w-6 h-6 text-muted-foreground/40" />
             <p className="text-xs text-destructive">Failed to load image.</p>
           </div>
         ) : (
           <>
-            {!loaded && <LoadingDots size={65} />}
+            {!loaded && <LoadingDots size={50} />}
             <img
               src={imageData.image_url}
               alt={imageData.topic}
-              className={`w-full rounded-xl object-contain transition-opacity duration-300 ${
-                loaded ? "opacity-100" : "opacity-0 absolute"
-              }`}
+              className={`w-full max-h-[200px] object-contain rounded-lg transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0 absolute"}`}
               onLoad={() => setLoaded(true)}
               onError={() => setError(true)}
             />
+            {loaded && (
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-all duration-200 flex items-center justify-center rounded-lg">
+                <span className="opacity-0 group-hover:opacity-100 text-white text-xs bg-black/60 px-2 py-1 rounded-md transition-opacity">🔍 Expand</span>
+              </div>
+            )}
           </>
         )}
       </div>
-      <p className="text-xs text-muted-foreground text-right">Saved to your Images library ✓</p>
+
+      <p className="text-[10px] text-muted-foreground text-right">Saved to your Images library ✓</p>
+
+      {/* Fullscreen lightbox */}
+      {expanded && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6" onClick={() => setExpanded(false)}>
+          <img src={imageData.image_url} alt={imageData.topic} className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" onClick={(e) => e.stopPropagation()} />
+          <button className="absolute top-5 right-5 text-white bg-black/50 hover:bg-black/80 rounded-full w-10 h-10 flex items-center justify-center text-xl transition-colors" onClick={() => setExpanded(false)}>✕</button>
+        </div>
+      )}
     </div>
   );
 };
@@ -1335,9 +1381,9 @@ const ChatPage = () => {
 
           if (msg.role === "image" && msg.imageData) return (
             <div key={msg.id} className="flex justify-start animate-fade-in">
-              <div className="w-full max-w-[90%] md:max-w-[80%]">
+              <div className="max-w-[60%] md:max-w-[50%]">
                 <div className="flex items-center gap-2 mb-1.5"><div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center"><Bot className="w-3.5 h-3.5 text-primary" /></div><span className="text-xs text-muted-foreground font-medium">Study Buddy</span></div>
-                <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-5"><ImageCard imageData={msg.imageData} /></div>
+                <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-4"><ImageCard imageData={msg.imageData} /></div>
               </div>
             </div>
           );

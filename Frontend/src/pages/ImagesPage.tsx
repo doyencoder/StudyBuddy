@@ -184,13 +184,23 @@ const DiagramModal = ({
     : item.type === "image"   ? "bg-primary/15 text-primary"
     : "bg-purple-500/15 text-purple-400";
 
-  const handleImageDownload = () => {
+  const handleImageDownload = async () => {
     if (!item.image_url) return;
-    const a = document.createElement("a");
-    a.href = item.image_url;
-    a.download = `${item.topic.replace(/\s+/g, "_")}.png`;
-    a.target = "_blank";
-    a.click();
+    try {
+      const res = await fetch(
+        `http://localhost:8000/diagrams/download-image?url=${encodeURIComponent(item.image_url)}&filename=${encodeURIComponent(item.topic.replace(/\s+/g, "_"))}.png`
+      );
+      if (!res.ok) throw new Error("proxy failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${item.topic.replace(/\s+/g, "_")}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      window.open(item.image_url, "_blank");
+    }
   };
 
   return (
