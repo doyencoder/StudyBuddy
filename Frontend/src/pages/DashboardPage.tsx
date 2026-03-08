@@ -74,6 +74,7 @@ const DashboardPage = () => {
   const [improveDialogOpen, setImproveDialogOpen] = useState(false);
   const [improveStep, setImproveStep] = useState<ImproveStep>("input");
   const [improveTopic, setImproveTopic] = useState("");
+  const [originalTopic, setOriginalTopic] = useState("");
   const [improveWeeks, setImproveWeeks] = useState(4);
   const [generatedPlan, setGeneratedPlan] = useState<StudyPlanData | null>(null);
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([1]));
@@ -99,6 +100,7 @@ const DashboardPage = () => {
   // ── Improve dialog handlers ───────────────────────────────────────────────
   const openImproveDialog = (topic: string) => {
     setImproveTopic(topic);
+    setOriginalTopic(topic);
     setImproveWeeks(4);
     setImproveStep("input");
     setGeneratedPlan(null);
@@ -179,9 +181,9 @@ const DashboardPage = () => {
         await fetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ topic: improveTopic.trim() }),
+          body: JSON.stringify({ topic: originalTopic.trim() }),
         });
-        setDismissedTopics((prev) => [...prev, improveTopic.trim()]);
+        setDismissedTopics((prev) => [...prev, originalTopic.trim()]);
         toast.success("Topic removed from weak topics!");
       } catch {
         toast.error("Failed to dismiss topic.");
