@@ -63,6 +63,7 @@ interface QuizData {
   topic: string;
   questions: QuizQuestion[];
   submitted: boolean;
+  fun_fact?: string;
   score?: number;
   correct_count?: number;
   total_questions?: number;
@@ -608,6 +609,18 @@ const QuizCard = ({
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // ── Preclassify: fire silently on mount so labels are cached before submit ──
+  useEffect(() => {
+    fetch(`${API_BASE}/quiz/preclassify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: USER_ID, quiz_id: quizData.quiz_id }),
+    }).catch(() => { /* non-critical — submit has its own fallback */ });
+  }, [quizData.quiz_id]);
+
+  // ── Fun fact overlay state ──────────────────────────────────────────────────
+  const [showFunFact, setShowFunFact] = useState(false);
+
   // ── Translation state ───────────────────────────────────────────────────────
   const [translatedQuestions, setTranslatedQuestions] = useState<QuizQuestion[] | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -688,6 +701,7 @@ const QuizCard = ({
   const handleSubmit = async () => {
     if (!allAnswered) return;
     setIsSubmitting(true);
+    setShowFunFact(true); // show fun fact overlay immediately
     try {
       const response = await fetch(`${API_BASE}/quiz/submit`, {
         method: "POST",
@@ -710,13 +724,31 @@ const QuizCard = ({
       });
     } catch (err: any) {
       toast.error(`Failed to submit quiz: ${err.message}`);
+      setShowFunFact(false);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="space-y-4">
+    <div className="relative space-y-4">
+      {/* Fun fact overlay — shown while submission is in flight */}
+      {showFunFact && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-2xl bg-card/95 backdrop-blur-sm border border-primary/20 p-6 space-y-4 animate-fade-in">
+          <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center">
+            <Sparkles className="w-5 h-5 text-primary" />
+          </div>
+          <p className="text-xs font-semibold text-primary uppercase tracking-widest">Did you know?</p>
+          <p className="text-sm text-center text-foreground leading-relaxed max-w-xs">
+            {quizData.fun_fact || "The brain consolidates memories during sleep — always rest after a study session!"}
+          </p>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="w-3.5 h-3.5 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+            Submitting your answers...
+          </div>
+        </div>
+      )}
+
       {/* Header row: topic + translate button + counter */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
@@ -1322,6 +1354,7 @@ const ChatPage = () => {
                 topic: parsed.topic,
                 questions: parsed.questions ?? [],
                 submitted: parsed.submitted ?? false,
+                fun_fact: parsed.fun_fact ?? "",
                 score: parsed.score,
                 correct_count: parsed.correct_count,
                 total_questions: parsed.total_questions,
@@ -1903,6 +1936,7 @@ const ChatPage = () => {
                   topic: d.topic,
                   questions: d.questions,
                   submitted: false,
+                  fun_fact: d.fun_fact ?? "",
                 },
                 timestamp: new Date(),
               },

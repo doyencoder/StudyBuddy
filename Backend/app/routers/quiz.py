@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.models import (
     QuizGenerateRequest,
     QuizGenerateResponse,
+    QuizPreclassifyRequest,
     QuizQuestion,
     QuizSubmitRequest,
     QuizSubmitResponse,
@@ -13,13 +14,13 @@ from app.models import (
     QuizHistoryResponse,
     QuizHistoryItem,
 )
-from app.services.gemini_service import embed_query, generate_quiz_questions, classify_weak_area
+from app.services.gemini_service import embed_query, generate_quiz_questions, batch_classify_weak_areas
 from app.services.search_service import (
     retrieve_chunks,
     retrieve_chunks_hybrid,
     conversation_has_documents,
 )
-from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message, update_message_json
+from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message, update_message_json, patch_weak_area_labels
 
 router = APIRouter(prefix="/quiz", tags=["Quiz"])
 
@@ -91,13 +92,15 @@ async def quiz_generate(request: QuizGenerateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG retrieval failed: {str(e)}")
 
-    # ── Step 3: Generate questions via Gemini ─────────────────────────────────
+    # ── Step 3: Generate questions + fun fact via Gemini (single call) ────────
     try:
-        raw_questions = generate_quiz_questions(
+        result = generate_quiz_questions(
             context_chunks=context_chunks,
             topic=request.topic or "",
             num_questions=request.num_questions,
         )
+        raw_questions = result["questions"]
+        fun_fact = result["fun_fact"]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Quiz generation failed: {str(e)}")
 
@@ -155,6 +158,7 @@ async def quiz_generate(request: QuizGenerateRequest):
             topic=topic_label,
             questions=raw_questions,
             conversation_id=request.conversation_id or "",
+            fun_fact=fun_fact,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save quiz: {str(e)}")
@@ -173,7 +177,43 @@ async def quiz_generate(request: QuizGenerateRequest):
         quiz_id=quiz_id,
         topic=topic_label,
         questions=questions_for_frontend,
+        fun_fact=fun_fact,
     )
+
+
+# ── POST /quiz/preclassify ────────────────────────────────────────────────────
+
+@router.post("/preclassify")
+async def quiz_preclassify(request: QuizPreclassifyRequest):
+    """
+    Fired silently by the frontend as soon as a quiz is rendered.
+    Sends ALL question texts to Gemini in ONE call and caches the labels
+    in Cosmos so that /quiz/submit doesn't need to call Gemini at all.
+    Non-blocking from the frontend's perspective — submit falls back
+    gracefully if this hasn't completed yet.
+    """
+    try:
+        quiz_doc = await get_quiz(quiz_id=request.quiz_id, user_id=request.user_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Quiz not found: {str(e)}")
+
+    # Already preclassified — nothing to do
+    if quiz_doc.get("weak_area_labels") is not None:
+        return {"status": "already_cached"}
+
+    questions = quiz_doc["questions"]
+    try:
+        labels = batch_classify_weak_areas(questions)
+        await patch_weak_area_labels(
+            quiz_id=request.quiz_id,
+            user_id=request.user_id,
+            labels=labels,
+        )
+    except Exception:
+        # Non-critical — submit will fall back to on-the-spot classification
+        pass
+
+    return {"status": "ok"}
 
 
 # ── POST /quiz/submit ─────────────────────────────────────────────────────────
@@ -182,7 +222,9 @@ async def quiz_generate(request: QuizGenerateRequest):
 async def quiz_submit(request: QuizSubmitRequest):
     """
     Grades submitted answers against stored correct answers.
-    Calculates score, identifies weak areas, persists results to Cosmos DB.
+    Uses pre-cached weak area labels from /quiz/preclassify if available,
+    otherwise falls back to classifying only the wrong questions on the spot
+    (still one single Gemini call via batch_classify_weak_areas).
     """
 
     # Fetch quiz from Cosmos DB
@@ -199,10 +241,13 @@ async def quiz_submit(request: QuizSubmitRequest):
             detail=f"Expected {len(stored_questions)} answers, got {len(request.answers)}.",
         )
 
+    # Use cached labels if preclassify already ran, else None (we'll batch below)
+    cached_labels = quiz_doc.get("weak_area_labels")  # list[str] or None
+
     # Grade answers
     results = []
     correct_count = 0
-    weak_areas = []
+    wrong_indices = []  # indices of wrong answers, for fallback classification
 
     for i, q in enumerate(stored_questions):
         selected = request.answers[i]
@@ -212,8 +257,7 @@ async def quiz_submit(request: QuizSubmitRequest):
         if is_correct:
             correct_count += 1
         else:
-            weak_label = classify_weak_area(q["question"])
-            weak_areas.append(weak_label)
+            wrong_indices.append(i)
 
         results.append({
             "question_id": q["id"],
@@ -227,6 +271,21 @@ async def quiz_submit(request: QuizSubmitRequest):
 
     total = len(stored_questions)
     score = round((correct_count / total) * 100)
+
+    # Build weak_areas — use cached labels if available, else one batch call
+    if cached_labels is not None:
+        # Preclassify completed — just pick labels for wrong answers
+        weak_areas = [cached_labels[i] for i in wrong_indices]
+    elif wrong_indices:
+        # Fallback: batch classify only the wrong questions in one Gemini call
+        wrong_questions = [stored_questions[i] for i in wrong_indices]
+        try:
+            fallback_labels = batch_classify_weak_areas(wrong_questions)
+        except Exception:
+            fallback_labels = ["General"] * len(wrong_questions)
+        weak_areas = fallback_labels
+    else:
+        weak_areas = []
 
     # Persist results to Cosmos DB
     try:

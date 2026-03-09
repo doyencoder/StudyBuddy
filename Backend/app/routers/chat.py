@@ -293,11 +293,13 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions):
                 conversation_id=conversation_id, top_k=10, score_threshold=0.5,
             )
 
-        raw_questions = generate_quiz_questions(
+        result = generate_quiz_questions(
             context_chunks=context_chunks,
             topic=topic or "",
             num_questions=num_questions,
         )
+        raw_questions = result["questions"]
+        fun_fact = result["fun_fact"]
 
         quiz_id = str(uuid.uuid4())
         topic_label = (topic or "General Quiz").strip()
@@ -309,6 +311,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions):
         await save_quiz(
             user_id=user_id, quiz_id=quiz_id, topic=topic_label,
             questions=raw_questions, conversation_id=conversation_id,
+            fun_fact=fun_fact,
         )
 
         q_for_history = [
@@ -320,11 +323,12 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions):
             role="assistant",
             content=json.dumps({
                 "__type": "quiz", "quiz_id": quiz_id,
-                "topic": topic_label, "submitted": False, "questions": q_for_history,
+                "topic": topic_label, "submitted": False,
+                "questions": q_for_history, "fun_fact": fun_fact,
             }),
         )
 
-        yield f"data: {json.dumps({'type': 'quiz_result', 'data': {'quiz_id': quiz_id, 'topic': topic_label, 'questions': q_for_history}})}\n\n"
+        yield f"data: {json.dumps({'type': 'quiz_result', 'data': {'quiz_id': quiz_id, 'topic': topic_label, 'questions': q_for_history, 'fun_fact': fun_fact}})}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': f'Quiz generation failed: {str(e)}'})}\n\n"

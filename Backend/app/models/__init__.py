@@ -62,6 +62,12 @@ class QuizGenerateResponse(BaseModel):
     quiz_id: str
     topic: str
     questions: List[QuizQuestion]
+    fun_fact: str = ""
+
+
+class QuizPreclassifyRequest(BaseModel):
+    user_id: str
+    quiz_id: str
 
 
 class QuizSubmitRequest(BaseModel):

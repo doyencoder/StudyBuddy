@@ -269,10 +269,14 @@ async def save_quiz(
     topic: str,
     questions: list,
     conversation_id: str = "",
+    fun_fact: str = "",
 ) -> None:
     """
     Creates a new quiz document in Cosmos DB when a quiz is generated.
     Stores questions with their correct answers (never sent to frontend).
+    fun_fact is stored here and returned to frontend at generate time.
+    weak_area_labels is pre-populated as None per question — filled by
+    POST /quiz/preclassify while the student is attempting the quiz.
     conversation_id is stored so the submit endpoint can update the
     conversation history message with the final submitted state.
     """
@@ -289,12 +293,28 @@ async def save_quiz(
         "weak_areas": [],
         "results": [],
         "conversation_id": conversation_id,
+        "fun_fact": fun_fact,
+        "weak_area_labels": None,    # filled by /quiz/preclassify
     }
 
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(QUIZZES_CONTAINER)
         await container.create_item(body=document)
+
+
+async def patch_weak_area_labels(quiz_id: str, user_id: str, labels: list) -> None:
+    """
+    Stores pre-classified weak area labels for all questions.
+    Called by POST /quiz/preclassify while the student is taking the quiz.
+    Submit will use these cached labels instead of calling Gemini per question.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(QUIZZES_CONTAINER)
+        item = await container.read_item(item=quiz_id, partition_key=user_id)
+        item["weak_area_labels"] = labels
+        await container.replace_item(item=quiz_id, body=item)
 
 
 async def get_quiz(quiz_id: str, user_id: str) -> Dict[str, Any]:

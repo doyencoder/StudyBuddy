@@ -289,11 +289,13 @@ def chat_stream(
             yield chunk.text
 
 
-def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions: int = 5) -> list:
+def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions: int = 5) -> dict:
     """
-    Uses Gemini to generate MCQ quiz questions.
+    Uses Gemini to generate MCQ quiz questions plus one fun fact in a single call.
     - If context_chunks provided: generates strictly from the uploaded material.
     - If context_chunks is empty: generates from general knowledge on the topic.
+
+    Returns: { "questions": [...], "fun_fact": "..." }
     """
     client = _get_client()
 
@@ -318,13 +320,21 @@ STRICT RULES:
 - Base every question strictly on the provided material — no outside knowledge
 - The explanation must reference the material directly
 
-Respond ONLY with a valid JSON array. No extra text. No markdown. No code fences.
-Each item must have exactly these fields:
+Also generate exactly 1 fun_fact: a single interesting, surprising fact related to this topic.
+It should be engaging and educational — something a student would find genuinely interesting.
+
+Respond ONLY with a valid JSON object. No extra text. No markdown. No code fences.
+The object must have exactly these two fields:
 {{
-  "question": "the question text",
-  "options": ["option A", "option B", "option C", "option D"],
-  "correct_index": 0,
-  "explanation": "why this answer is correct based on the material"
+  "questions": [
+    {{
+      "question": "the question text",
+      "options": ["option A", "option B", "option C", "option D"],
+      "correct_index": 0,
+      "explanation": "why this answer is correct based on the material"
+    }}
+  ],
+  "fun_fact": "one interesting fact related to this topic"
 }}"""
 
     else:
@@ -341,13 +351,21 @@ STRICT RULES:
 - Questions should be educational and appropriate for students
 - Vary the difficulty across questions
 
-Respond ONLY with a valid JSON array. No extra text. No markdown. No code fences.
-Each item must have exactly these fields:
+Also generate exactly 1 fun_fact: a single interesting, surprising fact related to {topic}.
+It should be engaging and educational — something a student would find genuinely interesting.
+
+Respond ONLY with a valid JSON object. No extra text. No markdown. No code fences.
+The object must have exactly these two fields:
 {{
-  "question": "the question text",
-  "options": ["option A", "option B", "option C", "option D"],
-  "correct_index": 0,
-  "explanation": "why this answer is correct"
+  "questions": [
+    {{
+      "question": "the question text",
+      "options": ["option A", "option B", "option C", "option D"],
+      "correct_index": 0,
+      "explanation": "why this answer is correct"
+    }}
+  ],
+  "fun_fact": "one interesting fact related to {topic}"
 }}"""
 
     def _generate():
@@ -364,10 +382,18 @@ Each item must have exactly these fields:
 
     import json
     raw = response.text.strip()
-    questions = _sanitize_and_parse_json(raw)
+    parsed = _sanitize_and_parse_json(raw)
+
+    # Support both old array format (fallback) and new object format
+    if isinstance(parsed, list):
+        raw_questions = parsed
+        fun_fact = "Did you know? The brain strengthens memories during sleep — a great reason to rest after studying!"
+    else:
+        raw_questions = parsed.get("questions", [])
+        fun_fact = parsed.get("fun_fact") or "Did you know? Spaced repetition is one of the most effective study techniques proven by cognitive science!"
 
     sanitized = []
-    for i, q in enumerate(questions[:num_questions]):
+    for i, q in enumerate(raw_questions[:num_questions]):
         sanitized.append({
             "id": f"q{i + 1}",
             "question": q["question"],
@@ -376,7 +402,63 @@ Each item must have exactly these fields:
             "explanation": q["explanation"],
         })
 
-    return sanitized            
+    return {"questions": sanitized, "fun_fact": fun_fact}
+
+
+def batch_classify_weak_areas(questions: list) -> list:
+    """
+    Sends ALL question texts in a SINGLE Gemini call and returns a label
+    for each question in order.
+
+    Used by POST /quiz/preclassify — runs while the student is attempting
+    the quiz so labels are already cached in Cosmos by submit time.
+
+    Args:
+        questions: list of quiz question dicts (must have "question" key)
+
+    Returns:
+        list of short topic label strings, same length as questions.
+        Falls back to "General" for any that can't be classified.
+    """
+    client = _get_client()
+
+    numbered = "\n".join(
+        f"{i + 1}. {q['question']}" for i, q in enumerate(questions)
+    )
+
+    prompt = f"""You are classifying quiz questions into academic subtopic labels.
+
+For each question below, output a short label (2-5 words) describing the academic subtopic or concept it tests.
+
+QUESTIONS:
+{numbered}
+
+Respond ONLY with a valid JSON array of strings, one label per question, in the same order.
+No extra text. No markdown. No code fences. Example:
+["Cell Division", "Electromagnetic Induction", "Photosynthesis", "General", "Newton's Laws"]"""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+            ),
+        )
+
+    try:
+        response = _call_with_retry(_generate)
+        labels = _sanitize_and_parse_json(response.text.strip())
+        if isinstance(labels, list) and len(labels) == len(questions):
+            return [str(l).strip() or "General" for l in labels]
+        # Wrong length — pad or trim to match
+        result = [str(l).strip() or "General" for l in labels]
+        while len(result) < len(questions):
+            result.append("General")
+        return result[:len(questions)]
+    except Exception:
+        return ["General"] * len(questions)
 
 
 def infer_topic_from_messages(messages: list) -> str:
