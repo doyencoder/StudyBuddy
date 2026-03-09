@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import LoadingDots from "../components/LoadingDots";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import mermaid from "mermaid";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import {
   Send, Paperclip, Mic, Plus, Volume2, Globe, Copy, RefreshCw,
   FileText, CalendarDays, GitBranch, Network, Brain, Bot,
@@ -189,8 +191,32 @@ const LANG_TO_BCP47: Record<string, string> = {
   kn: "kn-IN",
 };
 
+function renderMath(latex: string, displayMode: boolean): React.ReactNode {
+  try {
+    const html = katex.renderToString(latex, {
+      throwOnError: false,
+      displayMode,
+      output: "html",
+    });
+    return (
+      <span
+        key={latex}
+        className={displayMode ? "block my-2 overflow-x-auto" : "inline"}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  } catch {
+    return displayMode ? `$$${latex}$$` : `$${latex}$`;
+  }
+}
+
 function applyInline(text: string): React.ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
+  // Split on $$...$$, $...$, **...**, *...*, `...` — $$ must come before $
+  return text.split(/(\$\$[^$]+\$\$|\$[^$\r\n]+\$|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
+    if (/^\$\$[^$]+\$\$$/.test(part))
+      return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
+    if (/^\$[^$\r\n]+\$$/.test(part))
+      return <span key={i}>{renderMath(part.slice(1, -1), false)}</span>;
     if (/^\*\*[^*]+\*\*$/.test(part))
       return (
         <strong key={i} className="font-semibold text-foreground">
@@ -222,6 +248,37 @@ function renderMarkdown(text: string) {
     const line = lines[i];
     if (line.trim() === "") {
       i++;
+      continue;
+    }
+
+    // ── Display math block: lines starting and ending with $$ ──────────────
+    if (line.trim().startsWith("$$")) {
+      const mathLines: string[] = [];
+      const startLine = line.trim();
+      // Single-line $$...$$ e.g. $$x = 5$$
+      if (startLine.length > 4 && startLine.endsWith("$$") && startLine !== "$$") {
+        const latex = startLine.slice(2, -2);
+        elements.push(
+          <div key={`dm-${i}`} className="my-2 overflow-x-auto text-center">
+            {renderMath(latex, true)}
+          </div>
+        );
+        i++;
+        continue;
+      }
+      // Multi-line $$...$$
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("$$")) {
+        mathLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing $$
+      const latex = mathLines.join("\n");
+      elements.push(
+        <div key={`dm-${i}`} className="my-2 overflow-x-auto text-center">
+          {renderMath(latex, true)}
+        </div>
+      );
       continue;
     }
 
