@@ -40,6 +40,19 @@ mermaid.initialize({
   mindmap: { padding: 16 },
 });
 
+// Inject welcome screen keyframe animation (Tailwind JIT can't do custom keyframes inline)
+if (typeof document !== "undefined" && !document.getElementById("sb-welcome-anim")) {
+  const style = document.createElement("style");
+  style.id = "sb-welcome-anim";
+  style.textContent = `
+    @keyframes fadeSlideUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface QuizQuestion {
@@ -142,11 +155,11 @@ const INITIAL_MESSAGES: Message[] = [
   {
     id: "1",
     role: "assistant",
-    content:
-      "Hey there! 👋 I'm your Study Buddy. I can help you understand complex topics, generate quizzes, create flashcards, build study plans, and much more. Just type your question or use the ➕ tools menu to get started!",
+    content: "__welcome__",   // sentinel — triggers animated welcome screen instead of a chat bubble
     timestamp: new Date(),
   },
 ];
+
 
 // ── Per-conversation state ────────────────────────────────────────────────────
 // Each conversation gets its own isolated slice of state so that background
@@ -1270,6 +1283,154 @@ const StudyPlanCard = ({
 };
 
 // ── Main Component ────────────────────────────────────────────────────────────
+
+// ── WelcomeScreen ─────────────────────────────────────────────────────────────
+// Shown only when no conversation has started yet (messages.length === 1).
+// Fades out the moment the user sends their first message.
+const SUGGESTION_CARDS = [
+  {
+    icon: FileText,
+    title: "Generate a Quiz",
+    subtitle: "Test your knowledge on any topic",
+    intent: "quiz",
+    color: "group-hover:text-violet-400",
+    iconBg: "bg-violet-500/10 group-hover:bg-violet-500/20",
+  },
+  {
+    icon: CalendarDays,
+    title: "Build a Study Plan",
+    subtitle: "Get a structured week-by-week plan",
+    intent: "study_plan",
+    color: "group-hover:text-blue-400",
+    iconBg: "bg-blue-500/10 group-hover:bg-blue-500/20",
+  },
+  {
+    icon: GitBranch,
+    title: "Draw a Flowchart",
+    subtitle: "Visualise a process or concept",
+    intent: "flowchart",
+    color: "group-hover:text-emerald-400",
+    iconBg: "bg-emerald-500/10 group-hover:bg-emerald-500/20",
+  },
+  {
+    icon: Brain,
+    title: "Make a Mind Map",
+    subtitle: "Map out ideas and connections",
+    intent: "mindmap",
+    color: "group-hover:text-amber-400",
+    iconBg: "bg-amber-500/10 group-hover:bg-amber-500/20",
+  },
+  {
+    icon: ImageIcon,
+    title: "AI Diagram",
+    subtitle: "Generate an illustrated visual diagram",
+    intent: "image",
+    color: "group-hover:text-pink-400",
+    iconBg: "bg-pink-500/10 group-hover:bg-pink-500/20",
+  },
+  {
+    icon: Network,
+    title: "Ask Anything",
+    subtitle: "Explain concepts, solve problems, summarise",
+    intent: "",
+    color: "group-hover:text-primary",
+    iconBg: "bg-primary/10 group-hover:bg-primary/20",
+  },
+];
+
+const STARTER_PROMPTS = [
+  "Explain Newton's laws of motion in simple terms",
+  "What is the difference between mitosis and meiosis?",
+];
+
+interface WelcomeScreenProps {
+  onSuggestion: (prompt: string, intent: string) => void;
+  onStarterPrompt: (prompt: string) => void;
+}
+
+function WelcomeScreen({ onSuggestion, onStarterPrompt }: WelcomeScreenProps) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center h-full px-4 select-none gap-4"
+      style={{ animation: "welcomeFadeIn 0.5s ease both" }}
+    >
+      {/* Logo + heading */}
+      <div
+        className="flex flex-col items-center gap-2"
+        style={{ animation: "welcomeSlideUp 0.5s ease both" }}
+      >
+        <div
+          className="w-11 h-11 rounded-2xl bg-primary/15 border border-primary/25 flex items-center justify-center shadow-lg"
+          style={{ animation: "welcomePulse 3s ease-in-out infinite" }}
+        >
+          <Sparkles className="w-5 h-5 text-primary" />
+        </div>
+        <div className="text-center">
+          <h1 className="text-xl font-semibold text-foreground tracking-tight">
+            What would you like to study?
+          </h1>
+          <p className="text-xs text-muted-foreground mt-1 max-w-xs leading-relaxed">
+            Ask a question, upload your notes, or pick a tool to get started
+          </p>
+        </div>
+      </div>
+
+      {/* Suggestion cards — 3-column grid */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 w-full max-w-xl">
+        {SUGGESTION_CARDS.map((card, i) => (
+          <button
+            key={card.intent + card.title}
+            onClick={() => onSuggestion("", card.intent)}
+            className="group text-left p-3 rounded-xl border border-border/60 bg-card/60 hover:bg-card hover:border-primary/30 hover:shadow-md hover:-translate-y-1.5 transition-all duration-200 cursor-pointer"
+            style={{ animation: `welcomeSlideUp 0.5s ease ${0.08 + i * 0.06}s both` }}
+          >
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className={`w-6 h-6 rounded-lg flex items-center justify-center transition-colors duration-200 ${card.iconBg}`}>
+                <card.icon className={`w-3 h-3 text-primary transition-colors duration-200 ${card.color}`} />
+              </div>
+              <span className="text-xs font-semibold text-foreground leading-tight">{card.title}</span>
+            </div>
+            <p className="text-xs text-muted-foreground leading-snug">{card.subtitle}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Starter prompts */}
+      <div className="flex flex-col gap-1.5 w-full max-w-xl"
+        style={{ animation: "welcomeSlideUp 0.5s ease 0.5s both" }}
+      >
+        <p className="text-xs text-muted-foreground font-medium px-0.5">Try asking</p>
+        {STARTER_PROMPTS.map((prompt) => (
+          <button
+            key={prompt}
+            onClick={() => onStarterPrompt(prompt)}
+            className="flex items-center gap-3 text-left px-3 py-2 rounded-xl border border-border/40 bg-card/40 hover:bg-card hover:border-primary/30 transition-all duration-150 group"
+          >
+            <ChevronRight className="w-3 h-3 text-primary/40 shrink-0 group-hover:text-primary transition-colors" />
+            <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">{prompt}</span>
+          </button>
+        ))}
+      </div>
+
+      <style>{`
+        @keyframes welcomeFadeIn {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes welcomeSlideUp {
+          from { opacity: 0; transform: translateY(14px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes welcomePulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.15); }
+          50%       { box-shadow: 0 0 0 10px rgba(99,102,241,0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+
 const ChatPage = () => {
   const { language } = useLanguage();
   const { voice } = useAppearance();
@@ -1613,6 +1774,37 @@ const ChatPage = () => {
     setLoadingAudioMsgId(null);
   };
 
+  // ── Script auto-detection for TTS ──────────────────────────────────────────
+  // When the AI responds directly in a non-English language (e.g. user asked
+  // "explain in Hindi"), translatedLang is never set. We detect the dominant
+  // Unicode script in the text and pick the correct voice automatically.
+  const detectScriptLang = (text: string): string | null => {
+    const counts: Record<string, number> = {
+      hi: (text.match(/[ऀ-ॿ]/g) || []).length, // Devanagari (Hindi/Marathi overlap)
+      ta: (text.match(/[஀-௿]/g) || []).length, // Tamil
+      te: (text.match(/[ఀ-౿]/g) || []).length, // Telugu
+      bn: (text.match(/[ঀ-৿]/g) || []).length, // Bengali
+      gu: (text.match(/[઀-૿]/g) || []).length, // Gujarati
+      kn: (text.match(/[ಀ-೿]/g) || []).length, // Kannada
+      mr: (text.match(/[ऀ-ॿ]/g) || []).length, // Marathi (same Devanagari range as Hindi)
+    };
+    // Find the script with the highest character count
+    const best = Object.entries(counts).reduce(
+      (a, b) => (b[1] > a[1] ? b : a),
+      ["", 0]
+    );
+    // Only override if a meaningful number of non-Latin chars found (>5% of text length)
+    if (best[1] > 0 && best[1] / text.length > 0.05) {
+      // Devanagari is shared by Hindi and Marathi — prefer app language if it's one of them,
+      // otherwise default to Hindi (more common).
+      if (best[0] === "mr" || best[0] === "hi") {
+        return (language === "mr") ? "mr" : "hi";
+      }
+      return best[0];
+    }
+    return null;
+  };
+
   // ── Azure Neural TTS ────────────────────────────────────────────────────────
   const speakText = async (msgId: string, text: string, langOverride?: string) => {
     if (speakingMsgId === msgId || loadingAudioMsgId === msgId) {
@@ -1630,7 +1822,8 @@ const ChatPage = () => {
       .trim();
     if (!cleanText) return;
 
-    const targetLang = langOverride ?? language;
+    // Priority: explicit override (Translate button) → script auto-detection → app language
+    const targetLang = langOverride ?? detectScriptLang(cleanText) ?? language;
     setLoadingAudioMsgId(msgId);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -2342,9 +2535,27 @@ const ChatPage = () => {
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto min-h-0 p-4 md:p-6 pb-24 space-y-4"
+        className={
+          messages.length === 1 && messages[0].content === "__welcome__"
+            ? "flex-1 overflow-hidden min-h-0"
+            : "flex-1 overflow-y-auto min-h-0 p-4 md:p-6 pb-24 space-y-4"
+        }
       >
-        {messages.map((msg) => {
+        {/* Welcome screen — visible only before the user has sent anything */}
+        {messages.length === 1 && (
+          <WelcomeScreen
+            onSuggestion={(prompt, intent) => {
+              if (intent) setIntentChip(intent);
+              // Don't pre-fill input — just set the chip and let the user type their topic
+              setTimeout(() => textareaRef.current?.focus(), 50);
+            }}
+            onStarterPrompt={(prompt) => {
+              setInput(prompt);
+              setTimeout(() => textareaRef.current?.focus(), 50);
+            }}
+          />
+        )}
+        {messages.filter((msg) => msg.content !== "__welcome__").map((msg) => {
           if (msg.role === "quiz" && msg.quizData)
             return (
               <div key={msg.id} className="flex justify-start animate-fade-in">

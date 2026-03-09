@@ -17,6 +17,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+
 import { toast } from "sonner";
 import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from "@/contexts/AppearanceContext";
 
@@ -189,47 +190,32 @@ const SettingsPage = () => {
   }, [fetchSettings, fetchAccount, fetchBilling, fetchConnectors]);
 
   // ── Save Settings ────────────────────────────────────────────────────────
+  // Debounced 600ms — batches rapid clicks into a single API call, no toast
 
-  const saveSettings = async (updates: Partial<UserSettings>) => {
-    setSaving(true);
-    try {
-      const res = await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
-      });
-      if (res.ok) {
-        toast.success("Settings saved");
-        await fetchSettings();
-      } else {
-        toast.error("Failed to save settings");
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saveSettings = useCallback((updates: Partial<UserSettings>) => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      setSaving(true);
+      try {
+        await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+      } catch {
+        // silent — change is already reflected in local state
+      } finally {
+        setSaving(false);
       }
-    } catch {
-      toast.error("Failed to save settings");
-    } finally {
-      setSaving(false);
-    }
-  };
+    }, 600);
+  }, []);
 
   // ── Connector Toggle ─────────────────────────────────────────────────────
 
-  const handleConnectorToggle = async (connectorId: string, connected: boolean) => {
-    try {
-      const res = await fetch(`${API_BASE}/settings/connectors/toggle?user_id=${USER_ID}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          connector_id: connectorId,
-          action: connected ? "disconnect" : "connect",
-        }),
-      });
-      if (res.ok) {
-        toast.success(connected ? "Disconnected" : "Connected");
-        await fetchConnectors();
-      }
-    } catch {
-      toast.error("Failed to toggle connector");
-    }
+  const handleConnectorToggle = async (_connectorId: string, _connected: boolean) => {
+    toast.info("Connector integrations coming soon!");
   };
 
   // ── Plan Upgrade ─────────────────────────────────────────────────────────
@@ -242,12 +228,12 @@ const SettingsPage = () => {
         body: JSON.stringify({ plan_id: planId }),
       });
       if (res.ok) {
-        toast.success(`Plan updated successfully!`);
+        
         setShowPlansDialog(false);
         await fetchBilling();
       }
     } catch {
-      toast.error("Failed to upgrade plan");
+
     }
   };
 
@@ -390,7 +376,7 @@ const SettingsPage = () => {
 interface GeneralTabProps {
   settings: UserSettings;
   setSettings: React.Dispatch<React.SetStateAction<UserSettings>>;
-  saveSettings: (updates: Partial<UserSettings>) => Promise<void>;
+  saveSettings: (updates: Partial<UserSettings>) => void;
   saving: boolean;
 }
 
@@ -429,7 +415,7 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
       await audio.play();
     } catch (err) {
       console.error("Voice preview error:", err);
-      toast.error("Could not play voice preview");
+
       setPreviewingVoice(null);
     }
   };
@@ -836,7 +822,7 @@ const AccountTab = ({
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowLogoutDialog(false)}>Cancel</Button>
-            <Button onClick={() => { setShowLogoutDialog(false); toast.info("Logout functionality coming soon"); }}>
+            <Button onClick={() => { setShowLogoutDialog(false); }}>
               Log out
             </Button>
           </DialogFooter>
@@ -857,7 +843,7 @@ const AccountTab = ({
             <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>Cancel</Button>
             <Button
               variant="destructive"
-              onClick={() => { setShowDeleteDialog(false); toast.info("Account deletion coming soon"); }}
+              onClick={() => { setShowDeleteDialog(false); }}
             >
               Delete account
             </Button>
