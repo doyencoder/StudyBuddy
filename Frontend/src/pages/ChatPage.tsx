@@ -148,6 +148,28 @@ const INITIAL_MESSAGES: Message[] = [
   },
 ];
 
+// ── Per-conversation state ────────────────────────────────────────────────────
+// Each conversation gets its own isolated slice of state so that background
+// streams never bleed into the currently visible chat (Option B isolation).
+interface ConvState {
+  messages: Message[];
+  isTyping: boolean;
+  isReadingDoc: boolean;
+  regeneratingMsgId: string | null;
+}
+
+// Temporary key used for a brand-new conversation before the backend assigns a real ID
+const NEW_CONV_KEY = "__new__";
+
+function defaultConvState(): ConvState {
+  return {
+    messages: INITIAL_MESSAGES,
+    isTyping: false,
+    isReadingDoc: false,
+    regeneratingMsgId: null,
+  };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function generateUUID(): string {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -1251,9 +1273,44 @@ const StudyPlanCard = ({
 const ChatPage = () => {
   const { language } = useLanguage();
   const { voice } = useAppearance();
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+  // ── Per-conversation state map ──────────────────────────────────────────────
+  // Keyed by conversation ID (or NEW_CONV_KEY for an unsaved new chat).
+  // SSE handlers always write into their own slot, so switching convs never
+  // corrupts the currently visible conversation.
+  const [convStates, setConvStates] = useState<Record<string, ConvState>>({});
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
+
+  // Helper: immutably update one conversation's slice
+  const updateConv = (convId: string, updater: (s: ConvState) => ConvState) => {
+    setConvStates((prev) => {
+      const cur = prev[convId] ?? defaultConvState();
+      return { ...prev, [convId]: updater(cur) };
+    });
+  };
+
+  // Derived: the state for whichever conversation is currently on screen
+  const viewKey = activeConvId ?? NEW_CONV_KEY;
+  const { messages, isTyping, isReadingDoc, regeneratingMsgId } =
+    convStates[viewKey] ?? defaultConvState();
+
+  // Convenience alias so the rest of the code can still read `conversationId`
+  const conversationId = activeConvId;
+
+  // Broadcast to the sidebar (and any other listener) whenever any conversation
+  // starts or stops thinking, so the "New chat" button can be disabled.
+  useEffect(() => {
+    const isAnyTyping = Object.values(convStates).some((s) => s.isTyping);
+    window.dispatchEvent(
+      new CustomEvent("typing-state-changed", { detail: { isAnyTyping } })
+    );
+  }, [convStates]);
+
+  // Track which conv IDs we have already loaded from the server (or are
+  // actively streaming) so the history effect never overwrites live state.
+  const loadedConvIds = useRef<Set<string>>(new Set());
+
+  // ── Other UI state (not per-conversation) ───────────────────────────────────
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<
     {
@@ -1264,9 +1321,7 @@ const ChatPage = () => {
       fileType: "image" | "pdf" | "document";
     }[]
   >([]);
-  const [isReadingDoc, setIsReadingDoc] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
   const [intentChip, setIntentChip] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
@@ -1274,9 +1329,6 @@ const ChatPage = () => {
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [loadingAudioMsgId, setLoadingAudioMsgId] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
-
-  // Regenerate state
-  const [regeneratingMsgId, setRegeneratingMsgId] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const baseTextRef = useRef<string>("");
@@ -1306,8 +1358,9 @@ const ChatPage = () => {
     const urlConversationId = searchParams.get("conversationId");
 
     if (!urlConversationId) {
-      setMessages(INITIAL_MESSAGES);
-      setConversationId(null);
+      // Navigating to the new-chat screen — just switch the active view.
+      // We do NOT wipe convStates; background streams keep running untouched.
+      setActiveConvId(null);
       setInput("");
       lastLoadedId.current = null;
       return;
@@ -1318,11 +1371,27 @@ const ChatPage = () => {
       return;
     }
 
-    if (lastLoadedId.current === urlConversationId) return;
+    // Always update which conv is on screen immediately
+    setActiveConvId(urlConversationId);
 
-    setConversationId(urlConversationId);
+    // If this conv is already in our state map (streaming or previously visited)
+    // don't overwrite it with a server fetch — just show what we have.
+    if (loadedConvIds.current.has(urlConversationId)) {
+      lastLoadedId.current = urlConversationId;
+      return;
+    }
+
     setIsLoadingHistory(true);
-    setMessages([]);
+    // Initialise an empty slot so the spinner shows while we fetch
+    setConvStates((prev) => ({
+      ...prev,
+      [urlConversationId]: {
+        messages: [],
+        isTyping: false,
+        isReadingDoc: false,
+        regeneratingMsgId: null,
+      },
+    }));
 
     const loadHistory = async () => {
       try {
@@ -1456,14 +1525,21 @@ const ChatPage = () => {
           };
         });
 
-        if (loadedMessages.length > 0) {
-          setMessages([INITIAL_MESSAGES[0], ...loadedMessages]);
-        }
+        updateConv(urlConversationId, () => ({
+          messages:
+            loadedMessages.length > 0
+              ? [INITIAL_MESSAGES[0], ...loadedMessages]
+              : INITIAL_MESSAGES,
+          isTyping: false,
+          isReadingDoc: false,
+          regeneratingMsgId: null,
+        }));
       } catch {
         toast.error("Could not load conversation history.");
       } finally {
         setIsLoadingHistory(false);
         lastLoadedId.current = urlConversationId;
+        loadedConvIds.current.add(urlConversationId);
       }
     };
 
@@ -1686,19 +1762,27 @@ const ChatPage = () => {
 
   // ── Quiz helpers ────────────────────────────────────────────────────────────
   const handleQuizComplete = (messageId: string, updatedQuizData: QuizData) => {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === messageId ? { ...m, quizData: updatedQuizData } : m))
-    );
+    if (!activeConvId) return;
+    updateConv(activeConvId, (s) => ({
+      ...s,
+      messages: s.messages.map((m) =>
+        m.id === messageId ? { ...m, quizData: updatedQuizData } : m
+      ),
+    }));
   };
 
   // ── Shared SSE stream helper ────────────────────────────────────────────────
-  const streamIntoMessage = async (userText: string, targetMsgId: string) => {
+  const streamIntoMessage = async (
+    userText: string,
+    targetMsgId: string,
+    convId: string
+  ) => {
     const response = await fetch(`${API_BASE}/chat/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         user_id: USER_ID,
-        conversation_id: conversationId,
+        conversation_id: convId,
         message: userText,
       }),
     });
@@ -1717,7 +1801,7 @@ const ChatPage = () => {
         if (!line.startsWith("data: ")) continue;
         const dataStr = line.slice(6).trim();
         if (dataStr === "[DONE]") {
-          setIsTyping(false);
+          updateConv(convId, (s) => ({ ...s, isTyping: false }));
           break;
         }
 
@@ -1728,23 +1812,31 @@ const ChatPage = () => {
           continue;
         }
 
-        if (parsed.type === "meta" && parsed.conversation_id)
-          setConversationId(parsed.conversation_id);
+        // meta — backend confirms conversation ID (shouldn't change for regen, but guard anyway)
+        if (parsed.type === "meta" && parsed.conversation_id) {
+          setActiveConvId((prev) =>
+            prev === convId ? parsed.conversation_id! : prev
+          );
+        }
 
         if (parsed.type === "text" && parsed.content) {
-          setMessages((prev) =>
-            prev.map((m) =>
+          updateConv(convId, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
               m.id === targetMsgId
-                ? { ...m, content: firstChunk ? parsed.content! : m.content + parsed.content }
+                ? {
+                    ...m,
+                    content: firstChunk ? parsed.content! : m.content + parsed.content,
+                  }
                 : m
-            )
-          );
+            ),
+          }));
           firstChunk = false;
         }
 
         if (parsed.type === "error") {
           toast.error(`AI error: ${parsed.content}`);
-          setIsTyping(false);
+          updateConv(convId, (s) => ({ ...s, isTyping: false }));
           break;
         }
       }
@@ -1754,10 +1846,16 @@ const ChatPage = () => {
   // ── Regenerate ──────────────────────────────────────────────────────────────
   const regenerateMessage = async (assistantMsgId: string) => {
     stopSpeech();
-    const idx = messages.findIndex((m) => m.id === assistantMsgId);
+
+    // Snapshot the conv this regeneration belongs to.
+    const convId = activeConvId;
+    if (!convId) return;
+
+    const currentMessages = (convStates[convId] ?? defaultConvState()).messages;
+    const idx = currentMessages.findIndex((m) => m.id === assistantMsgId);
     if (idx === -1) return;
 
-    const precedingUser = [...messages]
+    const precedingUser = [...currentMessages]
       .slice(0, idx)
       .reverse()
       .find((m) => m.role === "user");
@@ -1765,11 +1863,8 @@ const ChatPage = () => {
       toast.error("Could not find the original question to regenerate.");
       return;
     }
-    if (!conversationId) {
-      toast.error("No active conversation.");
-      return;
-    }
 
+    // Clear translation cache for this message
     setTranslatedContent((prev) => {
       const n = { ...prev };
       delete n[assistantMsgId];
@@ -1780,19 +1875,23 @@ const ChatPage = () => {
       delete n[assistantMsgId];
       return n;
     });
-    setMessages((prev) =>
-      prev.map((m) => (m.id === assistantMsgId ? { ...m, content: "" } : m))
-    );
-    setRegeneratingMsgId(assistantMsgId);
-    setIsTyping(true);
+
+    // Clear the message content and mark as regenerating — all scoped to convId
+    updateConv(convId, (s) => ({
+      ...s,
+      messages: s.messages.map((m) =>
+        m.id === assistantMsgId ? { ...m, content: "" } : m
+      ),
+      regeneratingMsgId: assistantMsgId,
+      isTyping: true,
+    }));
 
     try {
-      await streamIntoMessage(precedingUser.content, assistantMsgId);
+      await streamIntoMessage(precedingUser.content, assistantMsgId, convId);
     } catch {
       toast.error("Could not reach the server. Is the backend running?");
     } finally {
-      setRegeneratingMsgId(null);
-      setIsTyping(false);
+      updateConv(convId, (s) => ({ ...s, regeneratingMsgId: null, isTyping: false }));
     }
   };
 
@@ -1811,25 +1910,40 @@ const ChatPage = () => {
     setIntentChip(null);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-    // Optimistically show user message bubble
     const userMsgId = generateUUID();
     const aiMsgId = generateUUID();
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: userMsgId,
-        role: "user",
-        content: userMessage,
-        intentHint: chipValue ?? undefined,
-        attachments: sentFiles.map((f) => ({
-          name: f.name,
-          blobUrl: f.blobUrl,
-          fileType: getFileType(f.name),
-        })),
-        timestamp: new Date(),
-      },
-    ]);
-    setIsTyping(true);
+
+    // ── Snapshot which conversation this request belongs to ──────────────────
+    // For a brand-new chat (no conversationId yet) we use NEW_CONV_KEY as a
+    // temporary slot. Once the backend assigns a real UUID (via the "meta"
+    // SSE event) we migrate the state over.
+    const startConvId = activeConvId; // null for new chat
+    let convKey = startConvId ?? NEW_CONV_KEY;
+
+    // Mark this slot as "live" so the history effect never overwrites it
+    loadedConvIds.current.add(convKey);
+
+    // Optimistically add the user's message and start the typing indicator,
+    // all scoped to convKey so no other conversation is affected.
+    updateConv(convKey, (s) => ({
+      ...s,
+      messages: [
+        ...s.messages,
+        {
+          id: userMsgId,
+          role: "user",
+          content: userMessage,
+          intentHint: chipValue ?? undefined,
+          attachments: sentFiles.map((f) => ({
+            name: f.name,
+            blobUrl: f.blobUrl,
+            fileType: getFileType(f.name),
+          })),
+          timestamp: new Date(),
+        },
+      ],
+      isTyping: true,
+    }));
 
     let messageAdded = false;
     try {
@@ -1854,7 +1968,7 @@ const ChatPage = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: USER_ID,
-          conversation_id: conversationId,
+          conversation_id: startConvId, // null is correct for a new conversation
           message: userMessage,
           ...filePayload,
           ...attachmentsPayload,
@@ -1875,7 +1989,7 @@ const ChatPage = () => {
           if (!line.startsWith("data: ")) continue;
           const dataStr = line.slice(6).trim();
           if (dataStr === "[DONE]") {
-            setIsTyping(false);
+            updateConv(convKey, (s) => ({ ...s, isTyping: false }));
             break;
           }
 
@@ -1886,109 +2000,156 @@ const ChatPage = () => {
             continue;
           }
 
-          // URL / sidebar sync
+          // ── meta: backend assigned a real conversation ID ────────────────
           if (parsed.type === "meta" && parsed.conversation_id) {
-            const isNew = !conversationId;
-            setConversationId(parsed.conversation_id);
-            skipHistoryReload.current = true;
-            navigate(`/chat?conversationId=${parsed.conversation_id}`, { replace: true });
-            if (isNew) window.dispatchEvent(new CustomEvent("conversation-created"));
+            const realId: string = parsed.conversation_id;
+            if (convKey !== realId) {
+              // Migrate the streaming state from the temp key to the real ID
+              loadedConvIds.current.add(realId);
+              loadedConvIds.current.delete(convKey);
+
+              setConvStates((prev) => {
+                const liveState = prev[convKey] ?? defaultConvState();
+                const { [convKey]: _drop, ...rest } = prev;
+                return { ...rest, [realId]: liveState };
+              });
+
+              // Only switch the visible conversation if the user hasn't
+              // manually navigated away while we were waiting for meta.
+              setActiveConvId((prev) => (prev === startConvId ? realId : prev));
+
+              // Update the URL without triggering a history reload
+              skipHistoryReload.current = true;
+              navigate(`/chat?conversationId=${realId}`, { replace: true });
+
+              if (!startConvId) {
+                // Brand-new conversation — notify the sidebar
+                setTimeout(
+                  () => window.dispatchEvent(new CustomEvent("conversation-created")),
+                  700
+                );
+              }
+
+              // All subsequent SSE writes go to the real ID
+              convKey = realId;
+            }
           }
 
           // Document reading status
           if (parsed.type === "status") {
-            setIsReadingDoc(parsed.content === "reading_document");
+            updateConv(convKey, (s) => ({
+              ...s,
+              isReadingDoc: parsed.content === "reading_document",
+            }));
           }
 
           // Regular streaming text
           if (parsed.type === "text" && parsed.content) {
             if (!messageAdded) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: aiMsgId,
-                  role: "assistant",
-                  content: parsed.content!,
-                  timestamp: new Date(),
-                },
-              ]);
+              updateConv(convKey, (s) => ({
+                ...s,
+                messages: [
+                  ...s.messages,
+                  {
+                    id: aiMsgId,
+                    role: "assistant",
+                    content: parsed.content!,
+                    timestamp: new Date(),
+                  },
+                ],
+              }));
               messageAdded = true;
             } else {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === aiMsgId ? { ...m, content: m.content + parsed.content } : m
-                )
-              );
+              updateConv(convKey, (s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === aiMsgId
+                    ? { ...m, content: m.content + parsed.content }
+                    : m
+                ),
+              }));
             }
           }
 
           // ── Feature result events ─────────────────────────────────────
           if (parsed.type === "quiz_result" && parsed.data) {
             const d = parsed.data;
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: aiMsgId,
-                role: "quiz",
-                content: "",
-                quizData: {
-                  quiz_id: d.quiz_id,
-                  topic: d.topic,
-                  questions: d.questions,
-                  submitted: false,
-                  fun_fact: d.fun_fact ?? "",
+            updateConv(convKey, (s) => ({
+              ...s,
+              messages: [
+                ...s.messages,
+                {
+                  id: aiMsgId,
+                  role: "quiz",
+                  content: "",
+                  quizData: {
+                    quiz_id: d.quiz_id,
+                    topic: d.topic,
+                    questions: d.questions,
+                    submitted: false,
+                    fun_fact: d.fun_fact ?? "",
                 },
-                timestamp: new Date(),
-              },
-            ]);
+                  timestamp: new Date(),
+                },
+              ],
+            }));
             messageAdded = true;
           }
 
           if (parsed.type === "diagram_result" && parsed.data) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: aiMsgId,
-                role: "diagram",
-                content: "",
-                diagramData: parsed.data as DiagramData,
-                timestamp: new Date(),
-              },
-            ]);
+            updateConv(convKey, (s) => ({
+              ...s,
+              messages: [
+                ...s.messages,
+                {
+                  id: aiMsgId,
+                  role: "diagram",
+                  content: "",
+                  diagramData: parsed.data as DiagramData,
+                  timestamp: new Date(),
+                },
+              ],
+            }));
             messageAdded = true;
           }
 
           if (parsed.type === "image_result" && parsed.data) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: aiMsgId,
-                role: "image",
-                content: "",
-                imageData: { ...parsed.data, type: "image" as const },
-                timestamp: new Date(),
-              },
-            ]);
+            updateConv(convKey, (s) => ({
+              ...s,
+              messages: [
+                ...s.messages,
+                {
+                  id: aiMsgId,
+                  role: "image",
+                  content: "",
+                  imageData: { ...parsed.data, type: "image" as const },
+                  timestamp: new Date(),
+                },
+              ],
+            }));
             messageAdded = true;
           }
 
           if (parsed.type === "study_plan_result" && parsed.data) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: aiMsgId,
-                role: "study_plan",
-                content: "",
-                studyPlanData: parsed.data as StudyPlanData,
-                timestamp: new Date(),
-              },
-            ]);
+            updateConv(convKey, (s) => ({
+              ...s,
+              messages: [
+                ...s.messages,
+                {
+                  id: aiMsgId,
+                  role: "study_plan",
+                  content: "",
+                  studyPlanData: parsed.data as StudyPlanData,
+                  timestamp: new Date(),
+                },
+              ],
+            }));
             messageAdded = true;
           }
 
           if (parsed.type === "error") {
             toast.error(`AI error: ${parsed.content}`);
-            setIsTyping(false);
+            updateConv(convKey, (s) => ({ ...s, isTyping: false }));
             break;
           }
         }
@@ -1996,7 +2157,7 @@ const ChatPage = () => {
     } catch {
       toast.error("Could not reach the server. Is the backend running?");
     } finally {
-      setIsTyping(false);
+      updateConv(convKey, (s) => ({ ...s, isTyping: false }));
     }
   };
 

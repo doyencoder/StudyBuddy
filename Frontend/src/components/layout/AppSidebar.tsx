@@ -50,6 +50,16 @@ const AppSidebar = () => {
   const navigate = useNavigate();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [isAnyTyping, setIsAnyTyping] = useState(false);
+
+  // Keep in sync with ChatPage's streaming state
+  useEffect(() => {
+    const handler = (e: Event) => {
+      setIsAnyTyping((e as CustomEvent<{ isAnyTyping: boolean }>).detail.isAnyTyping);
+    };
+    window.addEventListener("typing-state-changed", handler);
+    return () => window.removeEventListener("typing-state-changed", handler);
+  }, []);
 
   const fetchConversations = async () => {
     try {
@@ -146,7 +156,9 @@ const AppSidebar = () => {
                   variant="ghost"
                   size="sm"
                   onClick={() => navigate("/chat")}
-                  className="w-full justify-start gap-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 h-8"
+                  disabled={isAnyTyping}
+                  title={isAnyTyping ? "Wait for the response to finish" : "New chat"}
+                  className="w-full justify-start gap-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 h-8 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   New chat
