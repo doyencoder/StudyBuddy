@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import re
@@ -65,10 +66,12 @@ async def chat_message(request: ChatRequest):
     Unified chat endpoint with intent classification and dispatch.
 
     1. Fetches history + pending_intent in ONE Cosmos read.
-    2. Classifies intent via Gemini (fast JSON call).
+    2a. [OPT 1] If intent_hint set (chip click) → skip Gemini classify call entirely.
+    2b. [OPT 2] Otherwise → run classify_intent + embed_query IN PARALLEL on thread pool.
     3. Clarification → streams question + stores pending_intent in Cosmos.
-    4. Feature intent → dispatches to quiz / diagram / image / study_plan.
-    5. Default → existing RAG chat stream.
+    4. [OPT 3] Skip Azure AI Search RAG calls when no documents exist in conversation.
+    5. Feature intent → dispatches to quiz / diagram / image / study_plan.
+    6. Default → existing RAG chat stream.
     """
 
     # ── Ensure conversation ───────────────────────────────────────────────────
@@ -81,14 +84,56 @@ async def chat_message(request: ChatRequest):
     prior_messages = conv_data["messages"]
     pending_intent = conv_data["pending_intent"]
 
-    # ── Classify intent ───────────────────────────────────────────────────────
-    classification = classify_intent(
-        message=request.message,
-        intent_hint=request.intent_hint,
-        conversation_history=prior_messages,
-        attached_filename=request.filename,
-        pending_intent=pending_intent,
-    )
+    # ── OPTIMISATION 1: Skip classify_intent when chip already tells us intent ─
+    # When intent_hint is set the user clicked a + menu chip — intent is 100%
+    # known before any AI call. No reason to spend ~2000ms confirming it.
+    # ── OPTIMISATION 2: Parallelise classify_intent + embed_query ─────────────
+    # On the natural language path both calls are fully independent.
+    # Running them on thread-pool workers via asyncio.gather() saves ~400ms.
+    pre_embedding = None  # may be pre-computed by Opt 2 below
+
+    if request.intent_hint:
+        # Intent known from chip — build classification dict with no Gemini call
+        msg_lower = (request.message or "").lower()
+        num_q_match = re.search(r'(\d+)\s*questions?', msg_lower)
+        # Parse weeks for study_plan chip: "4 weeks", "2 months" → weeks
+        weeks_match = re.search(r'(\d+)\s*(week|month)', msg_lower)
+        weeks_val = None
+        if weeks_match:
+            n = int(weeks_match.group(1))
+            weeks_val = n * 4 if "month" in weeks_match.group(2) else n
+        no_topic = not request.message.strip()
+        classification = {
+            "intent":               request.intent_hint,
+            "topic":                request.message.strip() or None,
+            "topic_source":         "message",
+            "num_questions":        int(num_q_match.group(1)) if num_q_match else 5,
+            "timeline_weeks":       weeks_val,
+            "hours_per_week":       None,
+            "needs_clarification":  no_topic,
+            "clarification_question": (
+                f"What topic would you like for your "
+                f"{request.intent_hint.replace('_', ' ')}?"
+                if no_topic else None
+            ),
+        }
+    else:
+        # Natural language path — run classify + embed concurrently on thread pool
+        # Both are synchronous/blocking; run_in_executor pushes each to a worker
+        # thread so they execute in parallel instead of sequentially.
+        loop = asyncio.get_event_loop()
+        classification, pre_embedding = await asyncio.gather(
+            loop.run_in_executor(None, lambda: classify_intent(
+                message=request.message,
+                intent_hint=None,
+                conversation_history=prior_messages,
+                attached_filename=request.filename,
+                pending_intent=pending_intent,
+            )),
+            loop.run_in_executor(None, lambda: embed_query(
+                request.message or "key concepts"
+            )),
+        )
 
     intent              = classification["intent"]
     topic_raw           = classification.get("topic") or ""
@@ -169,24 +214,39 @@ async def chat_message(request: ChatRequest):
         pending_intent_update=None,
     )
 
-    # ── RAG retrieval for chat path ───────────────────────────────────────────
+    # ── OPTIMISATION 3: Skip RAG entirely when no documents exist ─────────────
+    # conversation_has_documents() is a lightweight Azure Search call (top=1).
+    # When no docs are uploaded both retrieve_chunks calls are guaranteed to
+    # return [] — wasting ~600ms on two round-trips. Skip them entirely.
+    # NOTE: This does NOT affect conversation memory — that comes from Cosmos
+    # (prior_messages above), not from Azure Search.
+    q_text = request.message or topic or "key concepts"
+    query_embedding = None
+    context_chunks  = []
     try:
-        q_text = request.message or topic or "key concepts"
-        query_embedding = embed_query(q_text)
-        context_chunks = retrieve_chunks(
-            query_embedding=query_embedding,
+        has_docs = conversation_has_documents(
             user_id=request.user_id,
             conversation_id=conversation_id,
-            top_k=5,
         )
-        if not context_chunks:
+        if has_docs:
+            # Use pre_embedding from Opt 2 parallelisation if available,
+            # otherwise compute now (chip path didn't pre-compute one).
+            query_embedding = pre_embedding if pre_embedding is not None else embed_query(q_text)
             context_chunks = retrieve_chunks(
                 query_embedding=query_embedding,
                 user_id=request.user_id,
                 conversation_id=conversation_id,
                 top_k=5,
-                score_threshold=0.5,
             )
+            if not context_chunks:
+                context_chunks = retrieve_chunks(
+                    query_embedding=query_embedding,
+                    user_id=request.user_id,
+                    conversation_id=conversation_id,
+                    top_k=5,
+                    score_threshold=0.5,
+                )
+        # else: no docs → skip embed + both retrieval calls (~600ms saved)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG retrieval failed: {str(e)}")
 
@@ -244,6 +304,10 @@ async def chat_message(request: ChatRequest):
             return
 
         # ── Regular chat ──────────────────────────────────────────────────────
+        # asyncio.sleep(0) after each chunk yields control back to the event loop,
+        # forcing Uvicorn to flush its send buffer immediately instead of batching
+        # multiple chunks together. Without this, the sync chat_stream() generator
+        # blocks the event loop and causes tokens to arrive in bursts on the frontend.
         full_reply = ""
         try:
             for chunk in chat_stream(
@@ -253,6 +317,7 @@ async def chat_message(request: ChatRequest):
             ):
                 full_reply += chunk
                 yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                await asyncio.sleep(0)  # ← flush: yield event loop control after every token
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return

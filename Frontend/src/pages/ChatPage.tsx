@@ -1792,6 +1792,29 @@ const ChatPage = () => {
     const decoder = new TextDecoder();
     let firstChunk = true;
 
+    // ── OPT 4: RAF batching — accumulate text tokens in a plain variable and
+    // flush to React state at most once per animation frame (60fps).
+    // Without this, each SSE token triggers a re-render which blocks reader.read(),
+    // causing tokens to pile up in the TCP buffer and arrive in large bursts.
+    let pendingContent = "";
+    let rafScheduled = false;
+    const flushPending = () => {
+      if (pendingContent === "") return;
+      const toFlush = pendingContent;
+      pendingContent = "";
+      rafScheduled = false;
+      // Use updateConv so the flush writes into the correct conversation slot
+      updateConv(convId, (s) => ({
+        ...s,
+        messages: s.messages.map((m) =>
+          m.id === targetMsgId
+            ? { ...m, content: firstChunk ? toFlush : m.content + toFlush }
+            : m
+        ),
+      }));
+      firstChunk = false;
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1801,6 +1824,7 @@ const ChatPage = () => {
         if (!line.startsWith("data: ")) continue;
         const dataStr = line.slice(6).trim();
         if (dataStr === "[DONE]") {
+          flushPending(); // flush any remaining buffered text before stopping
           updateConv(convId, (s) => ({ ...s, isTyping: false }));
           break;
         }
@@ -1820,18 +1844,12 @@ const ChatPage = () => {
         }
 
         if (parsed.type === "text" && parsed.content) {
-          updateConv(convId, (s) => ({
-            ...s,
-            messages: s.messages.map((m) =>
-              m.id === targetMsgId
-                ? {
-                    ...m,
-                    content: firstChunk ? parsed.content! : m.content + parsed.content,
-                  }
-                : m
-            ),
-          }));
-          firstChunk = false;
+          // Accumulate into plain variable — RAF batches the actual React update
+          pendingContent += parsed.content;
+          if (!rafScheduled) {
+            rafScheduled = true;
+            requestAnimationFrame(flushPending);
+          }
         }
 
         if (parsed.type === "error") {
@@ -1980,6 +1998,42 @@ const ChatPage = () => {
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
 
+      // ── OPT 4: RAF batching — same pattern as streamIntoMessage.
+      // Accumulate SSE text tokens in a plain variable and flush to React state
+      // at most once per animation frame. Keeps reader.read() unblocked so the
+      // TCP buffer drains continuously → smooth word-by-word streaming.
+      let pendingContent = "";
+      let rafScheduled = false;
+      const flushPending = () => {
+        if (pendingContent === "") return;
+        const toFlush = pendingContent;
+        pendingContent = "";
+        rafScheduled = false;
+        // Use updateConv so the flush writes into the correct conversation slot
+        if (!messageAdded) {
+          updateConv(convKey, (s) => ({
+            ...s,
+            messages: [
+              ...s.messages,
+              {
+                id: aiMsgId,
+                role: "assistant",
+                content: toFlush,
+                timestamp: new Date(),
+              },
+            ],
+          }));
+          messageAdded = true;
+        } else {
+          updateConv(convKey, (s) => ({
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === aiMsgId ? { ...m, content: m.content + toFlush } : m
+            ),
+          }));
+        }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1989,6 +2043,7 @@ const ChatPage = () => {
           if (!line.startsWith("data: ")) continue;
           const dataStr = line.slice(6).trim();
           if (dataStr === "[DONE]") {
+            flushPending(); // flush any remaining buffered text before stopping
             updateConv(convKey, (s) => ({ ...s, isTyping: false }));
             break;
           }
@@ -2043,31 +2098,12 @@ const ChatPage = () => {
             }));
           }
 
-          // Regular streaming text
+          // Regular streaming text — accumulate into plain variable, RAF batches the React update
           if (parsed.type === "text" && parsed.content) {
-            if (!messageAdded) {
-              updateConv(convKey, (s) => ({
-                ...s,
-                messages: [
-                  ...s.messages,
-                  {
-                    id: aiMsgId,
-                    role: "assistant",
-                    content: parsed.content!,
-                    timestamp: new Date(),
-                  },
-                ],
-              }));
-              messageAdded = true;
-            } else {
-              updateConv(convKey, (s) => ({
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === aiMsgId
-                    ? { ...m, content: m.content + parsed.content }
-                    : m
-                ),
-              }));
+            pendingContent += parsed.content;
+            if (!rafScheduled) {
+              rafScheduled = true;
+              requestAnimationFrame(flushPending);
             }
           }
 
