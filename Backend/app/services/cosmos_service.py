@@ -71,16 +71,24 @@ async def ensure_conversation(user_id: str, conversation_id: str, title: str = "
         container = db.get_container_client(CONVERSATIONS_CONTAINER)
         await container.upsert_item(body=document)
 
+_PENDING_UNSET = object()  # sentinel — means "don't touch pending_intent field"
+
+
 async def save_message(
     conversation_id: str,
     user_id: str,
     role: str,
     content: str,
+    pending_intent_update=_PENDING_UNSET,
 ) -> Dict[str, Any]:
     """
     Appends a single message to an existing conversation document.
-    Uses read-then-replace since Cosmos NoSQL doesn't support
-    atomic array push like MongoDB does.
+    Uses read-then-replace since Cosmos NoSQL doesn't support atomic array push.
+
+    pending_intent_update:
+        _PENDING_UNSET (default) → do not touch the pending_intent field
+        None                     → clear the pending_intent field
+        str                      → set the pending_intent field to that value
     """
     message = {
         "id": str(uuid.uuid4()),
@@ -94,17 +102,20 @@ async def save_message(
         container = db.get_container_client(CONVERSATIONS_CONTAINER)
 
         try:
-            # Read the existing conversation document
             item = await container.read_item(
                 item=conversation_id,
                 partition_key=user_id,
             )
-            # Append new message and write back
             item["messages"].append(message)
+            # Update pending_intent only when explicitly requested
+            if pending_intent_update is not _PENDING_UNSET:
+                if pending_intent_update is None:
+                    item.pop("pending_intent", None)
+                else:
+                    item["pending_intent"] = pending_intent_update
             await container.replace_item(item=conversation_id, body=item)
 
         except CosmosResourceNotFoundError:
-            # Safety net: conversation doc missing — create it now
             new_doc = {
                 "id": conversation_id,
                 "conversation_id": conversation_id,
@@ -112,6 +123,8 @@ async def save_message(
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "messages": [message],
             }
+            if pending_intent_update is not _PENDING_UNSET and pending_intent_update is not None:
+                new_doc["pending_intent"] = pending_intent_update
             await container.create_item(body=new_doc)
 
     return message
@@ -147,6 +160,36 @@ async def get_messages(conversation_id: str) -> List[Dict[str, Any]]:
 
         except CosmosResourceNotFoundError:
             return []
+
+
+async def get_conversation_full(conversation_id: str) -> Dict[str, Any]:
+    """
+    Fetches the full conversation document returning both messages and metadata.
+    Returns {"messages": [...], "pending_intent": str|None} — no extra Cosmos
+    round trip vs get_messages() since it reuses the same query.
+    Returns safe defaults if the conversation does not exist yet.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+
+        try:
+            query = "SELECT * FROM c WHERE c.conversation_id = @cid"
+            parameters = [{"name": "@cid", "value": conversation_id}]
+            results = []
+            async for item in container.query_items(query=query, parameters=parameters):
+                results.append(item)
+
+            if not results:
+                return {"messages": [], "pending_intent": None}
+
+            doc = results[0]
+            messages = doc.get("messages", [])
+            messages.sort(key=lambda m: m.get("timestamp", ""))
+            return {"messages": messages, "pending_intent": doc.get("pending_intent")}
+
+        except CosmosResourceNotFoundError:
+            return {"messages": [], "pending_intent": None}
 
 
 async def update_message_json(

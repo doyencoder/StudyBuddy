@@ -27,6 +27,8 @@ class ChatRequest(BaseModel):
     blob_url: Optional[str] = None
     filename: Optional[str] = None
     attachments: Optional[List["ChatAttachment"]] = None
+    # Set when user clicked an intent tile chip ("quiz", "flowchart", "mindmap", "study_plan", "image")
+    intent_hint: Optional[str] = None
 
 
 class ChatMessage(BaseModel):

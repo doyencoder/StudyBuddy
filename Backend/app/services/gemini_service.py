@@ -685,6 +685,151 @@ STRICT RULES:
     }
 
 
+def classify_intent(
+    message: str,
+    intent_hint: str | None,
+    conversation_history: list,
+    attached_filename: str | None = None,
+    pending_intent: str | None = None,
+) -> dict:
+    """
+    Single Gemini call that classifies the user's intent and extracts all
+    parameters needed to dispatch to the right service.
+
+    intent_hint  : set when user explicitly clicked a tile chip ("quiz",
+                   "flowchart", "mindmap", "study_plan", "image")
+    pending_intent: set in Cosmos when the previous turn ended with a
+                   clarification question — auto-inherited as intent.
+
+    Returns:
+    {
+        "intent": "chat|quiz|flowchart|mindmap|study_plan|image",
+        "topic":  str | "[from_document]" | None,
+        "topic_source": "message|filename|history|document|null",
+        "num_questions": 5,
+        "timeline_weeks": None,
+        "hours_per_week": None,
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    """
+    client = _get_client()
+
+    # Build a readable history summary (skip rich-card JSON blobs)
+    readable = [
+        m for m in (conversation_history or [])[-6:]
+        if m.get("role") in ("user", "assistant")
+        and not str(m.get("content", "")).startswith('{"__type":')
+    ]
+    history_text = "\n".join(
+        f"{'Student' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:250]}"
+        for m in readable
+    ) or "(no prior messages)"
+
+    intent_hint_line = (
+        f'intent_hint (user clicked tile): "{intent_hint}"'
+        if intent_hint else
+        "intent_hint: null"
+    )
+    filename_line = (
+        f'Attached file in this message: "{attached_filename}"'
+        if attached_filename else
+        "Attached file: none"
+    )
+    pending_line = (
+        f'pending_intent from previous clarification turn: "{pending_intent}"'
+        if pending_intent else
+        "pending_intent: null"
+    )
+
+    prompt = f"""You are an intent classifier for a student study app. Return ONLY valid JSON — no markdown, no explanation.
+
+CONTEXT:
+- {intent_hint_line}
+- {filename_line}
+- {pending_line}
+- Conversation history (last 6 messages):
+{history_text}
+- Current user message: "{message}"
+
+INTENT OPTIONS: chat | quiz | flowchart | mindmap | study_plan | image
+
+CLASSIFICATION RULES:
+1. If intent_hint is set → use it as the intent. NEVER override intent_hint.
+2. If pending_intent is set AND the current message looks like a direct reply to a clarification question (e.g. a topic name, a number of weeks) → inherit that as the intent.
+3. Otherwise classify from the message text using natural language.
+4. "image" = AI-generated concept picture (e.g. "show me an image of the heart", "generate a picture of mitosis").
+5. "flowchart" = step-by-step process diagram. "mindmap" = concept/topic overview diagram.
+6. "quiz" = test/MCQ request ("quiz me", "make a quiz", "10 questions on").
+7. Default to "chat" when no feature-specific intent is detectable.
+
+TOPIC EXTRACTION (priority order):
+1. Explicit topic in the current message (highest priority).
+2. Filename of the attached file (if no explicit topic in message).
+3. Recent conversation history — what subject was being discussed.
+4. If docs are known to be uploaded but topic is unspecified → topic = "[from_document]".
+5. If none of the above → topic = null → needs_clarification = true.
+
+STUDY PLAN RULES:
+- Must have both topic AND timeline_weeks to generate.
+- If either is missing → needs_clarification = true.
+- Extract timeline_weeks (e.g. "4 weeks", "2 months" = 8 weeks, "a month" = 4 weeks).
+- Extract hours_per_week if mentioned (default null).
+
+QUIZ RULES:
+- Extract num_questions from message (e.g. "10 questions", "5 question quiz"). Default 5.
+- Cap at 20.
+
+CLARIFICATION RULES:
+- needs_clarification = true when: intent is not "chat" but topic cannot be determined AND no docs in conversation AND no filename.
+- For study_plan: needs_clarification = true if topic OR timeline_weeks is missing.
+- If message is vague (".", "ok", "yes", "sure") with no context → needs_clarification = true.
+- Write clarification_question as a friendly, specific question (e.g. "What topic would you like a quiz on?").
+
+Return EXACTLY this JSON — all fields required:
+{{
+  "intent": "...",
+  "topic": "...",
+  "topic_source": "message|filename|history|document|null",
+  "num_questions": 5,
+  "timeline_weeks": null,
+  "hours_per_week": null,
+  "needs_clarification": false,
+  "clarification_question": null
+}}"""
+
+    def _generate():
+        return client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+            ),
+        )
+
+    try:
+        response = _call_with_retry(_generate)
+        result = _sanitize_and_parse_json(response.text.strip())
+        return {
+            "intent":               result.get("intent", "chat"),
+            "topic":                result.get("topic"),
+            "topic_source":         result.get("topic_source"),
+            "num_questions":        int(result.get("num_questions") or 5),
+            "timeline_weeks":       result.get("timeline_weeks"),
+            "hours_per_week":       result.get("hours_per_week"),
+            "needs_clarification":  bool(result.get("needs_clarification", False)),
+            "clarification_question": result.get("clarification_question"),
+        }
+    except Exception as e:
+        print(f"[classify_intent] Failed ({e}), falling back to chat.")
+        return {
+            "intent": "chat", "topic": None, "topic_source": None,
+            "num_questions": 5, "timeline_weeks": None, "hours_per_week": None,
+            "needs_clarification": False, "clarification_question": None,
+        }
+
+
 def classify_weak_area(question: str) -> str:
     """
     Uses Gemini to classify a wrong quiz question into a short
