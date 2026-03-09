@@ -301,14 +301,148 @@ function renderMarkdown(text: string) {
 }
 
 // ── QuizResults ───────────────────────────────────────────────────────────────
+interface TranslatedResults {
+  weakAreas: string[];
+  results: { question: string; options: string[]; explanation: string }[];
+}
+
 const QuizResults = ({ quizData }: { quizData: QuizData }) => {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const score = quizData.score ?? 0;
   const scoreColor =
     score >= 80 ? "text-green-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
 
+  // ── Translation state ───────────────────────────────────────────────────────
+  const [translated, setTranslated] = useState<TranslatedResults | null>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [showTranslatePicker, setShowTranslatePicker] = useState(false);
+  const [translatedLang, setTranslatedLang] = useState<string | null>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node))
+        setShowTranslatePicker(false);
+    };
+    if (showTranslatePicker) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showTranslatePicker]);
+
+  const translateResults = async (targetLang: string) => {
+    setShowTranslatePicker(false);
+    if (targetLang === "en") {
+      setTranslated(null);
+      setTranslatedLang(null);
+      return;
+    }
+    setIsTranslating(true);
+    try {
+      const SEP = "§§§";
+      // Block 0: weak areas (one per line, or placeholder if none)
+      const weakBlock = (quizData.weak_areas ?? []).join("\n") || "_";
+      // Blocks 1..N: question \n options \n explanation
+      const resultBlocks = (quizData.results ?? []).map(
+        (r) => `${r.question}\n${r.options.join("\n")}\n${r.explanation}`
+      );
+      const packed = [weakBlock, ...resultBlocks].join(`\n${SEP}\n`);
+
+      const response = await fetch(`${API_BASE}/chat/translate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: packed, target_language: targetLang }),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Translation failed");
+      }
+      const data = await response.json();
+      const blocks = data.translated_text.split(`\n${SEP}\n`);
+
+      // Parse block 0 → weak areas
+      const weakLines = blocks[0]?.trim() === "_" ? [] : (blocks[0]?.split("\n").filter(Boolean) ?? []);
+
+      // Parse blocks 1..N → results
+      const parsedResults = (quizData.results ?? []).map((r, i) => {
+        const lines = (blocks[i + 1] ?? "").trim().split("\n").filter(Boolean);
+        const question = lines[0] ?? r.question;
+        const explanation = lines[lines.length - 1] ?? r.explanation;
+        const rawOpts = lines.slice(1, lines.length - 1);
+        const options = r.options.map((orig, j) => rawOpts[j] ?? orig);
+        return { question, options, explanation };
+      });
+
+      setTranslated({ weakAreas: weakLines, results: parsedResults });
+      setTranslatedLang(targetLang);
+    } catch (err: any) {
+      toast.error(`Translation failed: ${err.message}`);
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const activeWeakAreas = translated?.weakAreas ?? quizData.weak_areas ?? [];
+  const activeResults   = translated?.results   ?? quizData.results ?? [];
+
   return (
     <div className="space-y-4">
+      {/* Results header with translate button */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="text-sm font-semibold text-foreground truncate">
+            📊 {quizData.topic} — Results
+          </p>
+          {translatedLang && (
+            <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/20">
+              {QUIZ_LANG_NAMES[translatedLang]}
+            </span>
+          )}
+        </div>
+        <div className="relative shrink-0" ref={pickerRef}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowTranslatePicker((v) => !v)}
+            disabled={isTranslating || !quizData.results?.length}
+            className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40"
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">
+              {isTranslating ? "Translating..." : "Translate"}
+            </span>
+          </Button>
+          {showTranslatePicker && (
+            <div className="absolute top-9 right-0 z-50 bg-card border border-border rounded-xl shadow-xl p-1.5 min-w-[140px]">
+              {QUIZ_LANGUAGES.map((lang) => (
+                <button
+                  key={lang.code}
+                  onClick={() => translateResults(lang.code)}
+                  className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
+                    translatedLang === lang.code
+                      ? "bg-primary/20 text-primary font-medium"
+                      : "text-foreground hover:bg-primary/10 hover:text-primary"
+                  }`}
+                >
+                  {lang.label}
+                  {translatedLang === lang.code && <span className="ml-1.5">✓</span>}
+                </button>
+              ))}
+              {translatedLang && (
+                <>
+                  <div className="border-t border-border my-1" />
+                  <button
+                    onClick={() => { setTranslated(null); setTranslatedLang(null); setShowTranslatePicker(false); }}
+                    className="w-full text-left text-xs px-3 py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                  >
+                    Show original
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Score */}
       <div className="text-center py-2">
         <p className={`text-4xl font-bold ${scoreColor}`}>{score}%</p>
         <p className="text-sm text-muted-foreground mt-1">
@@ -316,11 +450,12 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
         </p>
       </div>
 
-      {quizData.weak_areas && quizData.weak_areas.length > 0 && (
+      {/* Weak areas */}
+      {activeWeakAreas.length > 0 && (
         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 space-y-2">
           <p className="text-xs font-semibold text-yellow-400">⚠️ Weak Areas Identified</p>
           <div className="flex flex-wrap gap-2">
-            {quizData.weak_areas.map((area, i) => (
+            {activeWeakAreas.map((area, i) => (
               <Badge
                 key={i}
                 variant="outline"
@@ -344,37 +479,40 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
 
       {showBreakdown && quizData.results && (
         <div className="space-y-3">
-          {quizData.results.map((r, i) => (
-            <div key={i} className="bg-secondary/40 rounded-xl p-3 space-y-2">
-              <div className="flex items-start gap-2">
-                {r.correct ? (
-                  <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
-                ) : (
-                  <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                )}
-                <p className="text-xs font-medium text-foreground">{r.question}</p>
+          {quizData.results.map((r, i) => {
+            const t = activeResults[i];
+            return (
+              <div key={i} className="bg-secondary/40 rounded-xl p-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  {r.correct ? (
+                    <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  )}
+                  <p className="text-xs font-medium text-foreground">{t?.question ?? r.question}</p>
+                </div>
+                <div className="space-y-1 ml-6">
+                  {(t?.options ?? r.options).map((opt, oi) => (
+                    <div
+                      key={oi}
+                      className={`text-xs px-3 py-1.5 rounded-lg border ${
+                        oi === r.correct_index
+                          ? "border-green-500/40 bg-green-500/10 text-green-400"
+                          : oi === r.selected_index && !r.correct
+                            ? "border-red-500/40 bg-red-500/10 text-red-400"
+                            : "border-border text-muted-foreground"
+                      }`}
+                    >
+                      {opt}
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground ml-6 bg-secondary/50 p-2 rounded-lg">
+                  💡 {t?.explanation ?? r.explanation}
+                </p>
               </div>
-              <div className="space-y-1 ml-6">
-                {r.options.map((opt, oi) => (
-                  <div
-                    key={oi}
-                    className={`text-xs px-3 py-1.5 rounded-lg border ${
-                      oi === r.correct_index
-                        ? "border-green-500/40 bg-green-500/10 text-green-400"
-                        : oi === r.selected_index && !r.correct
-                          ? "border-red-500/40 bg-red-500/10 text-red-400"
-                          : "border-border text-muted-foreground"
-                    }`}
-                  >
-                    {opt}
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground ml-6 bg-secondary/50 p-2 rounded-lg">
-                💡 {r.explanation}
-              </p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -382,6 +520,22 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
 };
 
 // ── QuizCard ──────────────────────────────────────────────────────────────────
+const QUIZ_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "hi", label: "हिन्दी" },
+  { code: "mr", label: "मराठी" },
+  { code: "ta", label: "தமிழ்" },
+  { code: "te", label: "తెలుగు" },
+  { code: "bn", label: "বাংলা" },
+  { code: "gu", label: "ગુજરાતી" },
+  { code: "kn", label: "ಕನ್ನಡ" },
+];
+
+const QUIZ_LANG_NAMES: Record<string, string> = {
+  en: "English", hi: "हिन्दी", mr: "मराठी", ta: "தமிழ்",
+  te: "తెలుగు", bn: "বাংলা", gu: "ગુજરાતી", kn: "ಕನ್ನಡ",
+};
+
 const QuizCard = ({
   messageId,
   quizData,
@@ -397,15 +551,79 @@ const QuizCard = ({
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  if (quizData.submitted)
-    return (
-      <div className="space-y-3">
-        <p className="text-sm font-semibold text-foreground">📊 {quizData.topic} — Results</p>
-        <QuizResults quizData={quizData} />
-      </div>
-    );
+  // ── Translation state ───────────────────────────────────────────────────────
+  const [translatedQuestions, setTranslatedQuestions] = useState<QuizQuestion[] | null>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [showTranslatePicker, setShowTranslatePicker] = useState(false);
+  const [translatedLang, setTranslatedLang] = useState<string | null>(null);
+  const translatePickerRef = useRef<HTMLDivElement>(null);
 
-  const question = quizData.questions[currentQ];
+  // Close picker on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (translatePickerRef.current && !translatePickerRef.current.contains(e.target as Node)) {
+        setShowTranslatePicker(false);
+      }
+    };
+    if (showTranslatePicker) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showTranslatePicker]);
+
+  const translateQuiz = async (targetLang: string) => {
+    setShowTranslatePicker(false);
+    if (targetLang === "en" && translatedLang === null) return; // already English
+    if (targetLang === "en") {
+      // Revert to original
+      setTranslatedQuestions(null);
+      setTranslatedLang(null);
+      return;
+    }
+    setIsTranslating(true);
+    try {
+      // Pack all questions + options into one text block with §§§ separator
+      const SEP = "§§§";
+      const packed = quizData.questions
+        .map((q) => `${q.question}\n${q.options.join("\n")}`)
+        .join(`\n${SEP}\n`);
+
+      const response = await fetch(`${API_BASE}/chat/translate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: packed, target_language: targetLang }),
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Translation failed");
+      }
+      const data = await response.json();
+      const translatedBlocks = data.translated_text.split(`\n${SEP}\n`);
+
+      const parsed: QuizQuestion[] = translatedBlocks.map((block: string, i: number) => {
+        const lines = block.trim().split("\n").filter((l: string) => l.trim() !== "");
+        const question = lines[0] ?? quizData.questions[i].question;
+        const options = lines.slice(1);
+        // Pad or trim options to match original count
+        const originalOpts = quizData.questions[i].options;
+        const safeOptions = originalOpts.map((orig, j) => options[j] ?? orig);
+        return { id: quizData.questions[i].id, question, options: safeOptions };
+      });
+
+      setTranslatedQuestions(parsed);
+      setTranslatedLang(targetLang);
+    } catch (err: any) {
+      toast.error(`Quiz translation failed: ${err.message}`);
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  // Use translated questions if available
+  const activeQuestions = translatedQuestions ?? quizData.questions;
+
+  if (quizData.submitted)
+    return <QuizResults quizData={quizData} />;
+
+  const question = activeQuestions[currentQ];
   const total = quizData.questions.length;
   const allAnswered = answers.every((a) => a !== null);
   const answeredCount = answers.filter((a) => a !== null).length;
@@ -442,11 +660,67 @@ const QuizCard = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-foreground">📝 {quizData.topic}</p>
-        <span className="text-xs text-muted-foreground">
-          {currentQ + 1} / {total}
-        </span>
+      {/* Header row: topic + translate button + counter */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="text-sm font-semibold text-foreground truncate">📝 {quizData.topic}</p>
+          {translatedLang && (
+            <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/20">
+              {QUIZ_LANG_NAMES[translatedLang]}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Translate button */}
+          <div className="relative" ref={translatePickerRef}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowTranslatePicker((v) => !v)}
+              disabled={isTranslating}
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40"
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">
+                {isTranslating ? "Translating..." : "Translate"}
+              </span>
+            </Button>
+            {showTranslatePicker && (
+              <div className="absolute top-9 right-0 z-50 bg-card border border-border rounded-xl shadow-xl p-1.5 min-w-[140px]">
+                {QUIZ_LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.code}
+                    onClick={() => translateQuiz(lang.code)}
+                    className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
+                      translatedLang === lang.code
+                        ? "bg-primary/20 text-primary font-medium"
+                        : "text-foreground hover:bg-primary/10 hover:text-primary"
+                    }`}
+                  >
+                    {lang.label}
+                    {translatedLang === lang.code && (
+                      <span className="ml-1.5 text-primary">✓</span>
+                    )}
+                  </button>
+                ))}
+                {translatedLang && translatedLang !== "en" && (
+                  <>
+                    <div className="border-t border-border my-1" />
+                    <button
+                      onClick={() => { setTranslatedQuestions(null); setTranslatedLang(null); setShowTranslatePicker(false); }}
+                      className="w-full text-left text-xs px-3 py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+                    >
+                      Show original
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {currentQ + 1} / {total}
+          </span>
+        </div>
       </div>
 
       <div className="w-full bg-secondary rounded-full h-1.5">
