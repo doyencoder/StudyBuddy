@@ -1478,7 +1478,8 @@ const ChatPage = () => {
       id: string;
       name: string;
       status: "uploading" | "ready" | "error";
-      blobUrl: string;
+      blobUrl: string;    // short-lived SAS — used only for immediate RAG ingestion
+      blobName: string;   // permanent blob path — used to build the proxy URL for display/storage
       fileType: "image" | "pdf" | "document";
     }[]
   >([]);
@@ -2147,7 +2148,10 @@ const ChatPage = () => {
           intentHint: chipValue ?? undefined,
           attachments: sentFiles.map((f) => ({
             name: f.name,
-            blobUrl: f.blobUrl,
+            // Use proxy URL for display: works forever regardless of SAS expiry
+            blobUrl: f.blobName
+              ? `${API_BASE}/upload/view-file?blob_name=${encodeURIComponent(f.blobName)}`
+              : f.blobUrl,
             fileType: getFileType(f.name),
           })),
           timestamp: new Date(),
@@ -2159,6 +2163,9 @@ const ChatPage = () => {
     let messageAdded = false;
     try {
       const primaryFile = sentFiles[0];
+      // filePayload uses the real short-lived SAS so the backend can pass it
+      // directly to Azure Document Intelligence for text extraction.
+      // This is safe because it's used immediately after upload (within 1 hour).
       const filePayload = primaryFile
         ? { blob_url: primaryFile.blobUrl, filename: primaryFile.name }
         : {};
@@ -2167,7 +2174,11 @@ const ChatPage = () => {
           ? {
               attachments: sentFiles.map((f) => ({
                 name: f.name,
-                blob_url: f.blobUrl,
+                // Use proxy URL for the Cosmos-stored blob_url so that
+                // "Click to open" in chat history always works, forever.
+                blob_url: f.blobName
+                  ? `${API_BASE}/upload/view-file?blob_name=${encodeURIComponent(f.blobName)}`
+                  : f.blobUrl,
                 file_type: f.fileType ?? getFileType(f.name),
               })),
             }
@@ -2409,6 +2420,7 @@ const ChatPage = () => {
       name: file.name,
       status: "uploading" as const,
       blobUrl: "",
+      blobName: "",
       fileType: getFileType(file.name),
     }));
     setAttachedFiles((prev) => [...prev, ...newEntries]);
@@ -2431,7 +2443,9 @@ const ChatPage = () => {
           const data = await r.json();
           setAttachedFiles((prev) =>
             prev.map((f) =>
-              f.id === entryId ? { ...f, status: "ready", blobUrl: data.blob_url } : f
+              f.id === entryId
+                ? { ...f, status: "ready", blobUrl: data.blob_url, blobName: data.blob_name }
+                : f
             )
           );
         } catch (err: any) {

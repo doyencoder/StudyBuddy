@@ -69,6 +69,8 @@ def upload_file_to_blob(file_bytes: bytes, original_filename: str, user_id: str)
         blob_name=blob_name,
         account_key=account_key,
         permission=BlobSasPermissions(read=True),
+        # Backdate start by 5 min to neutralise any server clock-skew
+        start=datetime.now(timezone.utc) - timedelta(minutes=5),
         expiry=datetime.now(timezone.utc) + timedelta(hours=1),
     )
 
@@ -76,9 +78,40 @@ def upload_file_to_blob(file_bytes: bytes, original_filename: str, user_id: str)
 
     return {
         "file_id": file_id,
-        "blob_name": blob_name,
-        "blob_url": sas_url,
+        "blob_name": blob_name,   # permanent identifier — used by /upload/view-file proxy
+        "blob_url": sas_url,      # short-lived SAS — used immediately for Doc Intelligence
     }
+
+def generate_fresh_sas_url(blob_name: str) -> str:
+    """
+    Generates a brand-new short-lived SAS URL for an existing blob.
+    Called on-demand by the /upload/view-file proxy endpoint so that
+    stored files can always be opened regardless of when they were uploaded.
+
+    Args:
+        blob_name: The permanent blob path (e.g. "student-001/uuid_notes.pdf")
+
+    Returns:
+        A fresh SAS URL valid for 1 hour.
+    """
+    container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "studybuddy-files")
+    service_client = get_blob_client()
+    account_name = service_client.account_name
+    account_key = service_client.credential.account_key
+
+    sas_token = generate_blob_sas(
+        account_name=account_name,
+        container_name=container_name,
+        blob_name=blob_name,
+        account_key=account_key,
+        permission=BlobSasPermissions(read=True),
+        # Backdate start by 5 min to neutralise any server clock-skew
+        start=datetime.now(timezone.utc) - timedelta(minutes=5),
+        expiry=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+    return f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas_token}"
+
 
 def upload_generated_image_to_blob(image_bytes: bytes, topic: str, user_id: str) -> dict:
     """

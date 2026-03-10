@@ -8,9 +8,10 @@ POST /upload/file  — Full RAG ingestion pipeline:
   5. Store embeddings in Azure AI Search (scoped to conversation_id)
 """
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from app.models import UploadResponse
-from app.services.blob_service import upload_file_to_blob
+from app.services.blob_service import upload_file_to_blob, generate_fresh_sas_url
 from app.services.doc_intelligence_service import extract_text_from_url
 from app.services.gemini_service import embed_text
 from app.services.search_service import store_chunks, create_index_if_not_exists
@@ -18,6 +19,25 @@ from app.utils.chunking import chunk_text
 from app.services.cosmos_service import ensure_conversation, save_message
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
+
+
+@router.get("/view-file")
+async def view_file(blob_name: str = Query(..., description="Permanent blob path stored at upload time")):
+    """
+    Permanent file-access proxy.
+
+    Generates a fresh 1-hour SAS URL on-demand and redirects the browser to it.
+    Because this endpoint URL never changes (only the SAS it generates does),
+    files stored in Cosmos DB remain openable forever — no matter how old they are.
+
+    The browser follows the 302 redirect transparently, so the user just sees
+    their file open normally.
+    """
+    try:
+        fresh_sas_url = generate_fresh_sas_url(blob_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not generate file URL: {str(e)}")
+    return RedirectResponse(url=fresh_sas_url, status_code=302)
 
 
 @router.post("/blob-only")
@@ -45,7 +65,11 @@ async def upload_blob_only(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Blob upload failed: {str(e)}")
 
-    return {"blob_url": blob_info["blob_url"], "filename": filename}
+    return {
+        "blob_url": blob_info["blob_url"],    # short-lived SAS — frontend uses for immediate RAG
+        "blob_name": blob_info["blob_name"],  # permanent identifier — frontend uses for proxy URL
+        "filename": filename,
+    }
 
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "webp", "tiff"}
 MAX_FILE_SIZE_MB = 20
