@@ -96,17 +96,21 @@ async def chat_message(request: ChatRequest):
         # Intent known from chip — build classification dict with no Gemini call
         msg_lower = (request.message or "").lower()
         num_q_match = re.search(r'(\d+)\s*questions?', msg_lower)
-        # Parse weeks for study_plan chip: "4 weeks", "2 months" → weeks
+        # Parse weeks for study_plan chip: "4 weeks", "2 months" → weeks. Default 4.
         weeks_match = re.search(r'(\d+)\s*(week|month)', msg_lower)
-        weeks_val = None
+        weeks_val = 4  # default — never ask the user for weeks
         if weeks_match:
             n = int(weeks_match.group(1))
             weeks_val = n * 4 if "month" in weeks_match.group(2) else n
-        no_topic = not request.message.strip()
+        # Topic is missing only when: no message text AND no file attached.
+        # If a file is attached, topic will be inferred from the document.
+        has_attachment = bool(request.filename or request.attachments)
+        no_topic = not request.message.strip() and not has_attachment
+        topic_val = request.message.strip() or ("[from_document]" if has_attachment else None)
         classification = {
             "intent":               request.intent_hint,
-            "topic":                request.message.strip() or None,
-            "topic_source":         "message",
+            "topic":                topic_val,
+            "topic_source":         "message" if request.message.strip() else ("document" if has_attachment else "null"),
             "num_questions":        int(num_q_match.group(1)) if num_q_match else 5,
             "timeline_weeks":       weeks_val,
             "hours_per_week":       None,

@@ -860,9 +860,9 @@ TOPIC EXTRACTION (priority order):
 5. If none of the above → topic = null → needs_clarification = true.
 
 STUDY PLAN RULES:
-- Must have both topic AND timeline_weeks to generate.
-- If either is missing → needs_clarification = true.
-- Extract timeline_weeks (e.g. "4 weeks", "2 months" = 8 weeks, "a month" = 4 weeks).
+- Extract timeline_weeks if mentioned (e.g. "4 weeks", "2 months" = 8 weeks, "a month" = 4 weeks). If not mentioned, default to 4.
+- NEVER set needs_clarification = true because of a missing timeline_weeks. Always use 4 as the default.
+- Only set needs_clarification = true if the topic is missing.
 - Extract hours_per_week if mentioned (default null).
 
 QUIZ RULES:
@@ -871,7 +871,7 @@ QUIZ RULES:
 
 CLARIFICATION RULES:
 - needs_clarification = true when: intent is not "chat" but topic cannot be determined AND no docs in conversation AND no filename.
-- For study_plan: needs_clarification = true if topic OR timeline_weeks is missing.
+- For study_plan: needs_clarification = true only if topic is missing. A missing timeline_weeks is NOT a reason to ask — default it to 4.
 - If message is vague (".", "ok", "yes", "sure") with no context → needs_clarification = true.
 - Write clarification_question as a friendly, specific question (e.g. "What topic would you like a quiz on?").
 
