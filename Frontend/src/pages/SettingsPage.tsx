@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
+import { API_BASE } from "@/config/api";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
@@ -23,7 +24,6 @@ import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from 
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const API_BASE = "http://localhost:8000";
 const USER_ID = "student-001";
 
 type SettingsTab = "general" | "account" | "billing" | "connectors";

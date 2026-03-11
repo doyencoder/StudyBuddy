@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import mermaid from "mermaid";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import { API_BASE } from "@/config/api";
 import {
   Send, Paperclip, Mic, Plus, Volume2, Globe, Copy, RefreshCw,
   FileText, CalendarDays, GitBranch, Network, Brain, Bot,
@@ -132,7 +133,6 @@ interface Message {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const API_BASE = "http://localhost:8000";
 const USER_ID = "student-001";
 
 const TOOLS = [
@@ -1029,7 +1029,7 @@ const ImageCard = ({ imageData }: { imageData: ImageData }) => {
   const handleDownload = async () => {
     try {
       const res = await fetch(
-        `http://localhost:8000/diagrams/download-image?url=${encodeURIComponent(
+        `${API_BASE}/diagrams/download-image?url=${encodeURIComponent(
           imageData.image_url
         )}&filename=${encodeURIComponent(imageData.topic.replace(/\s+/g, "_"))}.png`
       );

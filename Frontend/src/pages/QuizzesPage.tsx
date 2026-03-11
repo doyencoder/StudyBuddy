@@ -3,8 +3,8 @@ import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle } from "l
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { API_BASE } from "@/config/api";
 
-const API_BASE = "http://localhost:8000";
 const USER_ID = "student-001";
 
 interface QuizQuestion {

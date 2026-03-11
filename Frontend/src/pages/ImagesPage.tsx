@@ -3,6 +3,7 @@ import { ImageIcon, GitBranch, Network, RefreshCw, X, Download, Code, ZoomIn } f
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import mermaid from "mermaid";
+import { API_BASE } from "@/config/api";
 
 // Ensure mermaid is initialized regardless of which page loads first
 mermaid.initialize({
@@ -34,7 +35,6 @@ interface DiagramItem {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const API_BASE = "http://localhost:8000";
 const USER_ID = "student-001";
 
 // ── Download helper ───────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ const DiagramModal = ({
     if (!item.image_url) return;
     try {
       const res = await fetch(
-        `http://localhost:8000/diagrams/download-image?url=${encodeURIComponent(item.image_url)}&filename=${encodeURIComponent(item.topic.replace(/\s+/g, "_"))}.png`
+        `${API_BASE}/diagrams/download-image?url=${encodeURIComponent(item.image_url)}&filename=${encodeURIComponent(item.topic.replace(/\s+/g, "_"))}.png`
       );
       if (!res.ok) throw new Error("proxy failed");
       const blob = await res.blob();

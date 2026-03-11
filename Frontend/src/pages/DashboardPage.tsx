@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { API_BASE } from "@/config/api";
 import {
   Dialog,
   DialogContent,
@@ -29,7 +30,6 @@ import {
 import { toast } from "sonner";
 
 const USER_ID = "student-001";
-const API_BASE = "http://localhost:8000";
 
 // ── Types for study plan ────────────────────────────────────────────────────
 

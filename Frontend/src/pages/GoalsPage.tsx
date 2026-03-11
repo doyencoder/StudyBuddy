@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { API_BASE } from "@/config/api";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +18,6 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
-const API_BASE = "http://localhost:8000";
 const USER_ID = "student-001";
 
 // ── Daily goals localStorage helpers ─────────────────────────────────────────
