@@ -24,9 +24,9 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
+import { API_BASE } from "@/config/api";
 
 const USER_ID = "student-001";
-const API_BASE = "http://localhost:8000";
 
 const menuItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
