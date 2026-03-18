@@ -1,5 +1,3 @@
-
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -66,6 +64,16 @@ async def _print_cors_info():
         await ensure_settings_container()
     except Exception as e:
         print(f"[startup] Settings container init error (non-fatal): {e}")
+
+    # Ensure Azure AI Search index exists before any request hits it.
+    # Without this, conversation_has_documents() crashes on a brand-new
+    # search service because it queries an index that doesn't exist yet.
+    try:
+        from app.services.search_service import create_index_if_not_exists
+        create_index_if_not_exists()
+        print("[startup] Azure AI Search index ready.")
+    except Exception as e:
+        print(f"[startup] Search index init error (non-fatal): {e}")
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 from app.routers.upload import router as upload_router
