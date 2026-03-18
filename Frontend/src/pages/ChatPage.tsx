@@ -2554,9 +2554,72 @@ const ChatPage = () => {
   // ── Loading history spinner ─────────────────────────────────────────────────
   if (isLoadingHistory) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <div className="w-8 h-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
-        <p className="text-sm text-muted-foreground">Loading conversation...</p>
+      <div className="flex flex-col gap-5 p-4 md:p-6 overflow-hidden h-full animate-pulse">
+
+        {/* Assistant bubble 1 — short */}
+        <div className="flex justify-start">
+          <div className="max-w-[70%] space-y-1.5">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="w-6 h-6 rounded-full bg-primary/20" />
+              <div className="h-3 w-20 bg-secondary/50 rounded" />
+            </div>
+            <div className="bg-card border border-border rounded-2xl rounded-bl-md px-4 py-3 space-y-2">
+              <div className="h-3 w-48 bg-secondary/60 rounded" />
+              <div className="h-3 w-36 bg-secondary/40 rounded" />
+            </div>
+          </div>
+        </div>
+
+        {/* User bubble 1 */}
+        <div className="flex justify-end">
+          <div className="max-w-[60%]">
+            <div className="bg-primary/30 rounded-2xl rounded-br-md px-4 py-3 space-y-2">
+              <div className="h-3 w-40 bg-primary/40 rounded" />
+            </div>
+          </div>
+        </div>
+
+        {/* Assistant bubble 2 — longer */}
+        <div className="flex justify-start">
+          <div className="max-w-[70%] space-y-1.5">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="w-6 h-6 rounded-full bg-primary/20" />
+              <div className="h-3 w-20 bg-secondary/50 rounded" />
+            </div>
+            <div className="bg-card border border-border rounded-2xl rounded-bl-md px-4 py-3 space-y-2">
+              <div className="h-3 w-64 bg-secondary/60 rounded" />
+              <div className="h-3 w-56 bg-secondary/50 rounded" />
+              <div className="h-3 w-48 bg-secondary/40 rounded" />
+              <div className="h-3 w-36 bg-secondary/30 rounded" />
+            </div>
+          </div>
+        </div>
+
+        {/* User bubble 2 */}
+        <div className="flex justify-end">
+          <div className="max-w-[55%]">
+            <div className="bg-primary/30 rounded-2xl rounded-br-md px-4 py-3 space-y-2">
+              <div className="h-3 w-52 bg-primary/40 rounded" />
+              <div className="h-3 w-32 bg-primary/30 rounded" />
+            </div>
+          </div>
+        </div>
+
+        {/* Assistant bubble 3 — medium */}
+        <div className="flex justify-start">
+          <div className="max-w-[70%] space-y-1.5">
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="w-6 h-6 rounded-full bg-primary/20" />
+              <div className="h-3 w-20 bg-secondary/50 rounded" />
+            </div>
+            <div className="bg-card border border-border rounded-2xl rounded-bl-md px-4 py-3 space-y-2">
+              <div className="h-3 w-56 bg-secondary/60 rounded" />
+              <div className="h-3 w-44 bg-secondary/40 rounded" />
+              <div className="h-3 w-28 bg-secondary/30 rounded" />
+            </div>
+          </div>
+        </div>
+
       </div>
     );
   }

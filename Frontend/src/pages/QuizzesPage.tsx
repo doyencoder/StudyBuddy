@@ -7,6 +7,18 @@ import { API_BASE } from "@/config/api";
 
 const USER_ID = "student-001";
 
+// ── Lightweight summary — used for the list view ───────────────────────────
+interface QuizSummary {
+  id: string;
+  topic: string;
+  date: string;
+  score: number;
+  total: number;
+  accuracy: number;
+  difficulty: "Easy" | "Medium" | "Hard";
+}
+
+// ── Full detail — fetched lazily on card click ─────────────────────────────
 interface QuizQuestion {
   question: string;
   options: string[];
@@ -15,17 +27,12 @@ interface QuizQuestion {
   explanation: string;
 }
 
-interface Quiz {
-  id: string;
-  topic: string;
-  date: string;
-  score: number;
-  total: number;
-  accuracy: number;
-  difficulty: "Easy" | "Medium" | "Hard";
+interface QuizDetail extends QuizSummary {
   questions: QuizQuestion[];
   weakAreas: string[];
 }
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 const difficultyFromAccuracy = (accuracy: number): "Easy" | "Medium" | "Hard" => {
   if (accuracy >= 80) return "Easy";
@@ -39,64 +46,125 @@ const difficultyColor = (d: string) => {
   return "bg-destructive/15 text-destructive border-destructive/30";
 };
 
+const mapSummary = (q: any): QuizSummary => {
+  const accuracy = q.total_questions > 0
+    ? Math.round(((q.correct_count ?? 0) / q.total_questions) * 100)
+    : 0;
+  return {
+    id:         q.quiz_id ?? q.id,
+    topic:      q.topic,
+    date:       q.created_at ? q.created_at.split("T")[0] : "",
+    score:      q.correct_count ?? 0,
+    total:      q.total_questions,
+    accuracy,
+    difficulty: difficultyFromAccuracy(accuracy),
+  };
+};
+
+// ── Component ──────────────────────────────────────────────────────────────
+
 const QuizzesPage = () => {
-  const [quizzes, setQuizzes]           = useState<Quiz[]>([]);
-  const [selectedQuiz, setSelectedQuiz] = useState<Quiz | null>(null);
+  const [quizzes, setQuizzes]           = useState<QuizSummary[]>([]);
+  const [selectedQuiz, setSelectedQuiz] = useState<QuizDetail | null>(null);
   const [loading, setLoading]           = useState(true);
   const [error, setError]               = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError]     = useState<string | null>(null);
 
+  // ── Fetch lightweight list on mount ───────────────────────────────────────
   useEffect(() => {
     const fetchQuizzes = async () => {
       try {
         const response = await fetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`);
         if (!response.ok) throw new Error(`Server error: ${response.status}`);
-
         const data = await response.json();
-
-        const mapped: Quiz[] = data.quizzes.map((q: any) => {
-          const accuracy = q.total_questions > 0
-            ? Math.round(((q.correct_count ?? 0) / q.total_questions) * 100)
-            : 0;
-
-          // Map results array into the shape the UI expects
-          const questions: QuizQuestion[] = (q.results ?? []).map((r: any) => ({
-            question:    r.question,
-            options:     r.options,
-            selected:    r.selected_index,
-            correct:     r.correct_index,
-            explanation: r.explanation,
-          }));
-
-          return {
-            id:         q.quiz_id,
-            topic:      q.topic,
-            date:       q.created_at ? q.created_at.split("T")[0] : "",
-            score:      q.correct_count ?? 0,
-            total:      q.total_questions,
-            accuracy,
-            difficulty: difficultyFromAccuracy(accuracy),
-            questions,
-            weakAreas:  q.weak_areas ?? [],
-          };
-        });
-
-        setQuizzes(mapped);
+        setQuizzes(data.quizzes.map(mapSummary));
       } catch (err: any) {
         setError(err.message);
       } finally {
         setLoading(false);
       }
     };
-
     fetchQuizzes();
   }, []);
 
-  // ── Detail view ────────────────────────────────────────────────────────────
+  // ── Lazy fetch full detail when a card is clicked ─────────────────────────
+  const handleCardClick = async (summary: QuizSummary) => {
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/quiz/${summary.id}?user_id=${USER_ID}`
+      );
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+      const q = await response.json();
+
+      const questions: QuizQuestion[] = (q.results ?? []).map((r: any) => ({
+        question:    r.question,
+        options:     r.options,
+        selected:    r.selected_index,
+        correct:     r.correct_index,
+        explanation: r.explanation,
+      }));
+
+      setSelectedQuiz({
+        ...summary,
+        questions,
+        weakAreas: q.weak_areas ?? [],
+      });
+    } catch (err: any) {
+      setDetailError(err.message);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  // ── Detail skeleton ────────────────────────────────────────────────────────
+  if (detailLoading) {
+    return (
+      <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4 animate-pulse">
+        {/* Back button placeholder */}
+        <div className="h-8 w-32 bg-secondary/50 rounded-lg" />
+
+        {/* Title + subtitle */}
+        <div className="space-y-2">
+          <div className="h-6 w-56 bg-secondary/60 rounded-lg" />
+          <div className="h-4 w-36 bg-secondary/40 rounded" />
+        </div>
+
+        {/* Question cards */}
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="bg-card border border-border rounded-xl p-5 space-y-3">
+            {/* Question row */}
+            <div className="flex items-start gap-2">
+              <div className="w-5 h-5 rounded-full bg-secondary/60 shrink-0 mt-0.5" />
+              <div className="flex-1 space-y-1.5">
+                <div className="h-3.5 w-full bg-secondary/60 rounded" />
+                <div className="h-3.5 w-3/4 bg-secondary/40 rounded" />
+              </div>
+            </div>
+            {/* Options */}
+            <div className="grid gap-2 ml-7">
+              {[...Array(4)].map((_, oi) => (
+                <div key={oi} className="h-9 w-full bg-secondary/30 rounded-lg border border-border" />
+              ))}
+            </div>
+            {/* Explanation */}
+            <div className="ml-7 h-10 w-full bg-secondary/20 rounded-lg" />
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   if (selectedQuiz) {
     return (
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4">
-        <Button variant="ghost" onClick={() => setSelectedQuiz(null)} className="gap-2 text-muted-foreground hover:text-foreground">
+        <Button
+          variant="ghost"
+          onClick={() => { setSelectedQuiz(null); setDetailError(null); }}
+          className="gap-2 text-muted-foreground hover:text-foreground"
+        >
           <ArrowLeft className="w-4 h-4" /> Back to Quizzes
         </Button>
 
@@ -106,6 +174,10 @@ const QuizzesPage = () => {
             Score: {selectedQuiz.score}/{selectedQuiz.total} • Accuracy: {selectedQuiz.accuracy}%
           </p>
         </div>
+
+        {detailError && (
+          <div className="text-sm text-destructive">Failed to load details: {detailError}</div>
+        )}
 
         {selectedQuiz.questions.length > 0 ? (
           <div className="space-y-4">
@@ -171,7 +243,6 @@ const QuizzesPage = () => {
   }
 
   // ── List view ──────────────────────────────────────────────────────────────
-
   return (
     <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
       <div>
@@ -228,7 +299,7 @@ const QuizzesPage = () => {
             <Card
               key={quiz.id}
               className="bg-card border-border hover:border-glow transition-all duration-300 group cursor-pointer"
-              onClick={() => setSelectedQuiz(quiz)}
+              onClick={() => handleCardClick(quiz)}
             >
               <CardContent className="p-5 space-y-4">
                 <div className="flex items-start justify-between">
@@ -259,7 +330,10 @@ const QuizzesPage = () => {
                   </div>
                 </div>
 
-                <Button variant="ghost" className="w-full justify-between text-muted-foreground hover:text-primary hover:bg-primary/10 text-xs h-9">
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between text-muted-foreground hover:text-primary hover:bg-primary/10 text-xs h-9"
+                >
                   View Details
                   <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                 </Button>

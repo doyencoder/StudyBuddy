@@ -402,7 +402,10 @@ async def list_quizzes(user_id: str) -> list:
         container = db.get_container_client(QUIZZES_CONTAINER)
 
         query = """
-            SELECT * FROM c
+            SELECT c.id, c.user_id, c.topic, c.created_at,
+                   c.submitted, c.score, c.correct_count,
+                   c.total_questions, c.weak_areas
+            FROM c
             WHERE c.user_id = @user_id
             AND c.submitted = true
             ORDER BY c.created_at DESC

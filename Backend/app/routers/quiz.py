@@ -361,3 +361,43 @@ async def quiz_history(user_id: str = Query(...)):
             for q in raw
         ]
     )
+
+
+# ── GET /quiz/{quiz_id} ───────────────────────────────────────────────────────
+
+@router.get("/{quiz_id}")
+async def quiz_detail(quiz_id: str, user_id: str = Query(...)):
+    """
+    Returns the full detail of a single submitted quiz including
+    questions, results, explanations, and weak areas.
+    Called lazily by the frontend only when the user clicks a quiz card.
+    """
+    try:
+        q = await get_quiz(quiz_id=quiz_id, user_id=user_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Quiz not found: {str(e)}")
+
+    results = [
+        {
+            "question_id":    r.get("question_id", ""),
+            "correct":        r.get("correct", False),
+            "selected_index": r.get("selected_index", 0),
+            "correct_index":  r.get("correct_index", 0),
+            "explanation":    r.get("explanation", ""),
+            "question":       r.get("question", ""),
+            "options":        r.get("options", []),
+        }
+        for r in q.get("results", [])
+    ]
+
+    return {
+        "quiz_id":        q["id"],
+        "topic":          q.get("topic", "Unknown"),
+        "created_at":     q.get("created_at", ""),
+        "submitted":      q.get("submitted", False),
+        "score":          q.get("score"),
+        "correct_count":  q.get("correct_count"),
+        "total_questions": q.get("total_questions", 5),
+        "weak_areas":     q.get("weak_areas", []),
+        "results":        results,
+    }
