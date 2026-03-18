@@ -72,7 +72,6 @@ const DiagramPreview = ({ item }: { item: DiagramItem }) => {
   const id = `preview-${item.diagram_id.replace(/-/g, "")}`;
 
   useEffect(() => {
-    // Real images don't need Mermaid rendering
     if (item.type === "image") return;
     if (!item.mermaid_code) return;
     mermaid
@@ -151,7 +150,6 @@ const DiagramModal = ({
   const isImage = item.type === "image";
 
   useEffect(() => {
-    // Skip Mermaid rendering for real images
     if (isImage) return;
 
     mermaid
@@ -329,6 +327,31 @@ function formatDate(iso: string) {
   } catch { return iso; }
 }
 
+// ── Tab config ────────────────────────────────────────────────────────────────
+
+type TabType = "image" | "diagram" | "flowchart";
+
+const TABS: { key: TabType; label: string; icon: typeof ImageIcon; emptyHint: string }[] = [
+  {
+    key: "image",
+    label: "Diagrams",
+    icon: ImageIcon,
+    emptyHint: "Use the ➕ menu in Chat and select \"AI Diagram\" to generate one.",
+  },
+  {
+    key: "diagram",
+    label: "Mind Maps",
+    icon: GitBranch,
+    emptyHint: "Use the ➕ menu in Chat and select \"Make a Mind Map\" to generate one.",
+  },
+  {
+    key: "flowchart",
+    label: "Flowcharts",
+    icon: Network,
+    emptyHint: "Use the ➕ menu in Chat and select \"Draw a Flowchart\" to generate one.",
+  },
+];
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 const ImagesPage = () => {
@@ -336,6 +359,7 @@ const ImagesPage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDiagram, setSelectedDiagram] = useState<DiagramItem | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>("image");
 
   const fetchDiagrams = async () => {
     setLoading(true);
@@ -365,6 +389,10 @@ const ImagesPage = () => {
   const TypeIcon = (type: string) =>
     type === "flowchart" ? Network : type === "image" ? ImageIcon : GitBranch;
 
+  // Filtered list for the active tab
+  const visibleDiagrams = diagrams.filter((d) => d.type === activeTab);
+  const activeTabConfig = TABS.find((t) => t.key === activeTab)!;
+
   return (
     <>
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
@@ -386,6 +414,39 @@ const ImagesPage = () => {
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
+        </div>
+
+        {/* Tab bar */}
+        <div className="flex items-center gap-1 border-b border-border">
+          {TABS.map((tab) => {
+            const count = diagrams.filter((d) => d.type === tab.key).length;
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-all duration-200 -mb-px ${
+                  isActive
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
+                }`}
+              >
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+                {!loading && (
+                  <span
+                    className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                      isActive
+                        ? "bg-primary/15 text-primary"
+                        : "bg-secondary text-muted-foreground"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* Loading skeletons */}
@@ -414,21 +475,21 @@ const ImagesPage = () => {
           </div>
         )}
 
-        {/* Empty state */}
-        {!loading && !error && diagrams.length === 0 && (
+        {/* Empty state — per tab */}
+        {!loading && !error && visibleDiagrams.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 space-y-3">
-            <ImageIcon className="w-12 h-12 text-muted-foreground/30" />
-            <p className="text-sm text-muted-foreground">No diagrams yet.</p>
-            <p className="text-xs text-muted-foreground">
-              Use the ➕ menu in Chat and select "Generate Flowchart" or "Generate Diagram".
+            <activeTabConfig.icon className="w-12 h-12 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No {activeTabConfig.label.toLowerCase()} yet.</p>
+            <p className="text-xs text-muted-foreground text-center max-w-xs">
+              {activeTabConfig.emptyHint}
             </p>
           </div>
         )}
 
-        {/* Grid */}
-        {!loading && !error && diagrams.length > 0 && (
+        {/* Grid — filtered by active tab */}
+        {!loading && !error && visibleDiagrams.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {diagrams.map((item) => {
+            {visibleDiagrams.map((item) => {
               const Icon = TypeIcon(item.type);
               return (
                 <Card

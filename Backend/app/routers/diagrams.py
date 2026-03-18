@@ -23,7 +23,7 @@ from app.services.gemini_service import embed_query, generate_mermaid, generate_
 from app.services.search_service import retrieve_chunks
 from app.services.blob_service import upload_generated_image_to_blob
 import json
-from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, ensure_conversation, save_message
+from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, get_diagram, ensure_conversation, save_message
 
 router = APIRouter(prefix="/diagrams", tags=["diagrams"])
 
@@ -314,3 +314,28 @@ async def download_image_proxy(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Download proxy failed: {str(e)}")
+
+# ── GET /diagrams/{diagram_id} ────────────────────────────────────────────────
+
+@router.get("/{diagram_id}")
+async def get_diagram_detail(diagram_id: str, user_id: str = Query(...)):
+    """
+    Returns the full diagram document including mermaid_code.
+    Called lazily by the frontend only when the user opens the lightbox modal.
+    AI images (type="image") don't need mermaid_code but this endpoint is
+    used uniformly so the frontend doesn't need to branch.
+    """
+    try:
+        doc = await get_diagram(diagram_id=diagram_id, user_id=user_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Diagram not found: {str(e)}")
+
+    return {
+        "diagram_id": doc.get("diagram_id", doc["id"]),
+        "type":        doc.get("type", ""),
+        "topic":       doc.get("topic", ""),
+        "mermaid_code": doc.get("mermaid_code", ""),
+        "image_url":   doc.get("image_url"),
+        "created_at":  doc.get("created_at", ""),
+        "conversation_id": doc.get("conversation_id", ""),
+    }
