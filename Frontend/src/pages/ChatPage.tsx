@@ -1687,6 +1687,7 @@ const ChatPage = () => {
       blobUrl: string;    // short-lived SAS — used only for immediate RAG ingestion
       blobName: string;   // permanent blob path — used to build the proxy URL for display/storage
       fileType: "image" | "pdf" | "document";
+      previewUrl?: string; // local object URL for instant preview before upload completes
     }[]
   >([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -2699,6 +2700,7 @@ const ChatPage = () => {
       blobUrl: "",
       blobName: "",
       fileType: getFileType(file.name),
+      previewUrl: getFileType(file.name) === "image" ? URL.createObjectURL(file) : undefined,
     }));
     setAttachedFiles((prev) => [...prev, ...newEntries]);
 
@@ -3009,50 +3011,62 @@ const ChatPage = () => {
                   <LoadingDots size={65} />
                 ) : (
                   <>
-                    {msg.role === "user" &&
-                      msg.attachments?.map((att) =>
-                        att.fileType === "image" ? (
-                          <a
-                            key={att.name}
-                            href={att.blobUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="block mb-1.5"
-                          >
-                            <img
-                              src={att.blobUrl}
-                              alt={att.name}
-                              className="rounded-2xl max-h-56 max-w-full object-contain cursor-pointer hover:opacity-90 transition-opacity"
-                            />
-                          </a>
-                        ) : (
-                          <a
-                            key={att.name}
-                            href={att.blobUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity"
-                          >
-                            <div className="w-7 h-7 rounded-md bg-primary-foreground/20 flex items-center justify-center shrink-0">
-                              <Paperclip className="w-3.5 h-3.5 text-primary-foreground" />
+                    {msg.role === "user" && (() => {
+                      const imageAtts = msg.attachments?.filter(a => a.fileType === "image") ?? [];
+                      const fileAtts  = msg.attachments?.filter(a => a.fileType !== "image") ?? [];
+                      return (
+                        <>
+                          {/* ── Image attachments — 2-col grid, right-aligned ── */}
+                          {imageAtts.length > 0 && (
+                            <div className="grid grid-cols-2 gap-1.5 mb-1.5 w-fit ml-auto">
+                              {imageAtts.map((att) => (
+                                <a
+                                  key={att.name}
+                                  href={att.blobUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="block"
+                                >
+                                  <img
+                                    src={att.blobUrl}
+                                    alt={att.name}
+                                    className="w-32 h-24 rounded-xl object-cover cursor-pointer hover:opacity-90 transition-opacity border border-primary/20"
+                                  />
+                                </a>
+                              ))}
                             </div>
-                            <div className="flex flex-col min-w-0">
-                              <span className="text-xs font-medium text-primary-foreground truncate">
-                                {att.name}
-                              </span>
-                              <span className="text-xs text-primary-foreground/60">
-                                Click to open
-                              </span>
-                            </div>
-                          </a>
-                        )
-                      )}
+                          )}
+                          {/* ── Non-image attachments — pill style ── */}
+                          {fileAtts.map((att) => (
+                            <a
+                              key={att.name}
+                              href={att.blobUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity"
+                            >
+                              <div className="w-7 h-7 rounded-md bg-primary-foreground/20 flex items-center justify-center shrink-0">
+                                <Paperclip className="w-3.5 h-3.5 text-primary-foreground" />
+                              </div>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-xs font-medium text-primary-foreground truncate">
+                                  {att.name}
+                                </span>
+                                <span className="text-xs text-primary-foreground/60">
+                                  Click to open
+                                </span>
+                              </div>
+                            </a>
+                          ))}
+                        </>
+                      );
+                    })()}
 
                     {(msg.content || msg.intentHint) && (
                       <div
                         className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                           msg.role === "user"
-                            ? "bg-primary text-primary-foreground rounded-br-md"
+                            ? "bg-primary text-primary-foreground rounded-br-md w-fit ml-auto"
                             : "bg-card border border-glow text-card-foreground rounded-bl-md"
                         }`}
                       >
@@ -3270,28 +3284,60 @@ const ChatPage = () => {
 
             {/* Attached files */}
             {attachedFiles.length > 0 && (
-              <div className="flex items-center gap-2 px-3 pt-2 pb-1 flex-wrap">
+              <div className="flex items-end gap-2 px-3 pt-2 pb-1 flex-wrap">
                 {attachedFiles.map((file) => (
-                  <div
-                    key={file.id}
-                    className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-2.5 py-1.5 text-xs text-foreground max-w-xs"
-                  >
-                    <Paperclip className="w-3 h-3 text-primary shrink-0" />
-                    <span className="truncate max-w-[120px]">{file.name}</span>
-                    {file.status === "uploading" && (
-                      <div className="w-3 h-3 rounded-full border-2 border-primary/30 border-t-primary animate-spin shrink-0" />
+                  <div key={file.id} className="relative shrink-0">
+                    {file.fileType === "image" ? (
+                      /* ── Image thumbnail ── */
+                      <div className="relative w-20 h-16 rounded-xl overflow-hidden border border-primary/20 bg-muted">
+                        {file.previewUrl ? (
+                          <img
+                            src={file.previewUrl}
+                            alt={file.name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Paperclip className="w-4 h-4 text-muted-foreground" />
+                          </div>
+                        )}
+                        {/* uploading overlay */}
+                        {file.status === "uploading" && (
+                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                            <div className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                          </div>
+                        )}
+                        {/* remove button */}
+                        <button
+                          onClick={() =>
+                            setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
+                          }
+                          className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 text-white flex items-center justify-center text-[9px] hover:bg-black/80 leading-none"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      /* ── Non-image pill ── */
+                      <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-2.5 py-1.5 text-xs text-foreground max-w-xs">
+                        <Paperclip className="w-3 h-3 text-primary shrink-0" />
+                        <span className="truncate max-w-[120px]">{file.name}</span>
+                        {file.status === "uploading" && (
+                          <div className="w-3 h-3 rounded-full border-2 border-primary/30 border-t-primary animate-spin shrink-0" />
+                        )}
+                        {file.status === "ready" && (
+                          <span className="text-green-500 shrink-0">✓</span>
+                        )}
+                        <button
+                          onClick={() =>
+                            setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
+                          }
+                          className="text-muted-foreground hover:text-foreground shrink-0 ml-0.5"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     )}
-                    {file.status === "ready" && (
-                      <span className="text-green-500 shrink-0">✓</span>
-                    )}
-                    <button
-                      onClick={() =>
-                        setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
-                      }
-                      className="text-muted-foreground hover:text-foreground shrink-0 ml-0.5"
-                    >
-                      ✕
-                    </button>
                   </div>
                 ))}
               </div>
