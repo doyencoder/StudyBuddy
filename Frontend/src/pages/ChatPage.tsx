@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import LoadingDots from "../components/LoadingDots";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import mermaid from "mermaid";
@@ -14,6 +15,7 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
+  Maximize2, ZoomIn, ZoomOut, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,7 +39,7 @@ mermaid.initialize({
     lineColor: "#6366f1",
     edgeLabelBackground: "#1e1e3f",
   },
-  flowchart: { curve: "basis", htmlLabels: true },
+  flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: true, rankSpacing: 60, nodeSpacing: 40 },
   mindmap: { padding: 16 },
 });
 
@@ -927,10 +929,49 @@ const QuizCard = ({
 // ── DiagramCard Component ─────────────────────────────────────────────────────
 const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
   const [svg, setSvg] = useState<string>("");
+  const [svgNaturalW, setSvgNaturalW] = useState(800);
+  const [svgNaturalH, setSvgNaturalH] = useState(400);
   const [renderError, setRenderError] = useState(false);
   const [showCode, setShowCode] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [zoom, setZoom] = useState(1);
   const containerId = useRef(`mermaid-${generateUUID().replace(/-/g, "")}`);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
+  // Close on Escape
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  // Reset zoom when opening fullscreen
+  useEffect(() => { if (fullscreen) setZoom(1); }, [fullscreen]);
+
+  // Non-passive wheel → zoom.
+  // setTimeout(0) defers until after the portal has been painted to DOM,
+  // guaranteeing scrollAreaRef.current is not null when we attach.
+  useEffect(() => {
+    if (!fullscreen) return;
+    let cleanup: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      const el = scrollAreaRef.current;
+      if (!el) return;
+      const onWheel = (e: WheelEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        setZoom((z) => Math.min(4, Math.max(0.2, Math.round((z + delta) * 10) / 10)));
+      };
+      el.addEventListener("wheel", onWheel, { passive: false });
+      cleanup = () => el.removeEventListener("wheel", onWheel);
+    }, 0);
+    return () => { clearTimeout(timer); cleanup?.(); };
+  }, [fullscreen]);
+
+  // Render SVG and parse natural dimensions from viewBox so the scroll
+  // wrapper can be sized correctly at any zoom level.
   useEffect(() => {
     if (!diagramData.mermaid_code) return;
     setRenderError(false);
@@ -938,7 +979,18 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
 
     mermaid
       .render(containerId.current, diagramData.mermaid_code)
-      .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
+      .then(({ svg: renderedSvg }) => {
+        setSvg(renderedSvg);
+        // viewBox="minX minY width height" — split on whitespace, take index 2 & 3
+        const vbMatch = renderedSvg.match(/viewBox="([^"]+)"/);
+        if (vbMatch) {
+          const parts = vbMatch[1].trim().split(/\s+/);
+          if (parts.length === 4) {
+            setSvgNaturalW(Math.max(parseFloat(parts[2]), 100));
+            setSvgNaturalH(Math.max(parseFloat(parts[3]), 100));
+          }
+        }
+      })
       .catch((err) => {
         console.error("Mermaid render error:", err);
         const leaked = document.getElementById(`d${containerId.current}`);
@@ -955,6 +1007,7 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
 
   return (
     <div className="w-full space-y-3">
+      {/* ── Header row ── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ImageIcon className="w-4 h-4 text-primary" />
@@ -965,16 +1018,28 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
         </div>
         <div className="flex items-center gap-1">
           {svg && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => downloadPNG(svg, diagramData.topic)}
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
-              title="Download as PNG"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Download</span>
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setFullscreen(true)}
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
+                title="Fullscreen"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Expand</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => downloadPNG(svg, diagramData.topic)}
+                className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
+                title="Download as PNG"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Download</span>
+              </Button>
+            </>
           )}
           <Button
             variant="ghost"
@@ -988,12 +1053,25 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
         </div>
       </div>
 
+      {/* ── Inline preview (clickable to open fullscreen) ── */}
       {!showCode && (
-        <div className="rounded-xl bg-secondary/60 border border-border p-4 overflow-x-auto min-h-[120px] flex items-center justify-center">
+        <div
+          className="rounded-xl bg-secondary/60 border border-border p-4 overflow-x-auto min-h-[120px] flex items-center justify-center relative group cursor-pointer"
+          onClick={() => svg && setFullscreen(true)}
+          title="Click to expand"
+        >
           {svg ? (
-            <div className="w-full" dangerouslySetInnerHTML={{ __html: svg }} />
+            <>
+              <div className="min-w-full flex justify-center" dangerouslySetInnerHTML={{ __html: svg }} />
+              {/* Hover overlay hint */}
+              <div className="absolute inset-0 rounded-xl bg-black/0 group-hover:bg-black/30 transition-all duration-200 flex items-center justify-center pointer-events-none">
+                <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1.5 text-white text-xs bg-black/60 px-3 py-1.5 rounded-full transition-opacity duration-200">
+                  <Maximize2 className="w-3 h-3" /> Click to expand
+                </span>
+              </div>
+            </>
           ) : renderError ? (
-            <div className="text-center space-y-2">
+            <div className="text-center space-y-2" onClick={(e) => e.stopPropagation()}>
               <p className="text-sm text-destructive">Failed to render diagram.</p>
               <p className="text-xs text-muted-foreground">
                 Click "View code" to see the raw Mermaid syntax.
@@ -1016,6 +1094,134 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
       <p className="text-xs text-muted-foreground">
         Saved to your <span className="text-primary">Images</span> library ✓
       </p>
+
+      {/* ── Modal — Portal into document.body so no parent overflow/transform clips it ── */}
+      {fullscreen && createPortal(
+        <>
+          {/* Dim backdrop — click to close */}
+          <div
+            onClick={() => setFullscreen(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)" }}
+          />
+
+          {/* Modal card */}
+          <div
+            style={{
+              position: "fixed", zIndex: 9999,
+              top: "50%", left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "min(92vw, 960px)",
+              height: "min(88vh, 700px)",
+              background: "#12121a",
+              borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.1)",
+              boxShadow: "0 32px 80px rgba(0,0,0,0.6)",
+              display: "flex", flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* ── Header ── */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "10px 16px",
+              borderBottom: "1px solid rgba(255,255,255,0.08)",
+              flexShrink: 0,
+              background: "rgba(255,255,255,0.03)",
+            }}>
+              {/* Left: icon + title + badge */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <ImageIcon size={15} color="#818cf8" style={{ flexShrink: 0 }} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "white", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 320 }}>
+                  {diagramData.topic}
+                </span>
+                <span style={{
+                  fontSize: 11, padding: "2px 8px", borderRadius: 999, flexShrink: 0,
+                  background: diagramData.type === "flowchart" ? "rgba(59,130,246,0.18)" : "rgba(168,85,247,0.18)",
+                  color: diagramData.type === "flowchart" ? "#60a5fa" : "#c084fc",
+                  fontWeight: 500,
+                }}>
+                  {typeLabel}
+                </span>
+              </div>
+
+              {/* Right: actions */}
+              <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                <button
+                  onClick={() => setShowCode((v) => !v)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "rgba(255,255,255,0.55)", background: "rgba(255,255,255,0.07)", border: "none", borderRadius: 6, padding: "5px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
+                >
+                  <Code size={13} /> {showCode ? "View diagram" : "View code"}
+                </button>
+                <button
+                  onClick={() => downloadPNG(svg, diagramData.topic)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "rgba(255,255,255,0.55)", background: "rgba(255,255,255,0.07)", border: "none", borderRadius: 6, padding: "5px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
+                >
+                  <Download size={13} /> Download PNG
+                </button>
+                <button
+                  onClick={() => setFullscreen(false)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, background: "rgba(255,255,255,0.07)", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", marginLeft: 4 }}
+                  title="Close (Esc)"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* ── Diagram area ── */}
+            {!showCode && (
+              <div
+                ref={scrollAreaRef}
+                style={{ flex: 1, overflow: "auto", padding: "32px 24px" }}
+              >
+                {/*
+                  IMPORTANT — do NOT use display:flex + justifyContent:center here.
+                  When flex-centered content overflows horizontally, the browser splits
+                  the overflow equally left and right, but scroll only recovers the right
+                  side — the left half is permanently clipped and unreachable.
+
+                  Instead: display:block scroll container + margin:0 auto on the spacer.
+                  margin:auto centers the spacer when it fits inside the container.
+                  When the spacer is wider than the container, margin:auto collapses to 0
+                  and scroll starts correctly from the left edge — nothing gets clipped.
+                */}
+                <div style={{ width: svgNaturalW * zoom, height: svgNaturalH * zoom, position: "relative", margin: "0 auto" }}>
+                  <div
+                    style={{ transform: `scale(${zoom})`, transformOrigin: "top left", position: "absolute", top: 0, left: 0, width: svgNaturalW }}
+                    dangerouslySetInnerHTML={{ __html: svg }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Code view ── */}
+            {showCode && (
+              <div style={{ flex: 1, overflow: "auto", padding: "20px 24px" }}>
+                <pre style={{ fontSize: 12, fontFamily: "monospace", color: "rgba(255,255,255,0.6)", whiteSpace: "pre-wrap", margin: 0 }}>
+                  {diagramData.mermaid_code}
+                </pre>
+              </div>
+            )}
+
+            {/* ── Footer ── */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "7px 16px",
+              borderTop: "1px solid rgba(255,255,255,0.07)",
+              flexShrink: 0,
+            }}>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.2)" }}>
+                {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} · Scroll to zoom · Press <kbd style={{ fontFamily: "monospace", background: "rgba(255,255,255,0.1)", borderRadius: 4, padding: "0 4px", fontSize: 10 }}>Esc</kbd> to close
+              </span>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.2)" }}>
+                {Math.round(zoom * 100)}%
+              </span>
+            </div>
+          </div>
+        </>,
+        document.body
+      )}
     </div>
   );
 };

@@ -421,7 +421,7 @@ async def chat_message(request: ChatRequest):
 
         if intent in ("flowchart", "mindmap"):
             dtype = "flowchart" if intent == "flowchart" else "diagram"
-            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages):
+            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message):
                 yield evt
             return
 
@@ -538,9 +538,25 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions):
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages):
+async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = ""):
     try:
         effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
+
+        # ── Extract layout hint from the original user message ────────────────
+        # classify_intent() strips keywords like "circular"/"horizontal" when
+        # extracting topic — so we scan the raw message here to recover them.
+        msg_lower = (raw_message or "").lower()
+        if any(w in msg_lower for w in ("circular", "circle", "cyclic", "cycle diagram", "loop diagram")):
+            layout_hint = "circular"
+        elif any(w in msg_lower for w in ("horizontal", "left to right", "lr", "sideways")):
+            layout_hint = "horizontal"
+        elif any(w in msg_lower for w in ("vertical", "top down", "td", "top to bottom")):
+            layout_hint = "vertical"
+        elif any(w in msg_lower for w in ("diagonal",)):
+            layout_hint = "horizontal"  # closest Mermaid equivalent
+        else:
+            layout_hint = None  # let gemini_service decide intelligently
+
         chunks = []
         try:
             q_emb = embed_query(effective)
@@ -551,7 +567,7 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         except Exception:
             pass
 
-        mermaid_code = generate_mermaid(topic=effective, diagram_type=diagram_type, context_chunks=chunks)
+        mermaid_code = generate_mermaid(topic=effective, diagram_type=diagram_type, context_chunks=chunks, layout_hint=layout_hint)
         saved = await save_diagram(
             user_id=user_id, conversation_id=conversation_id,
             diagram_type=diagram_type, topic=effective, mermaid_code=mermaid_code,

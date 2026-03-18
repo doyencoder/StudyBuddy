@@ -573,14 +573,21 @@ def generate_mermaid(
     topic: str,
     diagram_type: str,
     context_chunks: List[str],
+    layout_hint: str = None,  # "circular" | "horizontal" | "vertical" | None
 ) -> str:
     """
     Generates valid Mermaid syntax for a flowchart or concept diagram.
     If context_chunks is empty, falls back to Gemini general knowledge.
 
     diagram_type:
-      "flowchart" -> Mermaid flowchart TD
+      "flowchart" -> Mermaid flowchart (direction chosen intelligently)
       "diagram"   -> Mermaid mindmap
+
+    layout_hint (optional, from user's raw message):
+      "circular"   -> cyclic layout: last node loops back to first
+      "horizontal" -> flowchart LR forced
+      "vertical"   -> flowchart TD forced
+      None         -> auto-detect from topic and content
     """
     client = _get_client()
 
@@ -590,16 +597,78 @@ def generate_mermaid(
         else "No specific material uploaded. Use your general knowledge about this topic."
     )
 
+    # ── Auto-detect circular topics when no explicit hint given ───────────────
+    # Many scientific/biological processes are inherently cyclic — detect them
+    # so the diagram automatically uses a circular layout even without the user
+    # typing "circular".
+    _CIRCULAR_KEYWORDS = {
+        "cycle", "cycling", "circular", "krebs", "calvin", "citric acid",
+        "water cycle", "carbon cycle", "nitrogen cycle", "rock cycle",
+        "cell cycle", "menstrual cycle", "business cycle", "feedback loop",
+        "recurring", "repeating", "continuous process", "closed loop",
+        "photosynthesis cycle", "respiration cycle", "hydrological",
+    }
+    topic_lower = topic.lower()
+    auto_circular = any(kw in topic_lower for kw in _CIRCULAR_KEYWORDS)
+
+    effective_hint = layout_hint or ("circular" if auto_circular else None)
+
     if diagram_type == "flowchart":
-        format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
+        if effective_hint == "circular":
+            format_instructions = """Output ONLY a valid Mermaid flowchart that represents a CIRCULAR / CYCLIC process. Rules:
+- First line must be exactly: flowchart LR
+- Represent the cycle by connecting the LAST node back to the FIRST node with an arrow, forming a closed loop.
+- Use 4 to 8 nodes that represent the key stages of the cycle in order.
+- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node shapes: rounded A(Label) for all cycle stages  — rounded shapes look best in cycles
+- Arrows: A --> B  and the last node must have an arrow pointing back to A to close the loop
+- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
+- Keep labels short: 2-4 words maximum per node
+- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code.
+EXAMPLE STRUCTURE (Calvin Cycle):
+flowchart LR
+    A(CO2 Fixation) --> B(3-PGA Produced)
+    B --> C(ATP and NADPH Used)
+    C --> D(G3P Formed)
+    D --> E(RuBP Regenerated)
+    E --> A"""
+
+        elif effective_hint == "horizontal":
+            format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
+- First line must be exactly: flowchart LR
+- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
+- Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
+- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
+- Maximum 10 nodes total — group related steps into one node to stay concise
+- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+
+        elif effective_hint == "vertical":
+            format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
 - First line must be exactly: flowchart TD
 - Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
 - Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
 - Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
 - CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
-- If you need parens, rephrase e.g. write -when applicable- instead of -if applicable-
-- Maximum 12 nodes total
+- Maximum 8 nodes total to keep height manageable
 - No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+
+        else:
+            # Auto mode — Gemini picks the best direction based on content
+            format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
+- DIRECTION: Intelligently pick the best layout for this specific topic:
+  * "flowchart LR" (left-to-right) — use for linear sequential processes with 5+ steps and few/no decision branches. DEFAULT choice for most topics.
+  * "flowchart TD" (top-down) — use ONLY when there are 2+ major Yes/No decision branches that fan out wide. Hard cap: 8 nodes max in TD mode.
+  * Do NOT default to TD just because it is familiar — LR is almost always more readable.
+- First line must be exactly: flowchart LR   OR   flowchart TD
+- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
+- Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
+- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
+- If you need parens, rephrase e.g. write -when applicable- instead of -if applicable-
+- Maximum 10 nodes total — group related steps into one node to keep it concise
+- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+
     else:
         format_instructions = """Output ONLY a valid Mermaid mindmap. Rules:
 - First line must be exactly: mindmap
@@ -611,7 +680,9 @@ def generate_mermaid(
 - Maximum 1 root, 5 branches, 3 leaves per branch
 - No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
 
+    layout_desc = effective_hint or "auto"
     prompt = f"""You are a visual learning assistant. Create a {diagram_type} for the topic: "{topic}".
+Layout mode: {layout_desc}
 
 STUDY MATERIAL CONTEXT:
 {context_text}
@@ -626,7 +697,7 @@ STUDY MATERIAL CONTEXT:
                 system_instruction=(
                     "You output ONLY valid Mermaid diagram syntax. "
                     "No markdown fences, no explanation, no code blocks. "
-                    "Start your response directly with flowchart TD or mindmap."
+                    "Start your response directly with 'flowchart' or 'mindmap'."
                 ),
                 temperature=0.3,
             ),
