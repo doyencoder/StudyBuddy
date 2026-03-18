@@ -29,6 +29,7 @@ from app.services.cosmos_service import (
     get_conversation_full,
     list_conversations,
     update_message_json,
+    update_message_content,
     save_quiz,
     save_diagram,
     save_image_diagram,
@@ -56,6 +57,135 @@ class TTSRequest(BaseModel):
 
 class InferTopicRequest(BaseModel):
     messages: List[dict]
+
+
+class RegenerateRequest(BaseModel):
+    user_id: str
+    conversation_id: str
+    message_id: str  # ID of the assistant message to regenerate
+
+
+# ── POST /chat/regenerate ─────────────────────────────────────────────────────
+
+@router.post("/regenerate")
+async def regenerate_message_endpoint(request: RegenerateRequest):
+    """
+    Regenerates a specific assistant message without creating new Cosmos records.
+
+    Unlike POST /chat/message this endpoint:
+      - Does NOT append a new user message to Cosmos (original is already there).
+      - REPLACES the content of the existing assistant message (no duplicate).
+      - Injects an explicit variation instruction so Gemini produces a different
+        answer instead of repeating the previous one verbatim.
+    """
+    # ── Fetch full conversation history ───────────────────────────────────────
+    conv_data = await get_conversation_full(request.conversation_id)
+    all_messages = conv_data["messages"]
+
+    # ── Locate the target assistant message ───────────────────────────────────
+    target_idx = next(
+        (i for i, m in enumerate(all_messages) if m.get("id") == request.message_id),
+        None,
+    )
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Message not found in conversation.")
+
+    # ── Find the preceding user message ───────────────────────────────────────
+    prior_messages = all_messages[:target_idx]
+    preceding_user = next(
+        (m for m in reversed(prior_messages) if m.get("role") == "user"), None
+    )
+    if not preceding_user:
+        raise HTTPException(status_code=400, detail="No preceding user message found.")
+
+    # Unwrap structured user content (chip / attachment JSON wrapper) to plain text
+    user_text = preceding_user.get("content", "")
+    if user_text.startswith('{"__type":'):
+        try:
+            parsed_user = json.loads(user_text)
+            user_text = parsed_user.get("text") or user_text
+        except Exception:
+            pass
+
+    # ── Previous assistant response (used to request variation) ───────────────
+    prev_response = all_messages[target_idx].get("content", "")
+
+    # ── RAG retrieval (same thresholds as regular chat) ───────────────────────
+    q_text = user_text or "key concepts"
+    context_chunks: list = []
+    try:
+        loop = asyncio.get_event_loop()
+        has_docs = await loop.run_in_executor(
+            None,
+            lambda: conversation_has_documents(
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+            ),
+        )
+        if has_docs:
+            query_embedding = await loop.run_in_executor(None, lambda: embed_query(q_text))
+            context_chunks = retrieve_chunks(
+                query_embedding=query_embedding,
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                top_k=5,
+            )
+            if not context_chunks:
+                context_chunks = retrieve_chunks(
+                    query_embedding=query_embedding,
+                    user_id=request.user_id,
+                    conversation_id=request.conversation_id,
+                    top_k=5,
+                    score_threshold=0.5,
+                )
+    except Exception:
+        pass  # RAG failure is non-fatal — fall back to general knowledge
+
+    # ── SSE stream ────────────────────────────────────────────────────────────
+    async def regen_stream():
+        yield f"data: {json.dumps({'type': 'meta', 'conversation_id': request.conversation_id})}\n\n"
+
+        # Build the question with an explicit variation instruction so Gemini
+        # produces a meaningfully different answer, not a verbatim repeat.
+        if prev_response.strip():
+            regen_question = (
+                f"{user_text}\n\n"
+                f"[Regeneration instruction: Your previous answer covered this topic already. "
+                f"Please respond with a fresh explanation — use different phrasing, "
+                f"different examples or analogies, and a new angle or structure. "
+                f"Do NOT repeat the same wording as before.]"
+            )
+        else:
+            regen_question = user_text
+
+        full_reply = ""
+        try:
+            for chunk in chat_stream(
+                question=regen_question,
+                context_chunks=context_chunks,
+                history=prior_messages,  # history up to (not including) the target msg
+            ):
+                full_reply += chunk
+                yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                await asyncio.sleep(0)  # flush TCP buffer after every token
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            return
+
+        # ── Replace existing message in Cosmos (NO new record created) ────────
+        await update_message_content(
+            conversation_id=request.conversation_id,
+            user_id=request.user_id,
+            message_id=request.message_id,
+            new_content=full_reply,
+        )
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        regen_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── POST /chat/message ────────────────────────────────────────────────────────
@@ -326,12 +456,16 @@ async def chat_message(request: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
 
-        await save_message(
+        saved = await save_message(
             conversation_id=conversation_id,
             user_id=request.user_id,
             role="assistant",
             content=full_reply,
         )
+        # Emit the real Cosmos message ID so the frontend can update its local
+        # UUID to match. Without this, clicking Regenerate immediately after
+        # sending would pass a frontend-only UUID that Cosmos has never seen.
+        yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved['id']})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

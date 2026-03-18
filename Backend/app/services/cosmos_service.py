@@ -192,6 +192,43 @@ async def get_conversation_full(conversation_id: str) -> Dict[str, Any]:
             return {"messages": [], "pending_intent": None}
 
 
+async def update_message_content(
+    conversation_id: str,
+    user_id: str,
+    message_id: str,
+    new_content: str,
+) -> bool:
+    """
+    Replaces the content (and refreshes the timestamp) of a specific message
+    identified by its message_id within the conversation's messages array.
+
+    Used by POST /chat/regenerate so that regenerating an assistant message
+    UPDATES the existing Cosmos entry instead of appending a duplicate.
+    Returns True if the message was found and updated, False otherwise.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+
+        try:
+            item = await container.read_item(item=conversation_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            return False
+
+        updated = False
+        for msg in item.get("messages", []):
+            if msg.get("id") == message_id:
+                msg["content"] = new_content
+                msg["timestamp"] = datetime.now(timezone.utc).isoformat()
+                updated = True
+                break
+
+        if updated:
+            await container.replace_item(item=conversation_id, body=item)
+
+        return updated
+
+
 async def update_message_json(
     conversation_id: str,
     user_id: str,

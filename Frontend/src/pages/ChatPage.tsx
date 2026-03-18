@@ -2059,22 +2059,8 @@ const ChatPage = () => {
   const regenerateMessage = async (assistantMsgId: string) => {
     stopSpeech();
 
-    // Snapshot the conv this regeneration belongs to.
     const convId = activeConvId;
     if (!convId) return;
-
-    const currentMessages = (convStates[convId] ?? defaultConvState()).messages;
-    const idx = currentMessages.findIndex((m) => m.id === assistantMsgId);
-    if (idx === -1) return;
-
-    const precedingUser = [...currentMessages]
-      .slice(0, idx)
-      .reverse()
-      .find((m) => m.role === "user");
-    if (!precedingUser) {
-      toast.error("Could not find the original question to regenerate.");
-      return;
-    }
 
     // Clear translation cache for this message
     setTranslatedContent((prev) => {
@@ -2088,7 +2074,7 @@ const ChatPage = () => {
       return n;
     });
 
-    // Clear the message content and mark as regenerating — all scoped to convId
+    // Clear the message content and mark as regenerating — scoped to convId
     updateConv(convId, (s) => ({
       ...s,
       messages: s.messages.map((m) =>
@@ -2099,7 +2085,77 @@ const ChatPage = () => {
     }));
 
     try {
-      await streamIntoMessage(precedingUser.content, assistantMsgId, convId);
+      // ── Call the dedicated regenerate endpoint ──────────────────────────────
+      // Unlike /chat/message, this endpoint:
+      //   • does NOT save a new user message to Cosmos (no duplicate on refresh)
+      //   • REPLACES the existing assistant message (no duplicate on refresh)
+      //   • injects a variation instruction so Gemini produces a different answer
+      const response = await fetch(`${API_BASE}/chat/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          conversation_id: convId,
+          message_id: assistantMsgId,
+        }),
+      });
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let firstChunk = true;
+
+      // RAF batching — same pattern as sendMessage for smooth 60fps streaming
+      let pendingContent = "";
+      let rafScheduled = false;
+      const flushPending = () => {
+        if (pendingContent === "") return;
+        const toFlush = pendingContent;
+        pendingContent = "";
+        rafScheduled = false;
+        updateConv(convId, (s) => ({
+          ...s,
+          messages: s.messages.map((m) =>
+            m.id === assistantMsgId
+              ? { ...m, content: firstChunk ? toFlush : m.content + toFlush }
+              : m
+          ),
+        }));
+        firstChunk = false;
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const lines = decoder.decode(value, { stream: true }).split("\n\n").filter(Boolean);
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const dataStr = line.slice(6).trim();
+          if (dataStr === "[DONE]") {
+            flushPending();
+            updateConv(convId, (s) => ({ ...s, isTyping: false }));
+            break;
+          }
+
+          let parsed: any;
+          try { parsed = JSON.parse(dataStr); } catch { continue; }
+
+          if (parsed.type === "text" && parsed.content) {
+            pendingContent += parsed.content;
+            if (!rafScheduled) {
+              rafScheduled = true;
+              requestAnimationFrame(flushPending);
+            }
+          }
+
+          if (parsed.type === "error") {
+            toast.error(`Regeneration failed: ${parsed.content}`);
+            updateConv(convId, (s) => ({ ...s, isTyping: false }));
+            break;
+          }
+        }
+      }
     } catch {
       toast.error("Could not reach the server. Is the backend running?");
     } finally {
@@ -2391,6 +2447,21 @@ const ChatPage = () => {
             toast.error(`AI error: ${parsed.content}`);
             updateConv(convKey, (s) => ({ ...s, isTyping: false }));
             break;
+          }
+
+          // ── message_saved: backend confirms the real Cosmos message ID ────
+          // The frontend creates aiMsgId as a local UUID. Cosmos generates its
+          // own UUID when save_message() is called. We must sync them so that
+          // clicking Regenerate immediately after a response passes the correct
+          // ID to /chat/regenerate instead of a frontend-only UUID.
+          if (parsed.type === "message_saved" && parsed.message_id) {
+            const realMsgId: string = parsed.message_id;
+            updateConv(convKey, (s) => ({
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === aiMsgId ? { ...m, id: realMsgId } : m
+              ),
+            }));
           }
         }
       }
