@@ -319,6 +319,7 @@ STRICT RULES:
 - Only one option is correct
 - Base every question strictly on the provided material — no outside knowledge
 - The explanation must reference the material directly
+- NEVER mention chunk numbers in any explanation (do NOT write "Chunk 1", "Chunk 2", "(Chunk 1 and 2)" etc.) — explain the answer in plain language only
 
 Also generate exactly 1 fun_fact: a single interesting, surprising fact related to this topic.
 It should be engaging and educational — something a student would find genuinely interesting.
