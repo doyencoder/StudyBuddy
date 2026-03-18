@@ -21,9 +21,9 @@ from app.models import (
 )
 from app.services.gemini_service import embed_query, generate_mermaid, generate_image
 from app.services.search_service import retrieve_chunks
-from app.services.blob_service import upload_generated_image_to_blob
+from app.services.blob_service import upload_generated_image_to_blob, delete_blob_by_url
 import json
-from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, get_diagram, ensure_conversation, save_message
+from app.services.cosmos_service import save_diagram, save_image_diagram, list_diagrams, get_diagram, delete_diagram, ensure_conversation, save_message
 
 router = APIRouter(prefix="/diagrams", tags=["diagrams"])
 
@@ -339,3 +339,44 @@ async def get_diagram_detail(diagram_id: str, user_id: str = Query(...)):
         "created_at":  doc.get("created_at", ""),
         "conversation_id": doc.get("conversation_id", ""),
     }
+
+
+# ── DELETE /diagrams/{diagram_id} ─────────────────────────────────────────────
+
+@router.delete("/{diagram_id}")
+async def delete_diagram_endpoint(diagram_id: str, user_id: str = Query(...)):
+    """
+    Permanently deletes a diagram from Cosmos DB.
+    For AI-generated images (type="image"), also attempts to delete the
+    underlying blob from Azure Storage — failure is logged but non-fatal,
+    since the blob may belong to an old/migrated storage account.
+    """
+    # Fetch the document first so we know if there's a blob to clean up
+    try:
+        doc = await get_diagram(diagram_id=diagram_id, user_id=user_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Diagram not found: {str(e)}")
+
+    # Run blob deletion and Cosmos deletion concurrently to cut latency.
+    # Blob delete is best-effort — failure is logged but never blocks the Cosmos delete.
+    import asyncio
+
+    async def _delete_blob_safe():
+        image_url = doc.get("image_url")
+        if not image_url:
+            return
+        try:
+            await asyncio.to_thread(delete_blob_by_url, image_url)
+            print(f"[Diagrams] Blob deleted for diagram {diagram_id}")
+        except Exception as e:
+            print(f"[Diagrams] Blob delete failed (non-fatal): {e}")
+
+    async def _delete_cosmos():
+        await delete_diagram(diagram_id=diagram_id, user_id=user_id)
+
+    try:
+        await asyncio.gather(_delete_blob_safe(), _delete_cosmos())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete diagram: {str(e)}")
+
+    return {"status": "deleted", "diagram_id": diagram_id}

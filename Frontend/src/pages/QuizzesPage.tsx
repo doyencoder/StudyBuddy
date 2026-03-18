@@ -1,8 +1,20 @@
 import { useState, useEffect } from "react";
-import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle } from "lucide-react";
+import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import { API_BASE } from "@/config/api";
 
 const USER_ID = "student-001";
@@ -47,9 +59,10 @@ const difficultyColor = (d: string) => {
 };
 
 const mapSummary = (q: any): QuizSummary => {
-  const accuracy = q.total_questions > 0
-    ? Math.round(((q.correct_count ?? 0) / q.total_questions) * 100)
-    : 0;
+  const accuracy =
+    q.total_questions > 0
+      ? Math.round(((q.correct_count ?? 0) / q.total_questions) * 100)
+      : 0;
   return {
     id:         q.quiz_id ?? q.id,
     topic:      q.topic,
@@ -61,13 +74,64 @@ const mapSummary = (q: any): QuizSummary => {
   };
 };
 
-// ── Component ──────────────────────────────────────────────────────────────
+// ── DeleteButton — self-contained to avoid stopPropagation type issues ─────
+// The outer div intercepts the click before it bubbles to the parent Card.
+
+interface DeleteButtonProps {
+  label: string;
+  onConfirm: () => void;
+  className?: string;
+  iconSize?: string;
+  showLabel?: boolean;
+}
+
+const DeleteButton = ({
+  label,
+  onConfirm,
+  className = "",
+  iconSize = "w-3.5 h-3.5",
+  showLabel = false,
+}: DeleteButtonProps) => (
+  <div onClick={(e) => e.stopPropagation()}>
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size={showLabel ? "sm" : "icon"}
+          className={className}
+        >
+          <Trash2 className={iconSize} />
+          {showLabel && <span className="hidden sm:inline ml-1.5">Delete Quiz</span>}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this quiz?</AlertDialogTitle>
+          <AlertDialogDescription>
+            <strong>{label}</strong> will be permanently deleted. This action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={onConfirm}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </div>
+);
+
+// ── Main component ─────────────────────────────────────────────────────────
 
 const QuizzesPage = () => {
-  const [quizzes, setQuizzes]           = useState<QuizSummary[]>([]);
-  const [selectedQuiz, setSelectedQuiz] = useState<QuizDetail | null>(null);
-  const [loading, setLoading]           = useState(true);
-  const [error, setError]               = useState<string | null>(null);
+  const [quizzes, setQuizzes]             = useState<QuizSummary[]>([]);
+  const [selectedQuiz, setSelectedQuiz]   = useState<QuizDetail | null>(null);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError]     = useState<string | null>(null);
 
@@ -93,9 +157,7 @@ const QuizzesPage = () => {
     setDetailLoading(true);
     setDetailError(null);
     try {
-      const response = await fetch(
-        `${API_BASE}/quiz/${summary.id}?user_id=${USER_ID}`
-      );
+      const response = await fetch(`${API_BASE}/quiz/${summary.id}?user_id=${USER_ID}`);
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
       const q = await response.json();
 
@@ -107,11 +169,7 @@ const QuizzesPage = () => {
         explanation: r.explanation,
       }));
 
-      setSelectedQuiz({
-        ...summary,
-        questions,
-        weakAreas: q.weak_areas ?? [],
-      });
+      setSelectedQuiz({ ...summary, questions, weakAreas: q.weak_areas ?? [] });
     } catch (err: any) {
       setDetailError(err.message);
     } finally {
@@ -119,23 +177,53 @@ const QuizzesPage = () => {
     }
   };
 
+  // ── Optimistic delete ─────────────────────────────────────────────────────
+  // 1. Snapshot quiz + open detail for rollback
+  // 2. Remove from list instantly and exit detail view if open
+  // 3. Fire API in background — on failure, restore everything + toast
+  const handleDelete = (quizId: string) => {
+    const snapshotQuiz   = quizzes.find((q) => q.id === quizId);
+    const snapshotIndex  = quizzes.findIndex((q) => q.id === quizId);
+    const snapshotDetail = selectedQuiz?.id === quizId ? selectedQuiz : null;
+
+    // Instant UI removal
+    setQuizzes((prev) => prev.filter((q) => q.id !== quizId));
+    if (selectedQuiz?.id === quizId) {
+      setSelectedQuiz(null);
+      setDetailError(null);
+    }
+
+    // Fire-and-forget backend call
+    fetch(`${API_BASE}/quiz/${quizId}?user_id=${USER_ID}`, { method: "DELETE" })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      })
+      .catch(() => {
+        // Rollback — restore quiz to its original list position
+        if (snapshotQuiz) {
+          setQuizzes((prev) => {
+            const next = [...prev];
+            next.splice(snapshotIndex, 0, snapshotQuiz);
+            return next;
+          });
+        }
+        // Restore detail view if user was inside it
+        if (snapshotDetail) setSelectedQuiz(snapshotDetail);
+        toast.error("Failed to delete quiz. Please try again.");
+      });
+  };
+
   // ── Detail skeleton ────────────────────────────────────────────────────────
   if (detailLoading) {
     return (
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4 animate-pulse">
-        {/* Back button placeholder */}
         <div className="h-8 w-32 bg-secondary/50 rounded-lg" />
-
-        {/* Title + subtitle */}
         <div className="space-y-2">
           <div className="h-6 w-56 bg-secondary/60 rounded-lg" />
           <div className="h-4 w-36 bg-secondary/40 rounded" />
         </div>
-
-        {/* Question cards */}
         {[...Array(4)].map((_, i) => (
           <div key={i} className="bg-card border border-border rounded-xl p-5 space-y-3">
-            {/* Question row */}
             <div className="flex items-start gap-2">
               <div className="w-5 h-5 rounded-full bg-secondary/60 shrink-0 mt-0.5" />
               <div className="flex-1 space-y-1.5">
@@ -143,13 +231,11 @@ const QuizzesPage = () => {
                 <div className="h-3.5 w-3/4 bg-secondary/40 rounded" />
               </div>
             </div>
-            {/* Options */}
             <div className="grid gap-2 ml-7">
               {[...Array(4)].map((_, oi) => (
                 <div key={oi} className="h-9 w-full bg-secondary/30 rounded-lg border border-border" />
               ))}
             </div>
-            {/* Explanation */}
             <div className="ml-7 h-10 w-full bg-secondary/20 rounded-lg" />
           </div>
         ))}
@@ -157,26 +243,38 @@ const QuizzesPage = () => {
     );
   }
 
+  // ── Detail view ────────────────────────────────────────────────────────────
   if (selectedQuiz) {
     return (
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4">
-        <Button
-          variant="ghost"
-          onClick={() => { setSelectedQuiz(null); setDetailError(null); }}
-          className="gap-2 text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back to Quizzes
-        </Button>
+
+        <div className="flex items-center justify-between">
+          <Button
+            variant="ghost"
+            onClick={() => { setSelectedQuiz(null); setDetailError(null); }}
+            className="gap-2 text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back to Quizzes
+          </Button>
+
+          <DeleteButton
+            label={selectedQuiz.topic}
+            onConfirm={() => handleDelete(selectedQuiz.id)}
+            showLabel
+            iconSize="w-4 h-4"
+            className="gap-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+          />
+        </div>
 
         <div>
           <h2 className="text-xl font-bold text-foreground">{selectedQuiz.topic}</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Score: {selectedQuiz.score}/{selectedQuiz.total} • Accuracy: {selectedQuiz.accuracy}%
+            Score: {selectedQuiz.score}/{selectedQuiz.total} · Accuracy: {selectedQuiz.accuracy}%
           </p>
         </div>
 
         {detailError && (
-          <div className="text-sm text-destructive">Failed to load details: {detailError}</div>
+          <div className="text-sm text-destructive">{detailError}</div>
         )}
 
         {selectedQuiz.questions.length > 0 ? (
@@ -189,7 +287,7 @@ const QuizzesPage = () => {
                     <div className="flex items-start gap-2">
                       {isCorrect
                         ? <CheckCircle2 className="w-5 h-5 text-success mt-0.5 shrink-0" />
-                        : <XCircle     className="w-5 h-5 text-destructive mt-0.5 shrink-0" />}
+                        : <XCircle      className="w-5 h-5 text-destructive mt-0.5 shrink-0" />}
                       <p className="text-sm font-medium text-foreground">{q.question}</p>
                     </div>
                     <div className="grid gap-2 ml-7">
@@ -312,9 +410,18 @@ const QuizzesPage = () => {
                       <p className="text-xs text-muted-foreground">{quiz.date}</p>
                     </div>
                   </div>
-                  <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
-                    {quiz.difficulty}
-                  </Badge>
+
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
+                      {quiz.difficulty}
+                    </Badge>
+                    <DeleteButton
+                      label={quiz.topic}
+                      onConfirm={() => handleDelete(quiz.id)}
+                      iconSize="w-3.5 h-3.5"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                    />
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between">

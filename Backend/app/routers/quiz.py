@@ -20,7 +20,7 @@ from app.services.search_service import (
     retrieve_chunks_hybrid,
     conversation_has_documents,
 )
-from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message, update_message_json, patch_weak_area_labels
+from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, delete_quiz, ensure_conversation, save_message, update_message_json, patch_weak_area_labels
 
 router = APIRouter(prefix="/quiz", tags=["Quiz"])
 
@@ -401,3 +401,18 @@ async def quiz_detail(quiz_id: str, user_id: str = Query(...)):
         "weak_areas":     q.get("weak_areas", []),
         "results":        results,
     }
+
+
+# ── DELETE /quiz/{quiz_id} ────────────────────────────────────────────────────
+
+@router.delete("/{quiz_id}")
+async def delete_quiz_endpoint(quiz_id: str, user_id: str = Query(...)):
+    """
+    Permanently deletes a quiz document from Cosmos DB.
+    Called when the user clicks the delete button on a quiz card or detail view.
+    """
+    try:
+        await delete_quiz(quiz_id=quiz_id, user_id=user_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Quiz not found or delete failed: {str(e)}")
+    return {"status": "deleted", "quiz_id": quiz_id}

@@ -160,3 +160,30 @@ def upload_generated_image_to_blob(image_bytes: bytes, topic: str, user_id: str)
         "blob_name": blob_name,
         "blob_url": sas_url,
     }
+
+
+def delete_blob_by_url(sas_url: str) -> None:
+    """
+    Deletes a blob given its SAS URL.
+    Parses the blob name out of the URL path and issues a delete.
+    Raises on failure — callers should catch and treat as non-fatal.
+
+    Expected URL format:
+        https://{account}.blob.core.windows.net/{container}/{blob_name}?{sas_token}
+    """
+    from urllib.parse import urlparse
+
+    container_name = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "studybuddy-files")
+    parsed = urlparse(sas_url)
+    # parsed.path = "/{container}/{blob_name...}"
+    path_without_leading_slash = parsed.path.lstrip("/")
+    # Split off the container prefix, keep everything else as the blob name
+    parts = path_without_leading_slash.split("/", 1)
+    if len(parts) < 2:
+        raise ValueError(f"Cannot parse blob name from URL: {sas_url}")
+    blob_name = parts[1]
+
+    client = get_blob_client()
+    container_client = client.get_container_client(container_name)
+    blob_client = container_client.get_blob_client(blob_name)
+    blob_client.delete_blob()

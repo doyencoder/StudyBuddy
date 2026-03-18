@@ -1,7 +1,19 @@
 import { useState, useEffect } from "react";
-import { ImageIcon, GitBranch, Network, RefreshCw, X, Download, Code, ZoomIn } from "lucide-react";
+import { ImageIcon, GitBranch, Network, RefreshCw, X, Download, Code, ZoomIn, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import mermaid from "mermaid";
 import { API_BASE } from "@/config/api";
 
@@ -138,9 +150,11 @@ const DiagramPreview = ({ item }: { item: DiagramItem }) => {
 const DiagramModal = ({
   item,
   onClose,
+  onDelete,
 }: {
   item: DiagramItem;
   onClose: () => void;
+  onDelete: (id: string) => void;
 }) => {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState(false);
@@ -255,6 +269,38 @@ const DiagramModal = ({
                 <span className="hidden sm:inline">Download PNG</span>
               </Button>
             )}
+
+            {/* Delete button */}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-3 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Delete</span>
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete this item?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    <strong>{item.topic}</strong> will be permanently deleted.
+                    This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => { onDelete(item.diagram_id); onClose(); }}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
 
             <Button
               variant="ghost"
@@ -377,6 +423,37 @@ const ImagesPage = () => {
   };
 
   useEffect(() => { fetchDiagrams(); }, []);
+
+  // ── Optimistic delete ─────────────────────────────────────────────────────
+  // 1. Snapshot the item, remove it from state instantly (0ms perceived latency)
+  // 2. Fire the API call in the background
+  // 3. On failure: restore the item to its original position + show error toast
+  const handleDelete = (diagramId: string) => {
+    // Snapshot for rollback
+    const snapshot = diagrams.find((d) => d.diagram_id === diagramId);
+    const snapshotIndex = diagrams.findIndex((d) => d.diagram_id === diagramId);
+
+    // Instant UI removal
+    setDiagrams((prev) => prev.filter((d) => d.diagram_id !== diagramId));
+    if (selectedDiagram?.diagram_id === diagramId) setSelectedDiagram(null);
+
+    // Fire-and-forget backend call
+    fetch(`${API_BASE}/diagrams/${diagramId}?user_id=${USER_ID}`, { method: "DELETE" })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      })
+      .catch(() => {
+        // Rollback — restore item to its original position
+        if (snapshot) {
+          setDiagrams((prev) => {
+            const next = [...prev];
+            next.splice(snapshotIndex, 0, snapshot);
+            return next;
+          });
+        }
+        toast.error("Failed to delete item. Please try again.");
+      });
+  };
 
   const typeLabel = (type: string) =>
     type === "flowchart" ? "Flowchart" : type === "image" ? "AI Image" : "Mind Map";
@@ -516,9 +593,44 @@ const ImagesPage = () => {
                       </div>
                       <div className="flex items-center justify-between mt-2">
                         <span className="text-xs text-muted-foreground">{formatDate(item.created_at)}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeBadgeColor(item.type)}`}>
-                          {typeLabel(item.type)}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${typeBadgeColor(item.type)}`}>
+                            {typeLabel(item.type)}
+                          </span>
+                          {/* Delete button — stopPropagation to avoid opening modal */}
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={(e) => e.stopPropagation()}
+                                className="h-6 w-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete this item?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  <strong>{item.topic}</strong> will be permanently deleted.
+                                  This action cannot be undone.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel onClick={(e) => e.stopPropagation()}>
+                                  Cancel
+                                </AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={(e) => { e.stopPropagation(); handleDelete(item.diagram_id); }}
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                >
+                                  Delete
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
                       </div>
                     </div>
                   </CardContent>
@@ -534,6 +646,7 @@ const ImagesPage = () => {
         <DiagramModal
           item={selectedDiagram}
           onClose={() => setSelectedDiagram(null)}
+          onDelete={(id) => { handleDelete(id); setSelectedDiagram(null); }}
         />
       )}
     </>
