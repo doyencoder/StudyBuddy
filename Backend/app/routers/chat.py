@@ -245,7 +245,38 @@ async def chat_message(request: ChatRequest):
         # If a file is attached, topic will be inferred from the document.
         has_attachment = bool(request.filename or request.attachments)
         no_topic = not request.message.strip() and not has_attachment
-        topic_val = request.message.strip() or ("[from_document]" if has_attachment else None)
+
+        # ── Clean topic from raw message ───────────────────────────────────────
+        # The chip already tells us the INTENT (quiz / flowchart / etc.), so we
+        # must strip any intent-describing words from the user's message to get
+        # a clean topic string.  Without this, a message like
+        # "give me a flowchart on photosynthesis" with the Quiz chip selected
+        # would pass the entire sentence as the topic to generate_quiz_questions,
+        # confusing Gemini and producing irrelevant / garbled questions.
+        #
+        # Strategy: remove common intent-verb phrases and prepositions that
+        # precede the actual topic, then trim whitespace.
+        _INTENT_STRIP = re.compile(
+            r'^(please\s+)?(can\s+you\s+)?'
+            r'(give\s+me\s+(a\s+)?|make\s+(a\s+|me\s+(a\s+)?)?|'
+            r'create\s+(a\s+)?|generate\s+(a\s+)?|show\s+me\s+(a\s+)?|build\s+(a\s+)?|'
+            r'i\s+want\s+(a\s+)?|produce\s+(a\s+)?)?'
+            r'(timed\s+)?(quiz\s+me\s+on|quiz|test|questions?|mcq|flowchart|flow\s+chart|mindmap|mind\s+map|'
+            r'diagram|image\s+of|image|picture\s+of|picture|illustration|study\s+plan|plan)\s*'
+            r'(me\s+on\s+|about|on|for|of|regarding|related\s+to|covering)?\s*',
+            re.IGNORECASE,
+        )
+        # Also strip trailing quantity phrases that got swept in ("5 questions", "10 mcqs")
+        _TRAILING_STRIP = re.compile(
+            r'\s*(with\s+)?\d+\s*(questions?|mcqs?|items?|mins?|minutes?|seconds?|secs?)\s*$',
+            re.IGNORECASE,
+        )
+        raw_msg = request.message.strip()
+        cleaned_topic = _INTENT_STRIP.sub("", raw_msg).strip()
+        cleaned_topic = _TRAILING_STRIP.sub("", cleaned_topic).strip()
+        # Fall back to full message only if stripping removed everything
+        topic_val = cleaned_topic or raw_msg or ("[from_document]" if has_attachment else None)
+
         classification = {
             "intent":               request.intent_hint,
             "topic":                topic_val,

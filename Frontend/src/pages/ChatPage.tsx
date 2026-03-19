@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAppearance } from "@/contexts/AppearanceContext";
+import CelebrationOverlay from "@/components/CelebrationOverlay";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
 mermaid.initialize({
@@ -500,11 +501,28 @@ const QuizResults = ({
   onRetake?: () => void;
 }) => {
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [showCelebration, setShowCelebration] = useState(false);
   const score = quizData.score ?? 0;
+
+  // Fire celebration only once per quiz_id — persisted in localStorage so it
+  // survives remounts, conversation switches, and full page reloads.
+  useEffect(() => {
+    if (score !== 100) return;
+    const STORAGE_KEY = "sb_celebrated_quizzes";
+    try {
+      const fired: string[] = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      if (fired.includes(quizData.quiz_id)) return; // already celebrated this quiz
+      fired.push(quizData.quiz_id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(fired));
+    } catch {
+      // localStorage unavailable — fall through and show once this session
+    }
+    setTimeout(() => setShowCelebration(true), 400);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — intentionally runs only on first mount
   const scoreColor = score >= 80 ? "text-green-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
   const scoreBg = score >= 80 ? "from-green-500/10 to-transparent" : score >= 60 ? "from-yellow-500/10 to-transparent" : "from-red-500/10 to-transparent";
-  const scoreEmoji = score >= 80 ? "🏆" : score >= 60 ? "📈" : "💪";
-  const scoreMsg = score >= 80 ? "Excellent work!" : score >= 60 ? "Good effort!" : "Keep practising!";
+  const scoreEmoji = score === 100 ? "🏆" : score >= 80 ? "🌟" : score >= 60 ? "📈" : score >= 40 ? "💪" : score > 0 ? "😓" : "😔";
+  const scoreMsg = score === 100 ? "Perfect score!" : score >= 80 ? "Excellent work!" : score >= 60 ? "Good effort!" : score >= 40 ? "Keep practising!" : score > 0 ? "Don't give up — review and retry!" : "No worries, review the material and try again!";
 
   const [translated, setTranslated] = useState<TranslatedResults | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
@@ -561,6 +579,13 @@ const QuizResults = ({
 
   return (
     <div className="space-y-4">
+      {/* Perfect score celebration */}
+      <CelebrationOverlay
+        show={showCelebration}
+        variant="quiz"
+        onClose={() => setShowCelebration(false)}
+      />
+
       {/* Score hero card */}
       <div className={`rounded-2xl bg-gradient-to-b ${scoreBg} border border-border/40 p-5 text-center space-y-1`}>
         <div className="text-3xl mb-1">{scoreEmoji}</div>

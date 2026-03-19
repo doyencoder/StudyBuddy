@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Check, Bell, Trash2, ChevronDown, ChevronUp, Clock, CalendarDays } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import CelebrationOverlay, { CelebrationVariant } from "@/components/CelebrationOverlay";
 
 const USER_ID = "student-001";
 
@@ -314,6 +315,11 @@ const GoalsPage = () => {
   const [longTermGoals, setLongTermGoals] = useState<GoalItem[]>([]);
   const [loadingGoals, setLoadingGoals] = useState(false);
 
+  // Celebration overlay state
+  const [celebrationVariant, setCelebrationVariant] = useState<CelebrationVariant>("daily_goal");
+  const [showCelebration, setShowCelebration] = useState(false);
+  const longTermCelebFiredRef = useRef<Set<string>>(new Set());
+
   // Manual goal creation dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -373,9 +379,19 @@ const GoalsPage = () => {
   // ── Daily goal handlers ───────────────────────────────────────────────────
 
   const toggleDaily = (id: string) => {
-    setDailyGoals((prev) =>
-      prev.map((g) => (g.id === id ? { ...g, completed: !g.completed } : g))
-    );
+    setDailyGoals((prev) => {
+      const updated = prev.map((g) => (g.id === id ? { ...g, completed: !g.completed } : g));
+      // Fire celebration if this toggle just completed the last remaining goal
+      const justCompleted = updated.find(g => g.id === id)?.completed;
+      const allDone = updated.length > 0 && updated.every(g => g.completed);
+      if (justCompleted && allDone) {
+        setTimeout(() => {
+          setCelebrationVariant("daily_goal");
+          setShowCelebration(true);
+        }, 350);
+      }
+      return updated;
+    });
   };
 
   const addDailyGoal = () => {
@@ -451,6 +467,16 @@ const GoalsPage = () => {
         const newCompleted = { ...(g.completed_tasks || {}), [taskKey]: done };
         if (!done) delete newCompleted[taskKey];
         const newProgress = computeProgress(g.weekly_plan, newCompleted);
+
+        // Fire celebration exactly once when this goal first reaches 100%
+        if (newProgress === 100 && !longTermCelebFiredRef.current.has(goalId)) {
+          longTermCelebFiredRef.current.add(goalId);
+          setTimeout(() => {
+            setCelebrationVariant("long_term_goal");
+            setShowCelebration(true);
+          }, 350);
+        }
+
         return { ...g, completed_tasks: newCompleted, progress: newProgress };
       })
     );
@@ -541,6 +567,13 @@ const GoalsPage = () => {
 
   return (
     <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
+      {/* Celebration overlay — fires on daily all-done or long-term 100% */}
+      <CelebrationOverlay
+        show={showCelebration}
+        variant={celebrationVariant}
+        onClose={() => setShowCelebration(false)}
+      />
+
       <div>
         <h1 className="text-2xl font-bold text-foreground">Goals</h1>
         <p className="text-muted-foreground mt-1">
