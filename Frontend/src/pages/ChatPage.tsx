@@ -359,6 +359,49 @@ function renderMarkdown(text: string) {
       continue;
     }
 
+    // ── Markdown table: lines that start with | ───────────────────────────────
+    if (/^\s*\|/.test(line)) {
+      const tableLines: string[] = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) {
+        tableLines.push(lines[i++]);
+      }
+      if (tableLines.length >= 2) {
+        const parseRow = (row: string) =>
+          row.split("|").map(c => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+        const isSeparatorRow = (row: string) => /^\s*\|[\s|:\-]+\|\s*$/.test(row);
+        const headers = parseRow(tableLines[0]);
+        const sepIdx = tableLines.findIndex(isSeparatorRow);
+        const bodyRows = sepIdx >= 0 ? tableLines.slice(sepIdx + 1) : tableLines.slice(1);
+        elements.push(
+          <div key={`tbl-${i}`} className="overflow-x-auto my-3 rounded-lg border border-border/40">
+            <table className="min-w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-primary/10 border-b border-border/40">
+                  {headers.map((h, j) => (
+                    <th key={j} className="px-4 py-2.5 text-left text-xs font-semibold text-foreground uppercase tracking-wide whitespace-nowrap">
+                      {applyInline(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bodyRows.map((row, ri) => (
+                  <tr key={ri} className={ri % 2 === 0 ? "bg-background/60" : "bg-secondary/20"}>
+                    {parseRow(row).map((cell, ci) => (
+                      <td key={ci} className={`px-4 py-2 text-sm border-t border-border/20 align-top ${ci === 0 ? "font-medium text-foreground" : "text-muted-foreground"}`}>
+                        {applyInline(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+        continue;
+      }
+    }
+
     if (/^\s*\d+\.\s/.test(line)) {
       const items: string[] = [];
       const startNum = parseInt(lines[i].match(/^\s*(\d+)\./)?.[1] ?? "1", 10);
