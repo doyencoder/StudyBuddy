@@ -232,6 +232,12 @@ async def chat_message(request: ChatRequest):
         if weeks_match:
             n = int(weeks_match.group(1))
             weeks_val = n * 4 if "month" in weeks_match.group(2) else n
+        # Parse timer: "30 seconds", "1 minute", "2 mins" → seconds
+        timer_match = re.search(r'(\d+)\s*(second|sec|minute|min)', msg_lower)
+        timer_val = None
+        if timer_match:
+            n = int(timer_match.group(1))
+            timer_val = n * 60 if "min" in timer_match.group(2) else n
         # Topic is missing only when: no message text AND no file attached.
         # If a file is attached, topic will be inferred from the document.
         has_attachment = bool(request.filename or request.attachments)
@@ -244,6 +250,7 @@ async def chat_message(request: ChatRequest):
             "num_questions":        int(num_q_match.group(1)) if num_q_match else 5,
             "timeline_weeks":       weeks_val,
             "hours_per_week":       None,
+            "timer_seconds":        timer_val,
             "needs_clarification":  no_topic,
             "clarification_question": (
                 f"What topic would you like for your "
@@ -274,6 +281,7 @@ async def chat_message(request: ChatRequest):
     num_questions       = classification["num_questions"]
     timeline_weeks      = classification.get("timeline_weeks")
     hours_per_week      = classification.get("hours_per_week")
+    timer_seconds       = classification.get("timer_seconds")
     needs_clarification = classification["needs_clarification"]
     clarification_q     = classification.get("clarification_question") or "Could you tell me more?"
 
@@ -415,7 +423,7 @@ async def chat_message(request: ChatRequest):
 
         # ── Dispatch ─────────────────────────────────────────────────────────
         if intent == "quiz":
-            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions):
+            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds):
                 yield evt
             return
 
@@ -477,7 +485,7 @@ async def chat_message(request: ChatRequest):
 
 # ── Feature dispatch helpers ──────────────────────────────────────────────────
 
-async def _dispatch_quiz(user_id, conversation_id, topic, num_questions):
+async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None):
     try:
         has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
         if not has_docs:
@@ -528,10 +536,11 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions):
                 "__type": "quiz", "quiz_id": quiz_id,
                 "topic": topic_label, "submitted": False,
                 "questions": q_for_history, "fun_fact": fun_fact,
+                "timer_seconds": timer_seconds,
             }),
         )
 
-        yield f"data: {json.dumps({'type': 'quiz_result', 'data': {'quiz_id': quiz_id, 'topic': topic_label, 'questions': q_for_history, 'fun_fact': fun_fact}})}\n\n"
+        yield f"data: {json.dumps({'type': 'quiz_result', 'data': {'quiz_id': quiz_id, 'topic': topic_label, 'questions': q_for_history, 'fun_fact': fun_fact, 'timer_seconds': timer_seconds}})}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': f'Quiz generation failed: {str(e)}'})}\n\n"

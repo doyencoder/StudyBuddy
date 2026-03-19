@@ -74,6 +74,7 @@ class QuizSubmitRequest(BaseModel):
     user_id: str
     quiz_id: str
     answers: List[int]              # selected option index per question (0-based)
+    unanswered_indices: List[int] = []  # indices that timed out unanswered
 
 
 class QuizResult(BaseModel):
@@ -93,6 +94,7 @@ class QuizSubmitResponse(BaseModel):
     correct_count: int
     weak_areas: List[str]
     results: List[QuizResult]
+    unanswered_indices: List[int] = []
 
 
 class QuizHistoryItem(BaseModel):

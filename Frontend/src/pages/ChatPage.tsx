@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import LoadingDots from "../components/LoadingDots";
@@ -85,6 +86,8 @@ interface QuizData {
   total_questions?: number;
   weak_areas?: string[];
   results?: QuizResult[];
+  timer_seconds?: number;
+  unanswered_indices?: number[]; // indices that timed out unanswered — frontend-only
 }
 
 interface DiagramData {
@@ -128,6 +131,8 @@ interface Message {
   intentHint?: string;
   content: string;
   quizData?: QuizData;
+  quizVersions?: QuizData[];    // all attempts including original — for version navigator
+  activeVersionIdx?: number;    // which version is currently displayed
   diagramData?: DiagramData;
   studyPlanData?: StudyPlanData;
   imageData?: ImageData;
@@ -171,6 +176,7 @@ interface ConvState {
   isTyping: boolean;
   isReadingDoc: boolean;
   regeneratingMsgId: string | null;
+  retakingMsgId: string | null;
 }
 
 // Temporary key used for a brand-new conversation before the backend assigns a real ID
@@ -182,6 +188,7 @@ function defaultConvState(): ConvState {
     isTyping: false,
     isReadingDoc: false,
     regeneratingMsgId: null,
+    retakingMsgId: null,
   };
 }
 
@@ -395,19 +402,67 @@ function renderMarkdown(text: string) {
   return elements;
 }
 
+// ── Quiz shared constants ─────────────────────────────────────────────────────
+const QUIZ_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "hi", label: "हिन्दी" },
+  { code: "mr", label: "मराठी" },
+  { code: "ta", label: "தமிழ்" },
+  { code: "te", label: "తెలుగు" },
+  { code: "bn", label: "বাংলা" },
+  { code: "gu", label: "ગુજรાતી" },
+  { code: "kn", label: "ಕನ್ನಡ" },
+];
+const QUIZ_LANG_NAMES: Record<string, string> = {
+  en: "English", hi: "हिन्दी", mr: "मराठी", ta: "தமிழ்",
+  te: "తెలుగు", bn: "বাংলা", gu: "ગુજરાતી", kn: "ಕನ್ನಡ",
+};
+
+// ── Circular SVG countdown ring ───────────────────────────────────────────────
+const TimerRing = ({ seconds, total }: { seconds: number; total: number }) => {
+  const R = 22;
+  const circ = 2 * Math.PI * R;
+  const dash = (seconds / total) * circ;
+  const isLow = seconds <= Math.min(10, total * 0.2);
+  const isCritical = seconds <= Math.min(5, total * 0.1);
+  const stroke = isCritical ? "#ef4444" : isLow ? "#f59e0b" : "#6366f1";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const label = mins > 0 ? `${mins}:${String(secs).padStart(2, "0")}` : String(secs);
+  return (
+    <div className={`relative flex items-center justify-center shrink-0 ${isCritical ? "animate-pulse" : ""}`}>
+      <svg width="54" height="54">
+        <circle cx="27" cy="27" r={R} fill="none" stroke="currentColor" strokeWidth="3" className="text-secondary/60" />
+        <circle cx="27" cy="27" r={R} fill="none" stroke={stroke} strokeWidth="3"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+          transform="rotate(-90 27 27)"
+          style={{ transition: "stroke-dasharray 0.95s linear, stroke 0.3s ease" }} />
+      </svg>
+      <span className="absolute text-[11px] font-bold tabular-nums leading-none" style={{ color: stroke }}>{label}</span>
+    </div>
+  );
+};
+
 // ── QuizResults ───────────────────────────────────────────────────────────────
 interface TranslatedResults {
   weakAreas: string[];
   results: { question: string; options: string[]; explanation: string }[];
 }
 
-const QuizResults = ({ quizData }: { quizData: QuizData }) => {
+const QuizResults = ({
+  quizData,
+  onRetake,
+}: {
+  quizData: QuizData;
+  onRetake?: () => void;
+}) => {
   const [showBreakdown, setShowBreakdown] = useState(false);
   const score = quizData.score ?? 0;
-  const scoreColor =
-    score >= 80 ? "text-green-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
+  const scoreColor = score >= 80 ? "text-green-400" : score >= 60 ? "text-yellow-400" : "text-red-400";
+  const scoreBg = score >= 80 ? "from-green-500/10 to-transparent" : score >= 60 ? "from-yellow-500/10 to-transparent" : "from-red-500/10 to-transparent";
+  const scoreEmoji = score >= 80 ? "🏆" : score >= 60 ? "📈" : "💪";
+  const scoreMsg = score >= 80 ? "Excellent work!" : score >= 60 ? "Good effort!" : "Keep practising!";
 
-  // ── Translation state ───────────────────────────────────────────────────────
   const [translated, setTranslated] = useState<TranslatedResults | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [showTranslatePicker, setShowTranslatePicker] = useState(false);
@@ -425,47 +480,30 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
 
   const translateResults = async (targetLang: string) => {
     setShowTranslatePicker(false);
-    if (targetLang === "en") {
-      setTranslated(null);
-      setTranslatedLang(null);
-      return;
-    }
+    if (targetLang === "en") { setTranslated(null); setTranslatedLang(null); return; }
     setIsTranslating(true);
     try {
       const SEP = "§§§";
-      // Block 0: weak areas (one per line, or placeholder if none)
       const weakBlock = (quizData.weak_areas ?? []).join("\n") || "_";
-      // Blocks 1..N: question \n options \n explanation
       const resultBlocks = (quizData.results ?? []).map(
         (r) => `${r.question}\n${r.options.join("\n")}\n${r.explanation}`
       );
       const packed = [weakBlock, ...resultBlocks].join(`\n${SEP}\n`);
-
       const response = await fetch(`${API_BASE}/chat/translate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: packed, target_language: targetLang }),
       });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Translation failed");
-      }
+      if (!response.ok) throw new Error((await response.json()).detail || "Translation failed");
       const data = await response.json();
       const blocks = data.translated_text.split(`\n${SEP}\n`);
-
-      // Parse block 0 → weak areas
       const weakLines = blocks[0]?.trim() === "_" ? [] : (blocks[0]?.split("\n").filter(Boolean) ?? []);
-
-      // Parse blocks 1..N → results
       const parsedResults = (quizData.results ?? []).map((r, i) => {
         const lines = (blocks[i + 1] ?? "").trim().split("\n").filter(Boolean);
         const question = lines[0] ?? r.question;
         const explanation = lines[lines.length - 1] ?? r.explanation;
-        const rawOpts = lines.slice(1, lines.length - 1);
-        const options = r.options.map((orig, j) => rawOpts[j] ?? orig);
+        const options = r.options.map((orig, j) => lines.slice(1, lines.length - 1)[j] ?? orig);
         return { question, options, explanation };
       });
-
       setTranslated({ weakAreas: weakLines, results: parsedResults });
       setTranslatedLang(targetLang);
     } catch (err: any) {
@@ -480,69 +518,49 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
 
   return (
     <div className="space-y-4">
-      {/* Results header with translate button */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <p className="text-sm font-semibold text-foreground truncate">
-            📊 {quizData.topic} — Results
-          </p>
-          {translatedLang && (
-            <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/20">
-              {QUIZ_LANG_NAMES[translatedLang]}
-            </span>
-          )}
-        </div>
+      {/* Score hero card */}
+      <div className={`rounded-2xl bg-gradient-to-b ${scoreBg} border border-border/40 p-5 text-center space-y-1`}>
+        <div className="text-3xl mb-1">{scoreEmoji}</div>
+        <p className={`text-4xl font-bold tracking-tight ${scoreColor}`}>{score}%</p>
+        <p className="text-sm text-muted-foreground">{quizData.correct_count} / {quizData.total_questions} correct</p>
+        <p className="text-xs text-muted-foreground/60 font-medium">{scoreMsg}</p>
+      </div>
+
+      {/* Action bar */}
+      <div className="flex items-center gap-2">
+        {onRetake && (
+          <Button size="sm" onClick={onRetake} variant="ghost"
+            className="flex-1 gap-2 text-xs bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 h-8">
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retake Quiz
+          </Button>
+        )}
         <div className="relative shrink-0" ref={pickerRef}>
-          <Button
-            variant="ghost"
-            size="sm"
+          <Button variant="ghost" size="sm"
             onClick={() => setShowTranslatePicker((v) => !v)}
             disabled={isTranslating || !quizData.results?.length}
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40"
-          >
+            className="h-8 px-3 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40">
             <Globe className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">
-              {isTranslating ? "Translating..." : "Translate"}
-            </span>
+            <span className="hidden sm:inline">{isTranslating ? "Translating…" : translatedLang ? QUIZ_LANG_NAMES[translatedLang] : "Translate"}</span>
           </Button>
           {showTranslatePicker && (
             <div className="absolute top-9 right-0 z-50 bg-card border border-border rounded-xl shadow-xl p-1.5 min-w-[140px]">
               {QUIZ_LANGUAGES.map((lang) => (
-                <button
-                  key={lang.code}
-                  onClick={() => translateResults(lang.code)}
-                  className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
-                    translatedLang === lang.code
-                      ? "bg-primary/20 text-primary font-medium"
-                      : "text-foreground hover:bg-primary/10 hover:text-primary"
-                  }`}
-                >
-                  {lang.label}
-                  {translatedLang === lang.code && <span className="ml-1.5">✓</span>}
+                <button key={lang.code} onClick={() => translateResults(lang.code)}
+                  className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${translatedLang === lang.code ? "bg-primary/20 text-primary font-medium" : "text-foreground hover:bg-primary/10 hover:text-primary"}`}>
+                  {lang.label}{translatedLang === lang.code && <span className="ml-1.5">✓</span>}
                 </button>
               ))}
-              {translatedLang && (
-                <>
-                  <div className="border-t border-border my-1" />
-                  <button
-                    onClick={() => { setTranslated(null); setTranslatedLang(null); setShowTranslatePicker(false); }}
-                    className="w-full text-left text-xs px-3 py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-                  >
-                    Show original
-                  </button>
-                </>
-              )}
+              {translatedLang && (<>
+                <div className="border-t border-border my-1" />
+                <button onClick={() => { setTranslated(null); setTranslatedLang(null); setShowTranslatePicker(false); }}
+                  className="w-full text-left text-xs px-3 py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+                  Show original
+                </button>
+              </>)}
             </div>
           )}
         </div>
-      </div>
-
-      {/* Score */}
-      <div className="text-center py-2">
-        <p className={`text-4xl font-bold ${scoreColor}`}>{score}%</p>
-        <p className="text-sm text-muted-foreground mt-1">
-          {quizData.correct_count} / {quizData.total_questions} correct
-        </p>
       </div>
 
       {/* Weak areas */}
@@ -551,24 +569,14 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
           <p className="text-xs font-semibold text-yellow-400">⚠️ Weak Areas Identified</p>
           <div className="flex flex-wrap gap-2">
             {activeWeakAreas.map((area, i) => (
-              <Badge
-                key={i}
-                variant="outline"
-                className="border-yellow-500/30 text-yellow-400 bg-yellow-500/10 text-xs"
-              >
-                {area}
-              </Badge>
+              <Badge key={i} variant="outline" className="border-yellow-500/30 text-yellow-400 bg-yellow-500/10 text-xs">{area}</Badge>
             ))}
           </div>
         </div>
       )}
 
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => setShowBreakdown((v) => !v)}
-        className="w-full text-xs text-muted-foreground hover:text-primary"
-      >
+      <Button variant="ghost" size="sm" onClick={() => setShowBreakdown((v) => !v)}
+        className="w-full text-xs text-muted-foreground hover:text-primary">
         {showBreakdown ? "Hide" : "Show"} question breakdown
       </Button>
 
@@ -576,30 +584,33 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
         <div className="space-y-3">
           {quizData.results.map((r, i) => {
             const t = activeResults[i];
+            const wasUnanswered = (quizData.unanswered_indices ?? []).includes(i);
             return (
               <div key={i} className="bg-secondary/40 rounded-xl p-3 space-y-2">
                 <div className="flex items-start gap-2">
-                  {r.correct ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
-                  ) : (
-                    <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                  )}
-                  <p className="text-xs font-medium text-foreground">{t?.question ?? r.question}</p>
+                  {wasUnanswered
+                    ? <Clock className="w-4 h-4 text-muted-foreground/60 shrink-0 mt-0.5" />
+                    : r.correct
+                      ? <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+                      : <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-foreground">{t?.question ?? r.question}</p>
+                    {wasUnanswered && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/60 bg-secondary px-2 py-0.5 rounded-full">
+                        ⏱ Not answered — time ran out
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-1 ml-6">
                   {(t?.options ?? r.options).map((opt, oi) => (
-                    <div
-                      key={oi}
-                      className={`text-xs px-3 py-1.5 rounded-lg border ${
-                        oi === r.correct_index
-                          ? "border-green-500/40 bg-green-500/10 text-green-400"
-                          : oi === r.selected_index && !r.correct
-                            ? "border-red-500/40 bg-red-500/10 text-red-400"
-                            : "border-border text-muted-foreground"
-                      }`}
-                    >
-                      {opt}
-                    </div>
+                    <div key={oi} className={`text-xs px-3 py-1.5 rounded-lg border ${
+                      oi === r.correct_index
+                        ? "border-green-500/40 bg-green-500/10 text-green-400"
+                        : oi === r.selected_index && !r.correct && !wasUnanswered
+                          ? "border-red-500/40 bg-red-500/10 text-red-400"
+                          : "border-border text-muted-foreground"
+                    }`}>{opt}</div>
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground ml-6 bg-secondary/50 p-2 rounded-lg">
@@ -614,63 +625,73 @@ const QuizResults = ({ quizData }: { quizData: QuizData }) => {
   );
 };
 
+
 // ── QuizCard ──────────────────────────────────────────────────────────────────
-const QUIZ_LANGUAGES = [
-  { code: "en", label: "English" },
-  { code: "hi", label: "हिन्दी" },
-  { code: "mr", label: "मराठी" },
-  { code: "ta", label: "தமிழ்" },
-  { code: "te", label: "తెలుగు" },
-  { code: "bn", label: "বাংলা" },
-  { code: "gu", label: "ગુજરાતી" },
-  { code: "kn", label: "ಕನ್ನಡ" },
-];
-
-const QUIZ_LANG_NAMES: Record<string, string> = {
-  en: "English", hi: "हिन्दी", mr: "मराठी", ta: "தமிழ்",
-  te: "తెలుగు", bn: "বাংলা", gu: "ગુજરાતી", kn: "ಕನ್ನಡ",
-};
-
 const QuizCard = ({
   messageId,
   quizData,
   onQuizComplete,
+  onRetake,
 }: {
   messageId: string;
   quizData: QuizData;
   onQuizComplete: (id: string, data: QuizData) => void;
+  onRetake?: () => void;
 }) => {
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState<(number | null)[]>(
     Array(quizData.questions.length).fill(null)
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showFunFact, setShowFunFact] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
 
-  // ── Preclassify: fire silently on mount so labels are cached before submit ──
+  const totalSecs = quizData.timer_seconds ?? null;
+  const [timeLeft, setTimeLeft] = useState<number | null>(totalSecs);
+  const answersRef = useRef(answers);
+  answersRef.current = answers;
+  const submitRef = useRef<(() => void) | null>(null);
+
+  // tick every second
+  useEffect(() => {
+    if (totalSecs == null || quizData.submitted || timeLeft === null || timeLeft <= 0) return;
+    const id = setTimeout(() => setTimeLeft((t) => (t != null ? t - 1 : null)), 1000);
+    return () => clearTimeout(id);
+  }, [timeLeft, totalSecs, quizData.submitted]);
+
+  // auto-submit when timer hits 0
+  const unansweredAtTimeoutRef = useRef<number[]>([]);
+  useEffect(() => {
+    if (totalSecs == null || timeLeft !== 0 || quizData.submitted || isSubmitting) return;
+    // Capture which questions were genuinely unanswered BEFORE forcing them to 0
+    const unanswered = answersRef.current
+      .map((a, i) => (a === null ? i : -1))
+      .filter((i) => i >= 0);
+    unansweredAtTimeoutRef.current = unanswered;
+    setTimedOut(true);
+    setAnswers((prev) => prev.map((a) => (a === null ? 0 : a)));
+    const id = setTimeout(() => submitRef.current?.(), 700);
+    return () => clearTimeout(id);
+  }, [timeLeft, totalSecs, quizData.submitted, isSubmitting]);
+
+  // preclassify on mount
   useEffect(() => {
     fetch(`${API_BASE}/quiz/preclassify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: USER_ID, quiz_id: quizData.quiz_id }),
-    }).catch(() => { /* non-critical — submit has its own fallback */ });
+    }).catch(() => {});
   }, [quizData.quiz_id]);
 
-  // ── Fun fact overlay state ──────────────────────────────────────────────────
-  const [showFunFact, setShowFunFact] = useState(false);
-
-  // ── Translation state ───────────────────────────────────────────────────────
   const [translatedQuestions, setTranslatedQuestions] = useState<QuizQuestion[] | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [showTranslatePicker, setShowTranslatePicker] = useState(false);
   const [translatedLang, setTranslatedLang] = useState<string | null>(null);
   const translatePickerRef = useRef<HTMLDivElement>(null);
 
-  // Close picker on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (translatePickerRef.current && !translatePickerRef.current.contains(e.target as Node)) {
+      if (translatePickerRef.current && !translatePickerRef.current.contains(e.target as Node))
         setShowTranslatePicker(false);
-      }
     };
     if (showTranslatePicker) document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -678,43 +699,24 @@ const QuizCard = ({
 
   const translateQuiz = async (targetLang: string) => {
     setShowTranslatePicker(false);
-    if (targetLang === "en" && translatedLang === null) return; // already English
-    if (targetLang === "en") {
-      // Revert to original
-      setTranslatedQuestions(null);
-      setTranslatedLang(null);
-      return;
-    }
+    if (targetLang === "en") { setTranslatedQuestions(null); setTranslatedLang(null); return; }
     setIsTranslating(true);
     try {
-      // Pack all questions + options into one text block with §§§ separator
-      const SEP = "§§§";
+      const SEP = "\u00a7\u00a7\u00a7";
       const packed = quizData.questions
         .map((q) => `${q.question}\n${q.options.join("\n")}`)
         .join(`\n${SEP}\n`);
-
       const response = await fetch(`${API_BASE}/chat/translate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: packed, target_language: targetLang }),
       });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Translation failed");
-      }
+      if (!response.ok) throw new Error((await response.json()).detail || "Translation failed");
       const data = await response.json();
-      const translatedBlocks = data.translated_text.split(`\n${SEP}\n`);
-
-      const parsed: QuizQuestion[] = translatedBlocks.map((block: string, i: number) => {
+      const parsed: QuizQuestion[] = data.translated_text.split(`\n${SEP}\n`).map((block: string, i: number) => {
         const lines = block.trim().split("\n").filter((l: string) => l.trim() !== "");
-        const question = lines[0] ?? quizData.questions[i].question;
-        const options = lines.slice(1);
-        // Pad or trim options to match original count
-        const originalOpts = quizData.questions[i].options;
-        const safeOptions = originalOpts.map((orig, j) => options[j] ?? orig);
-        return { id: quizData.questions[i].id, question, options: safeOptions };
+        const safeOptions = quizData.questions[i].options.map((orig, j) => lines[j + 1] ?? orig);
+        return { id: quizData.questions[i].id, question: lines[0] ?? quizData.questions[i].question, options: safeOptions };
       });
-
       setTranslatedQuestions(parsed);
       setTranslatedLang(targetLang);
     } catch (err: any) {
@@ -724,40 +726,33 @@ const QuizCard = ({
     }
   };
 
-  // Use translated questions if available
   const activeQuestions = translatedQuestions ?? quizData.questions;
 
-  if (quizData.submitted)
-    return <QuizResults quizData={quizData} />;
-
-  const question = activeQuestions[currentQ];
-  const total = quizData.questions.length;
-  const allAnswered = answers.every((a) => a !== null);
-  const answeredCount = answers.filter((a) => a !== null).length;
-
-  const handleSubmit = async () => {
-    if (!allAnswered) return;
+  const handleSubmit = async (forcedAnswers?: (number | null)[]) => {
+    const finalAnswers = (forcedAnswers ?? answersRef.current).map((a) => a ?? 0);
+    const unanswered = unansweredAtTimeoutRef.current;
     setIsSubmitting(true);
-    setShowFunFact(true); // show fun fact overlay immediately
+    setShowFunFact(true);
     try {
       const response = await fetch(`${API_BASE}/quiz/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: USER_ID, quiz_id: quizData.quiz_id, answers }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          quiz_id: quizData.quiz_id,
+          answers: finalAnswers,
+          unanswered_indices: unanswered.length > 0 ? unanswered : [],
+        }),
       });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Submission failed");
-      }
+      if (!response.ok) throw new Error((await response.json()).detail || "Submission failed");
       const result = await response.json();
       onQuizComplete(messageId, {
-        ...quizData,
-        submitted: true,
-        score: result.score,
-        correct_count: result.correct_count,
+        ...quizData, submitted: true,
+        score: result.score, correct_count: result.correct_count,
         total_questions: result.total_questions,
-        weak_areas: result.weak_areas,
-        results: result.results,
+        weak_areas: result.weak_areas, results: result.results,
+        unanswered_indices: result.unanswered_indices?.length > 0
+          ? result.unanswered_indices
+          : undefined,
       });
     } catch (err: any) {
       toast.error(`Failed to submit quiz: ${err.message}`);
@@ -766,27 +761,48 @@ const QuizCard = ({
       setIsSubmitting(false);
     }
   };
+  submitRef.current = () => handleSubmit(answersRef.current);
+
+  if (quizData.submitted)
+    return <QuizResults quizData={quizData} onRetake={onRetake} />;
+
+  const question = activeQuestions[currentQ];
+  const total = quizData.questions.length;
+  const allAnswered = answers.every((a) => a !== null);
+  const answeredCount = answers.filter((a) => a !== null).length;
 
   return (
     <div className="relative space-y-4">
-      {/* Fun fact overlay — shown while submission is in flight */}
       {showFunFact && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-2xl bg-card/95 backdrop-blur-sm border border-primary/20 p-6 space-y-4 animate-fade-in">
-          <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center">
-            <Sparkles className="w-5 h-5 text-primary" />
-          </div>
-          <p className="text-xs font-semibold text-primary uppercase tracking-widest">Did you know?</p>
-          <p className="text-sm text-center text-foreground leading-relaxed max-w-xs">
-            {quizData.fun_fact || "The brain consolidates memories during sleep — always rest after a study session!"}
-          </p>
+          {timedOut ? (
+            <>
+              <div className="w-12 h-12 rounded-full bg-red-500/15 flex items-center justify-center">
+                <Clock className="w-6 h-6 text-red-400" />
+              </div>
+              <p className="text-sm font-bold text-red-400 uppercase tracking-widest">Time's Up!</p>
+              <p className="text-xs text-center text-muted-foreground max-w-xs">
+                {answeredCount} of {total} answered — submitting your results…
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center">
+                <Sparkles className="w-5 h-5 text-primary" />
+              </div>
+              <p className="text-xs font-semibold text-primary uppercase tracking-widest">Did you know?</p>
+              <p className="text-sm text-center text-foreground leading-relaxed max-w-xs">
+                {quizData.fun_fact || "The brain consolidates memories during sleep — always rest after a study session!"}
+              </p>
+            </>
+          )}
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="w-3.5 h-3.5 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-            Submitting your answers...
+            Submitting your answers…
           </div>
         </div>
       )}
 
-      {/* Header row: topic + translate button + counter */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <p className="text-sm font-semibold text-foreground truncate">📝 {quizData.topic}</p>
@@ -797,130 +813,87 @@ const QuizCard = ({
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {/* Translate button */}
+          {totalSecs != null && timeLeft != null && (
+            <TimerRing seconds={timeLeft} total={totalSecs} />
+          )}
           <div className="relative" ref={translatePickerRef}>
-            <Button
-              variant="ghost"
-              size="sm"
+            <Button variant="ghost" size="sm"
               onClick={() => setShowTranslatePicker((v) => !v)}
               disabled={isTranslating}
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40"
-            >
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1.5 disabled:opacity-40">
               <Globe className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">
-                {isTranslating ? "Translating..." : "Translate"}
-              </span>
+              <span className="hidden sm:inline">{isTranslating ? "Translating…" : "Translate"}</span>
             </Button>
             {showTranslatePicker && (
               <div className="absolute top-9 right-0 z-50 bg-card border border-border rounded-xl shadow-xl p-1.5 min-w-[140px]">
                 {QUIZ_LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.code}
-                    onClick={() => translateQuiz(lang.code)}
+                  <button key={lang.code} onClick={() => translateQuiz(lang.code)}
                     className={`w-full text-left text-xs px-3 py-2 rounded-lg transition-colors ${
-                      translatedLang === lang.code
-                        ? "bg-primary/20 text-primary font-medium"
-                        : "text-foreground hover:bg-primary/10 hover:text-primary"
-                    }`}
-                  >
-                    {lang.label}
-                    {translatedLang === lang.code && (
-                      <span className="ml-1.5 text-primary">✓</span>
-                    )}
+                      translatedLang === lang.code ? "bg-primary/20 text-primary font-medium" : "text-foreground hover:bg-primary/10 hover:text-primary"
+                    }`}>
+                    {lang.label}{translatedLang === lang.code && <span className="ml-1.5 text-primary">✓</span>}
                   </button>
                 ))}
-                {translatedLang && translatedLang !== "en" && (
-                  <>
-                    <div className="border-t border-border my-1" />
-                    <button
-                      onClick={() => { setTranslatedQuestions(null); setTranslatedLang(null); setShowTranslatePicker(false); }}
-                      className="w-full text-left text-xs px-3 py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-                    >
-                      Show original
-                    </button>
-                  </>
-                )}
+                {translatedLang && translatedLang !== "en" && (<>
+                  <div className="border-t border-border my-1" />
+                  <button onClick={() => { setTranslatedQuestions(null); setTranslatedLang(null); setShowTranslatePicker(false); }}
+                    className="w-full text-left text-xs px-3 py-2 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+                    Show original
+                  </button>
+                </>)}
               </div>
             )}
           </div>
-          <span className="text-xs text-muted-foreground">
-            {currentQ + 1} / {total}
-          </span>
+          <span className="text-xs text-muted-foreground">{currentQ + 1} / {total}</span>
         </div>
       </div>
 
       <div className="w-full bg-secondary rounded-full h-1.5">
-        <div
-          className="bg-primary h-1.5 rounded-full transition-all duration-300"
-          style={{ width: `${(answeredCount / total) * 100}%` }}
-        />
+        <div className="bg-primary h-1.5 rounded-full transition-all duration-300"
+          style={{ width: `${(answeredCount / total) * 100}%` }} />
       </div>
 
       <p className="text-sm font-medium text-foreground">{question.question}</p>
 
       <div className="space-y-2">
         {question.options.map((opt, i) => (
-          <button
-            key={i}
-            onClick={() =>
-              setAnswers((prev) => {
-                const u = [...prev];
-                u[currentQ] = i;
-                return u;
-              })
-            }
+          <button key={i}
+            onClick={() => setAnswers((prev) => { const u = [...prev]; u[currentQ] = i; return u; })}
             className={`w-full text-left text-sm px-4 py-2.5 rounded-xl border transition-all duration-150 ${
               answers[currentQ] === i
                 ? "border-primary bg-primary/15 text-primary"
                 : "border-border text-muted-foreground hover:border-primary/40 hover:bg-primary/5"
-            }`}
-          >
+            }`}>
             {opt}
           </button>
         ))}
       </div>
 
       <div className="flex items-center justify-between pt-1">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setCurrentQ((q) => q - 1)}
+        <Button variant="ghost" size="sm" onClick={() => setCurrentQ((q) => q - 1)}
           disabled={currentQ === 0}
-          className="gap-1 text-xs text-muted-foreground hover:text-primary"
-        >
+          className="gap-1 text-xs text-muted-foreground hover:text-primary">
           <ChevronLeft className="w-4 h-4" /> Previous
         </Button>
-
         {currentQ < total - 1 ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setCurrentQ((q) => q + 1)}
-            className="gap-1 text-xs text-muted-foreground hover:text-primary"
-          >
+          <Button variant="ghost" size="sm" onClick={() => setCurrentQ((q) => q + 1)}
+            className="gap-1 text-xs text-muted-foreground hover:text-primary">
             Next <ChevronRight className="w-4 h-4" />
           </Button>
         ) : (
-          <Button
-            size="sm"
-            onClick={handleSubmit}
+          <Button size="sm" onClick={() => handleSubmit()}
             disabled={!allAnswered || isSubmitting}
-            className="text-xs bg-primary hover:bg-primary/90 disabled:opacity-40"
-          >
-            {isSubmitting ? (
-              <span className="flex items-center gap-2">
-                <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                Submitting...
-              </span>
-            ) : (
-              "Submit Quiz"
-            )}
+            className="text-xs bg-primary hover:bg-primary/90 disabled:opacity-40">
+            {isSubmitting
+              ? <span className="flex items-center gap-2"><span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />Submitting…</span>
+              : "Submit Quiz"}
           </Button>
         )}
       </div>
 
       <p className="text-xs text-center text-muted-foreground">
         {answeredCount} of {total} answered
+        {totalSecs != null && timeLeft != null && <span className="ml-1.5 opacity-50">· timed</span>}
       </p>
     </div>
   );
@@ -1657,7 +1630,7 @@ const ChatPage = () => {
 
   // Derived: the state for whichever conversation is currently on screen
   const viewKey = activeConvId ?? NEW_CONV_KEY;
-  const { messages, isTyping, isReadingDoc, regeneratingMsgId } =
+  const { messages, isTyping, isReadingDoc, regeneratingMsgId, retakingMsgId } =
     convStates[viewKey] ?? defaultConvState();
 
   // Convenience alias so the rest of the code can still read `conversationId`
@@ -1759,6 +1732,7 @@ const ChatPage = () => {
         isTyping: false,
         isReadingDoc: false,
         regeneratingMsgId: null,
+        retakingMsgId: null,
       },
     }));
 
@@ -1798,6 +1772,10 @@ const ChatPage = () => {
                 total_questions: parsed.total_questions,
                 weak_areas: parsed.weak_areas ?? [],
                 results: parsed.results ?? [],
+                timer_seconds: parsed.timer_seconds ?? null,
+                unanswered_indices: parsed.unanswered_indices?.length > 0
+                  ? parsed.unanswered_indices
+                  : undefined,
               },
               timestamp: new Date(m.timestamp),
             };
@@ -1894,14 +1872,53 @@ const ChatPage = () => {
           };
         });
 
+        // ── Post-process: merge retake quiz messages into their parent's quizVersions ──
+        // The backend saves a "Generate a fresh quiz on: <topic>" user message + quiz
+        // assistant message for every retake. On reload we collapse those back into a
+        // single card with a version navigator instead of separate cards.
+        const RETAKE_PREFIX = "Generate a fresh quiz on:";
+        const mergedMessages: Message[] = [];
+        for (let i = 0; i < loadedMessages.length; i++) {
+          const msg = loadedMessages[i];
+          const nextMsg = loadedMessages[i + 1];
+          if (
+            msg.role === "user" &&
+            typeof msg.content === "string" &&
+            msg.content.startsWith(RETAKE_PREFIX) &&
+            nextMsg?.role === "quiz" &&
+            nextMsg.quizData
+          ) {
+            // Find the most recent quiz card in already-merged output
+            // findLastIndex is ES2023 — use a backwards loop for compatibility
+            let lastQuizIdx = -1;
+            for (let j = mergedMessages.length - 1; j >= 0; j--) {
+              if (mergedMessages[j].role === "quiz") { lastQuizIdx = j; break; }
+            }
+            if (lastQuizIdx >= 0) {
+              const parent = mergedMessages[lastQuizIdx];
+              const existingVersions: QuizData[] = parent.quizVersions ?? [parent.quizData!];
+              mergedMessages[lastQuizIdx] = {
+                ...parent,
+                quizVersions: [...existingVersions, nextMsg.quizData!],
+                activeVersionIdx: existingVersions.length, // show newest
+                quizData: nextMsg.quizData!, // keep quizData pointing at active
+              };
+              i++; // skip the quiz assistant message — already merged
+              continue;
+            }
+          }
+          mergedMessages.push(msg);
+        }
+
         updateConv(urlConversationId, () => ({
           messages:
-            loadedMessages.length > 0
-              ? [INITIAL_MESSAGES[0], ...loadedMessages]
+            mergedMessages.length > 0
+              ? [INITIAL_MESSAGES[0], ...mergedMessages]
               : INITIAL_MESSAGES,
           isTyping: false,
           isReadingDoc: false,
           regeneratingMsgId: null,
+          retakingMsgId: null,
         }));
       } catch {
         toast.error("Could not load conversation history.");
@@ -2172,6 +2189,85 @@ const ChatPage = () => {
     }));
   };
 
+  const handleRetake = async (originalQuizData: QuizData, msgId: string) => {
+    if (!activeConvId) return;
+    const convId = activeConvId;
+    updateConv(convId, (s) => ({ ...s, retakingMsgId: msgId }));
+    try {
+      const response = await fetch(`${API_BASE}/chat/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: USER_ID,
+          conversation_id: convId,
+          message: `Generate a fresh quiz on: ${originalQuizData.topic}`,
+          intent_hint: "quiz",
+        }),
+      });
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const lines = decoder.decode(value, { stream: true }).split("\n\n").filter(Boolean);
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const dataStr = line.slice(6).trim();
+          if (dataStr === "[DONE]") break;
+          let evt: any;
+          try { evt = JSON.parse(dataStr); } catch { continue; }
+          if (evt.type === "quiz_result" && evt.data) {
+            const d = evt.data;
+            const newQuiz: QuizData = {
+              quiz_id: d.quiz_id,
+              topic: d.topic,
+              questions: d.questions,
+              submitted: false,
+              fun_fact: d.fun_fact ?? "",
+              timer_seconds: originalQuizData.timer_seconds ?? null,
+            };
+            // Push new quiz into versions array on the same card — no new message
+            updateConv(convId, (s) => ({
+              ...s,
+              retakingMsgId: null,
+              messages: s.messages.map((m) => {
+                if (m.id !== msgId) return m;
+                const existingVersions: QuizData[] = m.quizVersions ?? [m.quizData!];
+                const newVersions = [...existingVersions, newQuiz];
+                return {
+                  ...m,
+                  quizData: newQuiz,                    // active = newest
+                  quizVersions: newVersions,
+                  activeVersionIdx: newVersions.length - 1,
+                };
+              }),
+            }));
+          }
+        }
+      }
+    } catch (err: any) {
+      toast.error(`Retake failed: ${err.message}`);
+      updateConv(convId, (s) => ({ ...s, retakingMsgId: null }));
+    }
+  };
+
+  // Switch which attempt is shown in a versioned quiz card
+  const handleVersionSwitch = (msgId: string, newIdx: number) => {
+    if (!activeConvId) return;
+    updateConv(activeConvId, (s) => ({
+      ...s,
+      messages: s.messages.map((m) => {
+        if (m.id !== msgId || !m.quizVersions) return m;
+        return {
+          ...m,
+          activeVersionIdx: newIdx,
+          quizData: m.quizVersions[newIdx],
+        };
+      }),
+    }));
+  };
+
   // ── Shared SSE stream helper ────────────────────────────────────────────────
   const streamIntoMessage = async (
     userText: string,
@@ -2366,7 +2462,7 @@ const ChatPage = () => {
     } catch {
       toast.error("Could not reach the server. Is the backend running?");
     } finally {
-      updateConv(convId, (s) => ({ ...s, regeneratingMsgId: null, isTyping: false }));
+      updateConv(convId, (s) => ({ ...s, regeneratingMsgId: null, retakingMsgId: null, isTyping: false }));
     }
   };
 
@@ -2591,6 +2687,7 @@ const ChatPage = () => {
                     questions: d.questions,
                     submitted: false,
                     fun_fact: d.fun_fact ?? "",
+                    timer_seconds: d.timer_seconds ?? null,
                 },
                   timestamp: new Date(),
                 },
@@ -2922,12 +3019,47 @@ const ChatPage = () => {
                     </div>
                     <span className="text-xs text-muted-foreground font-medium">Study Buddy</span>
                   </div>
+
+                  {/* Version navigator — shown when there are multiple attempts */}
+                  {(msg.quizVersions?.length ?? 0) > 1 && (
+                    <div className="flex items-center justify-end gap-1 mb-1.5 pr-1">
+                      <button
+                        onClick={() => handleVersionSwitch(msg.id, (msg.activeVersionIdx ?? 0) - 1)}
+                        disabled={(msg.activeVersionIdx ?? 0) === 0}
+                        className="w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        Attempt {(msg.activeVersionIdx ?? 0) + 1} / {msg.quizVersions!.length}
+                      </span>
+                      <button
+                        onClick={() => handleVersionSwitch(msg.id, (msg.activeVersionIdx ?? 0) + 1)}
+                        disabled={(msg.activeVersionIdx ?? 0) >= (msg.quizVersions!.length - 1)}
+                        className="w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
                   <div className="bg-card border border-glow rounded-2xl rounded-bl-md p-5">
-                    <QuizCard
-                      messageId={msg.id}
-                      quizData={msg.quizData}
-                      onQuizComplete={handleQuizComplete}
-                    />
+                    {/* Bug 1 fix: replace content entirely during retake so open breakdown
+                        can't inflate the loading box. Fixed-height instead of overlay. */}
+                    {retakingMsgId === msg.id ? (
+                      <div className="flex flex-col items-center justify-center py-10 gap-3">
+                        <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                        <p className="text-xs text-muted-foreground">Generating new questions…</p>
+                      </div>
+                    ) : (
+                      <QuizCard
+                        key={msg.quizData.quiz_id}
+                        messageId={msg.id}
+                        quizData={msg.quizData}
+                        onQuizComplete={handleQuizComplete}
+                        onRetake={() => handleRetake(msg.quizData!, msg.id)}
+                      />
+                    )}
                   </div>
                 </div>
               </div>

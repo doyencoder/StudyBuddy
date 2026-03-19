@@ -940,6 +940,7 @@ STUDY PLAN RULES:
 QUIZ RULES:
 - Extract num_questions from message (e.g. "10 questions", "5 question quiz"). Default 5.
 - Cap at 20.
+- Extract timer_seconds if user mentions a time limit (e.g. "30 seconds" = 30, "1 minute" = 60, "2 mins" = 120, "timed quiz of 45 seconds" = 45). Default null (no timer).
 
 CLARIFICATION RULES:
 - needs_clarification = true when: intent is not "chat" but topic cannot be determined AND no docs in conversation AND no filename.
@@ -955,6 +956,7 @@ Return EXACTLY this JSON — all fields required:
   "num_questions": 5,
   "timeline_weeks": null,
   "hours_per_week": null,
+  "timer_seconds": null,
   "needs_clarification": false,
   "clarification_question": null
 }}"""
@@ -979,6 +981,7 @@ Return EXACTLY this JSON — all fields required:
             "num_questions":        int(result.get("num_questions") or 5),
             "timeline_weeks":       result.get("timeline_weeks"),
             "hours_per_week":       result.get("hours_per_week"),
+            "timer_seconds":        result.get("timer_seconds"),
             "needs_clarification":  bool(result.get("needs_clarification", False)),
             "clarification_question": result.get("clarification_question"),
         }
@@ -987,6 +990,7 @@ Return EXACTLY this JSON — all fields required:
         return {
             "intent": "chat", "topic": None, "topic_source": None,
             "num_questions": 5, "timeline_weeks": None, "hours_per_week": None,
+            "timer_seconds": None,
             "needs_clarification": False, "clarification_question": None,
         }
 

@@ -368,6 +368,7 @@ async def submit_quiz(
     total_questions: int,
     weak_areas: list,
     results: list,
+    unanswered_indices: list = [],
 ) -> None:
     """
     Updates the quiz document with the user's submitted answers and results.
@@ -383,6 +384,7 @@ async def submit_quiz(
         item["total_questions"] = total_questions
         item["weak_areas"] = weak_areas
         item["results"] = results
+        item["unanswered_indices"] = unanswered_indices
 
         await container.replace_item(item=quiz_id, body=item)
 
@@ -526,23 +528,10 @@ async def get_diagram(diagram_id: str, user_id: str) -> Dict[str, Any]:
         return item
 
 
-async def delete_quiz(quiz_id: str, user_id: str) -> None:
-    """
-    Hard-deletes a quiz document from the quizzes container.
-    Called by DELETE /quiz/{quiz_id}.
-    """
-    async with _get_client() as client:
-        db = client.get_database_client(DB_NAME)
-        container = db.get_container_client(QUIZZES_CONTAINER)
-        await container.delete_item(item=quiz_id, partition_key=user_id)
-
-
 async def delete_diagram(diagram_id: str, user_id: str) -> None:
     """
-    Hard-deletes a diagram document from the diagrams container.
+    Deletes a single diagram document from Cosmos DB.
     Called by DELETE /diagrams/{diagram_id}.
-    Blob deletion (for AI images) is handled separately in the router
-    before this function is called.
     """
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
