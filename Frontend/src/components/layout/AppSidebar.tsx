@@ -74,7 +74,7 @@ const AppSidebar = () => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isAnyTyping, setIsAnyTyping] = useState(false);
 
-  // Per-row hover + dropdown-open tracking (React state, NOT CSS group-hover)
+  // Per-row hover + dropdown-open tracking
   const [hoveredId, setHoveredId]     = useState<string | null>(null);
   const [openMenuId, setOpenMenuId]   = useState<string | null>(null);
 
@@ -86,7 +86,7 @@ const AppSidebar = () => {
   // Delete confirm
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
-  // Sync typing state from ChatPage
+  // Keep in sync with ChatPage's streaming state
   useEffect(() => {
     const handler = (e: Event) => {
       setIsAnyTyping((e as CustomEvent<{ isAnyTyping: boolean }>).detail.isAnyTyping);
@@ -101,17 +101,26 @@ const AppSidebar = () => {
       if (!res.ok) return;
       const data = await res.json();
       setConversations(data.conversations || []);
-    } catch { /* Silently fail */ }
+    } catch { /* Silently fail — sidebar is non-critical */ }
   };
 
+  // Fetch once on first mount
   useEffect(() => { fetchConversations(); }, []);
 
+  // Listen for new conversation events from ChatPage.
+  // Fetch immediately (the conversation already exists when meta fires) then
+  // retry after 1500ms to pick up the final AI-generated title once it is saved.
+  // ✦ OUR FIX: immediate + retry — NOT a single 800ms delayed shot.
   useEffect(() => {
-    const handler = () => { setTimeout(() => fetchConversations(), 800); };
+    const handler = () => {
+      fetchConversations();
+      setTimeout(() => fetchConversations(), 1500);
+    };
     window.addEventListener("conversation-created", handler);
     return () => window.removeEventListener("conversation-created", handler);
   }, []);
 
+  // Auto-focus and select rename input whenever it appears
   useEffect(() => {
     if (renamingId && renameInputRef.current) {
       renameInputRef.current.focus();
@@ -126,6 +135,7 @@ const AppSidebar = () => {
 
   const handleStarToggle = async (conv: Conversation) => {
     const newStarred = !conv.starred;
+    // Optimistic update
     setConversations(prev =>
       prev.map(c => c.conversation_id === conv.conversation_id ? { ...c, starred: newStarred } : c)
     );
@@ -136,6 +146,7 @@ const AppSidebar = () => {
         body: JSON.stringify({ user_id: USER_ID, starred: newStarred }),
       });
     } catch {
+      // Roll back on failure
       setConversations(prev =>
         prev.map(c => c.conversation_id === conv.conversation_id ? { ...c, starred: conv.starred } : c)
       );
@@ -179,13 +190,16 @@ const AppSidebar = () => {
     if (!deleteTargetId) return;
     const id = deleteTargetId;
     setDeleteTargetId(null);
+    // Optimistic removal from list
     setConversations(prev => prev.filter(c => c.conversation_id !== id));
+    // If the deleted conv is currently open, go to new chat
     if (activeConversationId === id) navigate("/chat");
     try {
       await fetch(`${API_BASE}/chat/conversations/${id}?user_id=${USER_ID}`, { method: "DELETE" });
     } catch { /* Silently fail */ }
   };
 
+  // Starred conversations float to the top
   const sortedConversations = [...conversations].sort((a, b) => {
     if (a.starred && !b.starred) return -1;
     if (!a.starred && b.starred) return 1;
@@ -194,6 +208,7 @@ const AppSidebar = () => {
 
   return (
     <>
+      {/* Delete confirmation dialog */}
       <AlertDialog open={!!deleteTargetId} onOpenChange={(open) => !open && setDeleteTargetId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -218,6 +233,7 @@ const AppSidebar = () => {
       <Sidebar collapsible="icon" className="border-r border-sidebar-border">
         <SidebarContent className="pt-2 flex flex-col h-full overflow-hidden">
 
+          {/* Sidebar toggle button */}
           <div className={`flex ${collapsed ? "justify-center" : "justify-end"} px-2 pb-1`}>
             <Button
               variant="ghost" size="icon" onClick={toggleSidebar}
@@ -228,6 +244,7 @@ const AppSidebar = () => {
             </Button>
           </div>
 
+          {/* Main nav items */}
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu>
@@ -258,6 +275,7 @@ const AppSidebar = () => {
             </SidebarGroupContent>
           </SidebarGroup>
 
+          {/* Recent Chats Section */}
           {!collapsed && (
             <SidebarGroup className="flex flex-col flex-1 overflow-hidden min-h-0">
               <SidebarGroupLabel className="text-xs text-muted-foreground uppercase tracking-wider px-3 shrink-0">
@@ -265,12 +283,22 @@ const AppSidebar = () => {
               </SidebarGroupLabel>
               <SidebarGroupContent className="flex flex-col flex-1 overflow-hidden min-h-0">
                 <div className="px-2 mb-2 shrink-0">
+                  {/*
+                    ✦ OUR FIX: dispatches "new-chat-clicked" so ChatPage clears its
+                    pending state even when the URL is already "/chat" — navigate()
+                    alone is a silent no-op in that case and the URL effect never
+                    fires, leaving the user stuck in the in-progress stream.
+                    Also: no disabled/isAnyTyping guard — the whole point of this
+                    feature is to allow new chats during generation.
+                  */}
                   <Button
                     variant="ghost" size="sm"
-                    onClick={() => navigate("/chat")}
-                    disabled={isAnyTyping}
-                    title={isAnyTyping ? "Wait for the response to finish" : "New chat"}
-                    className="w-full justify-start gap-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 h-8 disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent("new-chat-clicked"));
+                      navigate("/chat"); // also syncs URL when coming from another page
+                    }}
+                    title="New chat"
+                    className="w-full justify-start gap-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 h-8"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     New chat
@@ -282,14 +310,15 @@ const AppSidebar = () => {
                   {sortedConversations.map((chat) => {
                     const isActive   = activeConversationId === chat.conversation_id;
                     const isRenaming = renamingId === chat.conversation_id;
-                    // Show ··· if this specific row is hovered OR its dropdown is open
+                    // Show ··· if this row is hovered OR its dropdown is open
                     const showMenu   = hoveredId === chat.conversation_id || openMenuId === chat.conversation_id;
-                    // Right slot: show ··· when active, or show star when starred and not showing menu
+                    // Show star badge only when not already showing the menu
                     const showStar   = chat.starred && !showMenu;
 
                     return (
                       <SidebarMenuItem key={chat.conversation_id}>
                         {isRenaming ? (
+                          // ── Inline rename input ────────────────────────────
                           <div className={`flex items-center px-2 py-1.5 rounded-lg ${
                             isActive ? "bg-primary/15" : "bg-secondary/60"
                           }`}>
@@ -299,7 +328,7 @@ const AppSidebar = () => {
                               value={renameValue}
                               onChange={(e) => setRenameValue(e.target.value)}
                               onKeyDown={(e) => {
-                                if (e.key === "Enter") commitRename(chat.conversation_id);
+                                if (e.key === "Enter")  commitRename(chat.conversation_id);
                                 if (e.key === "Escape") cancelRename();
                               }}
                               onBlur={() => commitRename(chat.conversation_id)}
@@ -308,6 +337,7 @@ const AppSidebar = () => {
                             />
                           </div>
                         ) : (
+                          // ── Normal conversation row ────────────────────────
                           <div
                             className={`flex items-center px-2 py-1.5 rounded-lg transition-colors duration-150 w-full cursor-pointer ${
                               isActive
@@ -316,19 +346,19 @@ const AppSidebar = () => {
                             }`}
                             onMouseEnter={() => setHoveredId(chat.conversation_id)}
                             onMouseLeave={() => {
-                              // Only clear hover if dropdown for THIS row isn't open
+                              // Only clear hover if this row's dropdown isn't open
                               if (openMenuId !== chat.conversation_id) setHoveredId(null);
                             }}
                             onClick={() => navigate(`/chat?conversationId=${chat.conversation_id}`)}
                           >
                             <Clock className="w-3.5 h-3.5 shrink-0 text-muted-foreground mr-1.5" />
 
-                            {/* Title truncates to make room when right slot is visible */}
+                            {/* Title — truncates to make room for right slot */}
                             <span className="text-xs truncate flex-1 min-w-0">
                               {chat.title}
                             </span>
 
-                            {/* Right slot — exactly one of: nothing, star, or ··· */}
+                            {/* Right slot — exactly one of: nothing | star | ··· */}
                             <div className="shrink-0 ml-1 w-4 flex items-center justify-center">
                               {showStar && (
                                 <Star className="w-3 h-3 text-yellow-400" fill="currentColor" />
@@ -339,7 +369,6 @@ const AppSidebar = () => {
                                     open={openMenuId === chat.conversation_id}
                                     onOpenChange={(open) => {
                                       setOpenMenuId(open ? chat.conversation_id : null);
-                                      // When dropdown closes, clear hover too if mouse has left
                                       if (!open) setHoveredId(null);
                                     }}
                                   >

@@ -1662,6 +1662,11 @@ const ChatPage = () => {
   // corrupts the currently visible conversation.
   const [convStates, setConvStates] = useState<Record<string, ConvState>>({});
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  // Tracks the ephemeral __pending__ key for the in-progress new-chat stream
+  // currently being shown on the new-chat screen. Null when the screen is blank
+  // or when the user has navigated away mid-stream. This is React state (not a
+  // ref) because it must drive viewKey which drives rendering.
+  const [pendingConvKey, setPendingConvKey] = useState<string | null>(null);
 
   // Helper: immutably update one conversation's slice
   const updateConv = (convId: string, updater: (s: ConvState) => ConvState) => {
@@ -1671,8 +1676,9 @@ const ChatPage = () => {
     });
   };
 
-  // Derived: the state for whichever conversation is currently on screen
-  const viewKey = activeConvId ?? NEW_CONV_KEY;
+  // Derived: the state for whichever conversation is currently on screen.
+  // Priority: real conv ID > active pending stream > blank new-chat slot.
+  const viewKey = activeConvId ?? pendingConvKey ?? NEW_CONV_KEY;
   const { messages, isTyping, isReadingDoc, regeneratingMsgId, retakingMsgId } =
     convStates[viewKey] ?? defaultConvState();
 
@@ -1724,6 +1730,11 @@ const ChatPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const skipHistoryReload = useRef(false);
   const lastLoadedId = useRef<string | null>(null);
+  // Tracks which pending key "owns" the new-chat view right now.
+  // Set when a brand-new chat stream starts; cleared when the user navigates
+  // away to a fresh new-chat screen. Prevents the meta handler from hijacking
+  // the user's view if they clicked "New Chat" before the backend replied.
+  const streamOwnerRef = useRef<string | null>(null);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -1745,6 +1756,10 @@ const ChatPage = () => {
     if (!urlConversationId) {
       // Navigating to the new-chat screen — just switch the active view.
       // We do NOT wipe convStates; background streams keep running untouched.
+      // Clear both the stream owner and the pending key so the old stream can
+      // no longer auto-navigate back here, and the screen shows blank.
+      streamOwnerRef.current = null;
+      setPendingConvKey(null);
       setActiveConvId(null);
       setInput("");
       lastLoadedId.current = null;
@@ -2004,6 +2019,26 @@ const ChatPage = () => {
   };
 
   // ── Effects ───────────────────────────────────────────────────────────────
+
+  // Listen for imperative new-chat requests from the sidebar.
+  // We cannot rely on the URL effect for this because navigate("/chat") is a
+  // silent no-op when the URL is already "/chat" (no conversationId param) —
+  // searchParams never changes, the effect never fires, and pendingConvKey /
+  // streamOwnerRef are never cleared, leaving the user stuck watching the
+  // in-progress stream with no way to start a fresh conversation.
+  useEffect(() => {
+    const handler = () => {
+      streamOwnerRef.current = null;
+      setPendingConvKey(null);
+      setActiveConvId(null);
+      setInput("");
+      lastLoadedId.current = null;
+      navigate("/chat", { replace: true });
+    };
+    window.addEventListener("new-chat-clicked", handler);
+    return () => window.removeEventListener("new-chat-clicked", handler);
+  }, [navigate]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
@@ -2528,11 +2563,23 @@ const ChatPage = () => {
     const aiMsgId = generateUUID();
 
     // ── Snapshot which conversation this request belongs to ──────────────────
-    // For a brand-new chat (no conversationId yet) we use NEW_CONV_KEY as a
-    // temporary slot. Once the backend assigns a real UUID (via the "meta"
-    // SSE event) we migrate the state over.
+    // For a brand-new chat (no conversationId yet) we give each stream its own
+    // unique ephemeral key (e.g. "__pending__<uuid>") instead of sharing the
+    // single NEW_CONV_KEY. This means two overlapping new-chat streams can
+    // never collide in convStates, and the blank new-chat screen (which still
+    // derives its viewKey from NEW_CONV_KEY) always stays empty and clean.
     const startConvId = activeConvId; // null for new chat
-    let convKey = startConvId ?? NEW_CONV_KEY;
+    let convKey = startConvId ?? `__pending__${generateUUID()}`;
+
+    // For brand-new chats, register this stream as the current "owner" of the
+    // new-chat view. The meta handler uses this to decide whether to
+    // auto-navigate the user once the real conversation ID arrives.
+    // Also set pendingConvKey as React state so viewKey tracks this slot and
+    // the user's message actually renders on screen.
+    if (!startConvId) {
+      streamOwnerRef.current = convKey;
+      setPendingConvKey(convKey);
+    }
 
     // Mark this slot as "live" so the history effect never overwrites it
     loadedConvIds.current.add(convKey);
@@ -2675,20 +2722,32 @@ const ChatPage = () => {
                 return { ...rest, [realId]: liveState };
               });
 
-              // Only switch the visible conversation if the user hasn't
-              // manually navigated away while we were waiting for meta.
-              setActiveConvId((prev) => (prev === startConvId ? realId : prev));
+              if (startConvId) {
+                // Case A: existing conversation — switch view unconditionally
+                // if the user hasn't manually navigated somewhere else.
+                setActiveConvId((prev) => (prev === startConvId ? realId : prev));
+              } else {
+                // Case B: brand-new conversation — only take over the view if
+                // this stream still "owns" the new-chat screen (i.e. the user
+                // has NOT clicked New Chat since this stream started).
+                if (streamOwnerRef.current === convKey) {
+                  streamOwnerRef.current = null;
+                  setPendingConvKey(null);
+                  setActiveConvId((prev) => (prev === null ? realId : prev));
+                  skipHistoryReload.current = true;
+                  navigate(`/chat?conversationId=${realId}`, { replace: true });
+                }
+                // Regardless of whether the user is still watching, tell the
+                // sidebar to refresh so the new chat appears in the list.
+                // No delay needed — the conversation is already committed to
+                // Cosmos when the backend emits the meta event.
+                window.dispatchEvent(new CustomEvent("conversation-created"));
+              }
 
-              // Update the URL without triggering a history reload
-              skipHistoryReload.current = true;
-              navigate(`/chat?conversationId=${realId}`, { replace: true });
-
-              if (!startConvId) {
-                // Brand-new conversation — notify the sidebar
-                setTimeout(
-                  () => window.dispatchEvent(new CustomEvent("conversation-created")),
-                  700
-                );
+              if (startConvId) {
+                // Update the URL for Case A (existing conv)
+                skipHistoryReload.current = true;
+                navigate(`/chat?conversationId=${realId}`, { replace: true });
               }
 
               // All subsequent SSE writes go to the real ID
