@@ -3148,9 +3148,9 @@ const ChatPage = () => {
                       const fileAtts  = msg.attachments?.filter(a => a.fileType !== "image") ?? [];
                       return (
                         <>
-                          {/* ── Image attachments — 2-col grid, right-aligned ── */}
+                          {/* ── Image attachments — adaptive grid, right-aligned ── */}
                           {imageAtts.length > 0 && (
-                            <div className="grid grid-cols-2 gap-1.5 mb-1.5 w-fit ml-auto">
+                            <div className={`grid gap-1.5 mb-1.5 w-fit ml-auto ${imageAtts.length === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
                               {imageAtts.map((att) => (
                                 <a
                                   key={att.name}
@@ -3162,7 +3162,7 @@ const ChatPage = () => {
                                   <img
                                     src={att.blobUrl}
                                     alt={att.name}
-                                    className="w-32 h-24 rounded-xl object-cover cursor-pointer hover:opacity-90 transition-opacity border border-primary/20"
+                                    className="w-40 h-32 rounded-xl object-cover cursor-pointer hover:opacity-90 transition-opacity border border-primary/20"
                                   />
                                 </a>
                               ))}
