@@ -33,6 +33,9 @@ from app.services.cosmos_service import (
     save_quiz,
     save_diagram,
     save_image_diagram,
+    rename_conversation,
+    delete_conversation,
+    star_conversation,
 )
 from app.services.blob_service import upload_generated_image_to_blob
 from app.services.study_plan_service import create_study_plan
@@ -696,37 +699,90 @@ async def get_conversations(user_id: str = Query(...)):
 
     conversations = []
     for conv in raw:
-        messages = conv.get("messages", [])
-        first_user_msg = next((m for m in messages if m.get("role") == "user"), None)
-        if first_user_msg:
-            raw_title = first_user_msg.get("content", "Untitled Chat")
-            try:
-                if '"__type"' in raw_title:
-                    parsed = json.loads(raw_title)
-                    t = parsed.get("__type", "")
-                    if t in ("user_with_attachments", "user_with_intent",
-                             "user_with_intent_and_attachments"):
-                        raw_title = (
-                            parsed.get("text", "") or
-                            (parsed.get("attachments") or [{}])[0].get("name", "Untitled Chat")
-                        )
-            except Exception:
-                pass
-            title = raw_title[:45] + ("..." if len(raw_title) > 45 else "")
-        elif conv.get("title"):
+        # Explicit user rename always wins — check stored title FIRST
+        if conv.get("title"):
             title = conv["title"]
         else:
-            title = "New Conversation"
+            messages = conv.get("messages", [])
+            first_user_msg = next((m for m in messages if m.get("role") == "user"), None)
+            if first_user_msg:
+                raw_title = first_user_msg.get("content", "Untitled Chat")
+                try:
+                    if '"__type"' in raw_title:
+                        parsed = json.loads(raw_title)
+                        t = parsed.get("__type", "")
+                        if t in ("user_with_attachments", "user_with_intent",
+                                 "user_with_intent_and_attachments"):
+                            raw_title = (
+                                parsed.get("text", "") or
+                                (parsed.get("attachments") or [{}])[0].get("name", "Untitled Chat")
+                            )
+                except Exception:
+                    pass
+                title = raw_title[:45] + ("..." if len(raw_title) > 45 else "")
+            else:
+                title = "New Conversation"
         conversations.append({
             "conversation_id": conv.get("conversation_id"),
             "title": title,
             "created_at": conv.get("created_at", ""),
+            "starred": conv.get("starred", False),
         })
 
     return {"conversations": conversations}
 
 
-# ── POST /chat/translate ──────────────────────────────────────────────────────
+# ── PATCH /chat/conversations/{id}/rename ─────────────────────────────────────
+
+class RenameRequest(BaseModel):
+    user_id: str
+    title: str
+
+@router.patch("/conversations/{conversation_id}/rename")
+async def rename_conversation_endpoint(conversation_id: str, request: RenameRequest):
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+    updated = await rename_conversation(
+        conversation_id=conversation_id,
+        user_id=request.user_id,
+        new_title=request.title,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"ok": True}
+
+
+# ── DELETE /chat/conversations/{id} ──────────────────────────────────────────
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation_endpoint(conversation_id: str, user_id: str = Query(...)):
+    deleted = await delete_conversation(
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"ok": True}
+
+
+# ── PATCH /chat/conversations/{id}/star ──────────────────────────────────────
+
+class StarRequest(BaseModel):
+    user_id: str
+    starred: bool
+
+@router.patch("/conversations/{conversation_id}/star")
+async def star_conversation_endpoint(conversation_id: str, request: StarRequest):
+    updated = await star_conversation(
+        conversation_id=conversation_id,
+        user_id=request.user_id,
+        starred=request.starred,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"ok": True, "starred": request.starred}
+
+
 
 @router.post("/translate")
 async def translate_message(request: TranslateRequest):

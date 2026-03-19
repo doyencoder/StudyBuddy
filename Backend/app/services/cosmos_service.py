@@ -272,12 +272,13 @@ async def update_message_content(
 async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     """
     Returns all conversations for a given user (lightweight — no messages).
+    Includes starred field so the frontend can sort starred chats to the top.
     """
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(CONVERSATIONS_CONTAINER)
 
-        query = "SELECT c.conversation_id, c.created_at, c.messages, c.title FROM c WHERE c.user_id = @user_id ORDER BY c.created_at DESC"
+        query = "SELECT c.conversation_id, c.created_at, c.messages, c.title, c.starred FROM c WHERE c.user_id = @user_id ORDER BY c.created_at DESC"
         parameters = [{"name": "@user_id", "value": user_id}]
 
         results = []
@@ -288,6 +289,55 @@ async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
             results.append(item)
 
         return results
+
+
+async def rename_conversation(conversation_id: str, user_id: str, new_title: str) -> bool:
+    """
+    Sets the title field of a conversation document to new_title.
+    Returns True if updated, False if not found.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+        try:
+            item = await container.read_item(item=conversation_id, partition_key=user_id)
+            item["title"] = new_title.strip()
+            await container.replace_item(item=conversation_id, body=item)
+            return True
+        except CosmosResourceNotFoundError:
+            return False
+
+
+async def delete_conversation(conversation_id: str, user_id: str) -> bool:
+    """
+    Hard-deletes a conversation document from Cosmos DB.
+    Returns True if deleted, False if not found.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+        try:
+            await container.delete_item(item=conversation_id, partition_key=user_id)
+            return True
+        except CosmosResourceNotFoundError:
+            return False
+
+
+async def star_conversation(conversation_id: str, user_id: str, starred: bool) -> bool:
+    """
+    Sets or clears the starred flag on a conversation document.
+    Returns True if updated, False if not found.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+        try:
+            item = await container.read_item(item=conversation_id, partition_key=user_id)
+            item["starred"] = starred
+            await container.replace_item(item=conversation_id, body=item)
+            return True
+        except CosmosResourceNotFoundError:
+            return False
     
 
 # ── Quiz Container ─────────────────────────────────────────────────────────────
