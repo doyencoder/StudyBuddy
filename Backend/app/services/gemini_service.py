@@ -38,7 +38,8 @@ FORMATTING RULES — follow these exactly:
 - Do NOT use numbered lists or bullet points for comparison/difference questions — use a table instead.
 - For non-comparison questions, use headings (#, ##, ###), bullet points, or numbered lists as appropriate.
 - Use **bold** for key terms inline.
-- Use `code` for code snippets, variable names, or technical syntax.
+- Use `code` for inline code snippets, variable names, or technical syntax.
+- When writing any code block (functions, programs, scripts, algorithms), ALWAYS wrap it in triple-backtick fences with the correct language tag. Examples: ```python, ```cpp, ```javascript, ```java, ```bash. NEVER write multi-line code as plain text without fences.
 
 CRITICAL — Answer discipline:
 - Answer ONLY what the current question asks. Nothing more.
@@ -67,7 +68,8 @@ FORMATTING RULES — follow these exactly:
 - Do NOT use numbered lists or bullet points for comparison/difference questions — use a table instead.
 - For non-comparison questions, use headings (#, ##, ###), bullet points, or numbered lists as appropriate.
 - Use **bold** for key terms inline.
-- Use `code` for code snippets, variable names, or technical syntax.
+- Use `code` for inline code snippets, variable names, or technical syntax.
+- When writing any code block (functions, programs, scripts, algorithms), ALWAYS wrap it in triple-backtick fences with the correct language tag. Examples: ```python, ```cpp, ```javascript, ```java, ```bash. NEVER write multi-line code as plain text without fences.
 
 CRITICAL — Answer discipline:
 - Answer ONLY what the current question asks. Nothing more.

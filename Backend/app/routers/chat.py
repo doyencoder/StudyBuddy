@@ -228,7 +228,7 @@ async def chat_message(request: ChatRequest):
     if request.intent_hint:
         # Intent known from chip — build classification dict with no Gemini call
         msg_lower = (request.message or "").lower()
-        num_q_match = re.search(r'(\d+)\s*questions?', msg_lower)
+        num_q_match = re.search(r'(\d+)\s*(questions?|ques|qs\b|q\b|mcqs?)', msg_lower)
         # Parse weeks for study_plan chip: "4 weeks", "2 months" → weeks. Default 4.
         weeks_match = re.search(r'(\d+)\s*(week|month)', msg_lower)
         weeks_val = 4  # default — never ask the user for weeks
@@ -268,7 +268,7 @@ async def chat_message(request: ChatRequest):
         )
         # Also strip trailing quantity phrases that got swept in ("5 questions", "10 mcqs")
         _TRAILING_STRIP = re.compile(
-            r'\s*(with\s+)?\d+\s*(questions?|mcqs?|items?|mins?|minutes?|seconds?|secs?)\s*$',
+            r'\s*(with\s+)?\d+\s*(questions?|ques|qs\b|q\b|mcqs?|items?|mins?|minutes?|seconds?|secs?)\s*$',
             re.IGNORECASE,
         )
         raw_msg = request.message.strip()

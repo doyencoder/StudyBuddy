@@ -10,7 +10,7 @@ import { API_BASE } from "@/config/api";
 import {
   Send, Paperclip, Mic, Plus, Volume2, Globe, Copy, RefreshCw,
   FileText, CalendarDays, GitBranch, Network, Brain, Bot,
-  ChevronLeft, ChevronRight, CheckCircle2, XCircle, Code,
+  ChevronLeft, ChevronRight, CheckCircle2, XCircle, Code, Check,
   ImageIcon, Download, Square, Sparkles,
   Save,
   Clock,
@@ -159,6 +159,14 @@ const INTENT_LABELS: Record<string, string> = {
   mindmap: "🧠 Generate Mindmap",
 };
 
+const CHIP_PLACEHOLDERS: Record<string, string> = {
+  quiz:       `e.g. "photosynthesis" · add "10 questions" · add "30 seconds" for timed`,
+  study_plan: `e.g. "machine learning" · add "6 weeks" · add "10 hours/week"`,
+  flowchart:  `e.g. "the water cycle" or "how TCP handshake works"`,
+  mindmap:    `e.g. "World War 2" or "photosynthesis concepts"`,
+  image:      `e.g. "mitosis" or "structure of a neuron"`,
+};
+
 const INITIAL_MESSAGES: Message[] = [
   {
     id: "1",
@@ -285,6 +293,141 @@ function applyInline(text: string): React.ReactNode[] {
   });
 }
 
+// ── Language config: label + keyword sets (no per-lang accent colors) ─────────
+const LANG_CONFIG: Record<string, { label: string; keywords: string[] }> = {
+  cpp:        { label: "C++",        keywords: ["int","float","double","char","bool","void","string","auto","const","return","if","else","for","while","do","switch","case","break","continue","class","struct","public","private","protected","new","delete","namespace","include","using","template","typename","nullptr","true","false","std","endl","cout","cin","vector","map","set"] },
+  c:          { label: "C",          keywords: ["int","float","double","char","void","return","if","else","for","while","do","switch","case","break","continue","struct","const","static","include","define","null","true","false","printf","scanf","malloc","free","sizeof"] },
+  python:     { label: "Python",     keywords: ["def","class","return","if","elif","else","for","while","in","not","and","or","is","import","from","as","with","try","except","finally","raise","pass","break","continue","None","True","False","self","lambda","yield","global","nonlocal","print","len","range","type","list","dict","set","tuple","str","int","float","bool"] },
+  javascript: { label: "JavaScript", keywords: ["const","let","var","function","return","if","else","for","while","do","switch","case","break","continue","class","new","this","typeof","instanceof","import","export","default","from","async","await","try","catch","finally","throw","null","undefined","true","false","console","document","window","Promise","Array","Object","Math","JSON","map","filter","reduce","forEach"] },
+  js:         { label: "JavaScript", keywords: ["const","let","var","function","return","if","else","for","while","do","switch","case","break","continue","class","new","this","typeof","instanceof","import","export","default","from","async","await","try","catch","finally","throw","null","undefined","true","false","console","document","window"] },
+  typescript: { label: "TypeScript", keywords: ["const","let","var","function","return","if","else","for","while","class","interface","type","extends","implements","import","export","default","async","await","null","undefined","true","false","string","number","boolean","any","void","never","unknown","enum","namespace","readonly","public","private","protected"] },
+  ts:         { label: "TypeScript", keywords: ["const","let","var","function","return","if","else","for","while","class","interface","type","extends","implements","import","export","async","await","string","number","boolean","any","void"] },
+  java:       { label: "Java",       keywords: ["public","private","protected","class","interface","extends","implements","return","if","else","for","while","do","switch","case","break","continue","new","this","super","static","final","void","int","double","float","char","boolean","String","null","true","false","import","package","try","catch","finally","throw","throws","abstract","enum","instanceof"] },
+  html:       { label: "HTML",       keywords: ["DOCTYPE","html","head","body","div","span","p","a","img","input","button","form","table","tr","td","th","ul","li","h1","h2","h3","h4","h5","h6","script","style","link","meta","title","section","article","nav","header","footer","main","aside"] },
+  css:        { label: "CSS",        keywords: ["display","flex","grid","position","margin","padding","width","height","color","background","border","font","text","align","justify","overflow","transform","transition","animation","opacity","z-index","top","left","right","bottom","absolute","relative","fixed","sticky","none","block","inline","auto"] },
+  bash:       { label: "Bash",       keywords: ["echo","cd","ls","mkdir","rm","cp","mv","cat","grep","find","chmod","chown","sudo","apt","npm","pip","git","export","source","if","then","else","fi","for","do","done","while","function","return","exit","read","set","unset","alias"] },
+  shell:      { label: "Shell",      keywords: ["echo","cd","ls","mkdir","rm","cp","mv","cat","grep","find","chmod","sudo","if","then","else","fi","for","do","done","while","return","exit"] },
+  rust:       { label: "Rust",       keywords: ["fn","let","mut","const","if","else","for","while","loop","match","return","use","mod","pub","struct","enum","impl","trait","self","Self","true","false","None","Some","Ok","Err","String","Vec","Option","Result","i32","u32","i64","u64","f32","f64","bool","str","usize"] },
+  go:         { label: "Go",         keywords: ["func","var","const","type","return","if","else","for","range","switch","case","break","continue","struct","interface","map","chan","go","defer","select","package","import","true","false","nil","make","new","len","cap","append","copy","delete","print","println","error"] },
+  sql:        { label: "SQL",        keywords: ["SELECT","FROM","WHERE","JOIN","INNER","LEFT","RIGHT","ON","GROUP","BY","ORDER","HAVING","INSERT","INTO","VALUES","UPDATE","SET","DELETE","CREATE","TABLE","DROP","ALTER","INDEX","DISTINCT","AS","AND","OR","NOT","IN","LIKE","BETWEEN","NULL","IS","COUNT","SUM","AVG","MAX","MIN"] },
+};
+const DEFAULT_LANG_CFG = { label: "code", keywords: [] as string[] };
+
+// ── Lightweight tokenizer ─────────────────────────────────────────────────────
+type Token = { text: string; type: "comment" | "string" | "keyword" | "number" | "plain" };
+function tokenizeLine(line: string, keywords: string[]): Token[] {
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < line.length) {
+    if ((line[i] === "/" && line[i + 1] === "/") || line[i] === "#") {
+      tokens.push({ text: line.slice(i), type: "comment" }); break;
+    }
+    if (line[i] === '"' || line[i] === "'") {
+      const q = line[i]; let j = i + 1;
+      while (j < line.length && !(line[j] === q && line[j-1] !== "\\")) j++;
+      tokens.push({ text: line.slice(i, j + 1), type: "string" }); i = j + 1; continue;
+    }
+    if (/[0-9]/.test(line[i]) && (i === 0 || !/[a-zA-Z_]/.test(line[i-1]))) {
+      let j = i;
+      while (j < line.length && /[0-9.]/.test(line[j])) j++;
+      tokens.push({ text: line.slice(i, j), type: "number" }); i = j; continue;
+    }
+    if (/[a-zA-Z_]/.test(line[i])) {
+      let j = i;
+      while (j < line.length && /[a-zA-Z0-9_]/.test(line[j])) j++;
+      const word = line.slice(i, j);
+      tokens.push({ text: word, type: keywords.includes(word) ? "keyword" : "plain" }); i = j; continue;
+    }
+    const last = tokens[tokens.length - 1];
+    if (last && last.type === "plain") last.text += line[i];
+    else tokens.push({ text: line[i], type: "plain" });
+    i++;
+  }
+  return tokens;
+}
+
+// Subtle, VSCode-inspired palette — no loud colors
+function TokenSpan({ token }: { token: Token }) {
+  const style: React.CSSProperties =
+    token.type === "keyword" ? { color: "#7BA7D4" } :          // muted blue — keywords
+    token.type === "string"  ? { color: "#98C379" } :          // muted green — strings
+    token.type === "comment" ? { color: "#4B5563", fontStyle: "italic" } : // dim gray — comments
+    token.type === "number"  ? { color: "#D19A66" } :          // warm amber — numbers
+    { color: "#ABB2BF" };                                       // soft gray — plain text
+  return <span style={style}>{token.text}</span>;
+}
+
+// ── CodeBlock component ───────────────────────────────────────────────────────
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+  const cfg = LANG_CONFIG[language] ?? { ...DEFAULT_LANG_CFG, label: language || "code" };
+  const lines = code.split("\n");
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  return (
+    <div
+      className="my-3 rounded-lg overflow-hidden text-sm"
+      style={{ background: "#1E1E1E", border: "1px solid #2D2D2D" }}
+    >
+      {/* ── Slim header ── */}
+      <div
+        className="flex items-center justify-between px-3 py-1.5"
+        style={{ background: "#252526", borderBottom: "1px solid #2D2D2D" }}
+      >
+        <div className="flex items-center gap-1.5">
+          <Code size={11} className="text-zinc-500" />
+          <span className="text-xs text-zinc-400 font-medium">{cfg.label}</span>
+        </div>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 text-xs transition-colors duration-150"
+          style={{ color: copied ? "#98C379" : "#6B7280" }}
+        >
+          {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+        </button>
+      </div>
+      {/* ── Code body with line numbers ── */}
+      <div className="overflow-x-auto">
+        <table
+          className="w-full border-collapse"
+          style={{ fontFamily: "'JetBrains Mono','Fira Code','Consolas',monospace", fontSize: "13px", lineHeight: "1.65" }}
+        >
+          <tbody>
+            {lines.map((line, idx) => {
+              const tokens = tokenizeLine(line, cfg.keywords);
+              return (
+                <tr key={idx}>
+                  <td
+                    className="text-right pr-3 pl-4 select-none"
+                    style={{ color: "#3C3C3C", borderRight: "1px solid #2D2D2D", minWidth: "2.5rem", verticalAlign: "top",
+                      paddingTop: idx === 0 ? "12px" : "0", paddingBottom: idx === lines.length - 1 ? "12px" : "0" }}
+                  >
+                    {idx + 1}
+                  </td>
+                  <td
+                    className="pl-4 pr-6 whitespace-pre"
+                    style={{ verticalAlign: "top",
+                      paddingTop: idx === 0 ? "12px" : "0", paddingBottom: idx === lines.length - 1 ? "12px" : "0" }}
+                  >
+                    {tokens.length === 0
+                      ? <span>&nbsp;</span>
+                      : tokens.map((tok, ti) => <TokenSpan key={ti} token={tok} />)
+                    }
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function renderMarkdown(text: string) {
   const lines = text.split("\n");
   const elements: React.ReactNode[] = [];
@@ -294,6 +437,24 @@ function renderMarkdown(text: string) {
     const line = lines[i];
     if (line.trim() === "") {
       i++;
+      continue;
+    }
+
+    // ── Fenced code block: ```lang ... ``` ────────────────────────────────
+    if (line.trim().startsWith("```")) {
+      const openFence = line.trim();
+      const language = openFence.slice(3).trim().toLowerCase();
+      const codeLines: string[] = [];
+      i++; // skip opening fence line
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing fence line
+      const code = codeLines.join("\n").replace(/\n$/, "");
+      elements.push(
+        <CodeBlock key={`cb-${i}`} language={language} code={code} />
+      );
       continue;
     }
 
@@ -2064,6 +2225,20 @@ const ChatPage = () => {
     return () => window.removeEventListener("new-chat-clicked", handler);
   }, [navigate]);
 
+  // Re-sync textarea height whenever intentChip toggles — switching between
+  // single-row and two-row layouts re-mounts the textarea DOM node, which
+  // resets its inline height to "" and makes the browser fall back to the
+  // default rows=1 height even if the user had already typed several lines.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    // Use rAF so the DOM has finished re-rendering before we measure
+    requestAnimationFrame(() => {
+      ta.style.height = "auto";
+      ta.style.height = `${ta.scrollHeight}px`;
+    });
+  }, [intentChip]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
@@ -3524,183 +3699,223 @@ const ChatPage = () => {
                 : "border-border/70 focus-within:border-primary/50"
             }`}
           >
-            {/* Intent chip row */}
-            {intentChip && (
-              <div className="flex items-center gap-2 px-3 pt-2 pb-1">
-                <div className="flex items-center gap-2 bg-primary/15 border border-primary/30 rounded-lg px-2.5 py-1.5 text-xs text-primary font-medium">
-                  <span>{INTENT_LABELS[intentChip] ?? intentChip}</span>
-                  <button
-                    onClick={() => setIntentChip(null)}
-                    className="text-primary/60 hover:text-primary ml-0.5"
-                    aria-label="Remove intent"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <span className="text-xs text-muted-foreground">Type a topic (optional)</span>
-              </div>
-            )}
-
-            {/* Attached files */}
+            {/* Attached files row — shown above textarea when files are attached */}
             {attachedFiles.length > 0 && (
-              <div className="flex items-end gap-2 px-3 pt-2 pb-1 flex-wrap">
+              <div className="flex items-start gap-2 px-3 pt-3 pb-1 flex-wrap">
                 {attachedFiles.map((file) => (
-                  <div key={file.id} className="relative shrink-0">
+                  <div key={file.id} className="relative shrink-0 flex items-center gap-2 bg-muted/70 border border-border/50 rounded-xl px-2 py-1.5 pr-6 max-w-[160px]">
+                    {/* Icon / thumbnail */}
                     {file.fileType === "image" ? (
-                      /* ── Image thumbnail ── */
-                      <div className="relative w-20 h-16 rounded-xl overflow-hidden border border-primary/20 bg-muted">
+                      <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0 bg-muted border border-border/40">
                         {file.previewUrl ? (
-                          <img
-                            src={file.previewUrl}
-                            alt={file.name}
-                            className="w-full h-full object-cover"
-                          />
+                          <img src={file.previewUrl} alt={file.name} className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
-                            <Paperclip className="w-4 h-4 text-muted-foreground" />
+                            <ImageIcon className="w-3.5 h-3.5 text-muted-foreground" />
                           </div>
                         )}
-                        {/* uploading overlay */}
-                        {file.status === "uploading" && (
-                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                            <div className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                          </div>
-                        )}
-                        {/* remove button */}
-                        <button
-                          onClick={() =>
-                            setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
-                          }
-                          className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 text-white flex items-center justify-center text-[9px] hover:bg-black/80 leading-none"
-                        >
-                          ✕
-                        </button>
                       </div>
                     ) : (
-                      /* ── Non-image pill ── */
-                      <div className="flex items-center gap-2 bg-primary/10 border border-primary/20 rounded-lg px-2.5 py-1.5 text-xs text-foreground max-w-xs">
-                        <Paperclip className="w-3 h-3 text-primary shrink-0" />
-                        <span className="truncate max-w-[120px]">{file.name}</span>
-                        {file.status === "uploading" && (
-                          <div className="w-3 h-3 rounded-full border-2 border-primary/30 border-t-primary animate-spin shrink-0" />
-                        )}
-                        {file.status === "ready" && (
-                          <span className="text-green-500 shrink-0">✓</span>
-                        )}
-                        <button
-                          onClick={() =>
-                            setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))
-                          }
-                          className="text-muted-foreground hover:text-foreground shrink-0 ml-0.5"
-                        >
-                          ✕
-                        </button>
+                      <div className="w-8 h-8 rounded-lg shrink-0 bg-primary/10 border border-primary/20 flex items-center justify-center">
+                        <FileText className="w-4 h-4 text-primary" />
                       </div>
                     )}
+                    {/* Text */}
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-medium text-foreground truncate w-[80px] leading-tight">
+                        {file.name}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground leading-tight mt-0.5">
+                        {file.status === "uploading" ? (
+                          <span className="flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full border border-primary/40 border-t-primary animate-spin inline-block" />
+                            Uploading
+                          </span>
+                        ) : file.fileType === "image" ? "Image" : (file.name.split(".").pop()?.toUpperCase() ?? "File")}
+                      </span>
+                    </div>
+                    {/* Remove */}
+                    <button
+                      onClick={() => setAttachedFiles((prev) => prev.filter((f) => f.id !== file.id))}
+                      className="absolute top-1 right-1.5 text-[10px] text-muted-foreground hover:text-foreground leading-none"
+                      aria-label="Remove file"
+                    >✕</button>
                   </div>
                 ))}
               </div>
             )}
 
-            <div className="flex items-end">
-              <div className="flex items-end pb-1 shrink-0">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0 text-muted-foreground hover:text-primary hover:bg-primary/10 h-9 w-9 rounded-xl"
-                    >
-                      <Plus className="w-5 h-5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    align="start"
-                    side="top"
-                    className="bg-card border-border w-56 mb-1"
+            {intentChip ? (
+              /* ── TWO-ROW layout when chip is active ── */
+              <>
+                {/* Row 1: textarea full width */}
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendMessage();
+                    }
+                  }}
+                  onPaste={handlePaste}
+                  placeholder={CHIP_PLACEHOLDERS[intentChip] ?? `Type a topic for ${INTENT_LABELS[intentChip] ?? intentChip}...`}
+                  rows={1}
+                  className="w-full bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-4 pt-3 pb-1 resize-none outline-none min-h-[44px] overflow-hidden"
+                />
+                {/* Row 2: + | chip badge | spacer | mic | send */}
+                <div className="flex items-center gap-1 px-1 pb-1">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground hover:text-primary hover:bg-primary/10 h-8 w-8 rounded-xl">
+                        <Plus className="w-5 h-5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" side="top" className="bg-card border-border w-56 mb-1">
+                      <DropdownMenuItem
+                        onClick={() => fileInputRef.current?.click()}
+                        className="gap-3 text-foreground cursor-pointer"
+                        disabled={attachedFiles.length >= 5}
+                      >
+                        <Paperclip className={`w-4 h-4 text-primary ${attachedFiles.some((f) => f.status === "uploading") ? "animate-pulse" : ""}`} />
+                        Add photos &amp; files
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator className="bg-border/50 my-1" />
+                      {TOOLS.map((tool) => {
+                        const Icon = tool.icon;
+                        return (
+                          <DropdownMenuItem key={tool.label} onClick={() => handleToolClick(tool)} className="gap-3 text-foreground cursor-pointer">
+                            <Icon className="w-4 h-4 text-primary" />
+                            {tool.label}
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  {/* Chip badge inline */}
+                  <div className="flex items-center gap-1.5 bg-primary/15 border border-primary/30 rounded-lg px-2.5 py-1 text-xs text-primary font-medium">
+                    <span>{INTENT_LABELS[intentChip] ?? intentChip}</span>
+                    <button onClick={() => setIntentChip(null)} className="text-primary/60 hover:text-primary" aria-label="Remove intent">✕</button>
+                  </div>
+                  <div className="flex-1" />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={toggleListening}
+                    className={`h-8 w-8 rounded-xl transition-all duration-200 ${isListening ? "bg-red-500 text-white hover:bg-red-600 scale-110" : "text-muted-foreground hover:text-primary hover:bg-primary/10"}`}
+                    title={isListening ? "Stop listening" : "Start voice input"}
                   >
-                    <DropdownMenuItem
-                      onClick={() => fileInputRef.current?.click()}
-                      className="gap-3 text-foreground cursor-pointer"
-                      disabled={attachedFiles.length >= 5}
+                    <Mic className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    onClick={sendMessage}
+                    disabled={(!input.trim() && !attachedFiles.some((f) => f.status === "ready") && !intentChip) || isTyping || attachedFiles.some((f) => f.status === "uploading")}
+                    size="icon"
+                    className="h-8 w-8 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"
+                  >
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
+              </>
+            ) : (
+              /* ── SINGLE-ROW layout when no chip (default) ── */
+              <div className="flex items-end">
+                <div className="flex items-end pb-1 shrink-0">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0 text-muted-foreground hover:text-primary hover:bg-primary/10 h-9 w-9 rounded-xl"
+                      >
+                        <Plus className="w-5 h-5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      side="top"
+                      className="bg-card border-border w-56 mb-1"
                     >
-                      <Paperclip
-                        className={`w-4 h-4 text-primary ${
-                          attachedFiles.some((f) => f.status === "uploading")
-                            ? "animate-pulse"
-                            : ""
-                        }`}
-                      />
-                      Add photos &amp; files
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator className="bg-border/50 my-1" />
-                    {TOOLS.map((tool) => {
-                      const Icon = tool.icon;
-                      return (
-                        <DropdownMenuItem
-                          key={tool.label}
-                          onClick={() => handleToolClick(tool)}
-                          className="gap-3 text-foreground cursor-pointer"
-                        >
-                          <Icon className="w-4 h-4 text-primary" />
-                          {tool.label}
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+                      <DropdownMenuItem
+                        onClick={() => fileInputRef.current?.click()}
+                        className="gap-3 text-foreground cursor-pointer"
+                        disabled={attachedFiles.length >= 5}
+                      >
+                        <Paperclip
+                          className={`w-4 h-4 text-primary ${
+                            attachedFiles.some((f) => f.status === "uploading")
+                              ? "animate-pulse"
+                              : ""
+                          }`}
+                        />
+                        Add photos &amp; files
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator className="bg-border/50 my-1" />
+                      {TOOLS.map((tool) => {
+                        const Icon = tool.icon;
+                        return (
+                          <DropdownMenuItem
+                            key={tool.label}
+                            onClick={() => handleToolClick(tool)}
+                            className="gap-3 text-foreground cursor-pointer"
+                          >
+                            <Icon className="w-4 h-4 text-primary" />
+                            {tool.label}
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
 
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={handleInputChange}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                  }
-                }}
-                onPaste={handlePaste}
-                placeholder={
-                  intentChip
-                    ? `Type a topic for ${INTENT_LABELS[intentChip] ?? intentChip}...`
-                    : "Ask anything..."
-                }
-                rows={1}
-                className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-3 py-2.5 resize-none outline-none min-h-[40px] max-h-[120px]"
-              />
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendMessage();
+                    }
+                  }}
+                  onPaste={handlePaste}
+                  placeholder="Ask anything..."
+                  rows={1}
+                  className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-3 py-2.5 resize-none outline-none min-h-[40px] overflow-hidden"
+                />
 
-              <div className="flex items-end gap-1 pr-1 pb-1 shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={toggleListening}
-                  className={`h-9 w-9 rounded-xl transition-all duration-200 ${
-                    isListening
-                      ? "bg-red-500 text-white hover:bg-red-600 scale-110"
-                      : "text-muted-foreground hover:text-primary hover:bg-primary/10"
-                  }`}
-                  title={isListening ? "Stop listening" : "Start voice input"}
-                >
-                  <Mic className="w-4 h-4" />
-                </Button>
-                <Button
-                  onClick={sendMessage}
-                  disabled={
-                    (!input.trim() &&
-                      !attachedFiles.some((f) => f.status === "ready") &&
-                      !intentChip) ||
-                    isTyping ||
-                    attachedFiles.some((f) => f.status === "uploading")
-                  }
-                  size="icon"
-                  className="h-9 w-9 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"
-                >
-                  <Send className="w-4 h-4" />
-                </Button>
+                <div className="flex items-end gap-1 pr-1 pb-1 shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={toggleListening}
+                    className={`h-9 w-9 rounded-xl transition-all duration-200 ${
+                      isListening
+                        ? "bg-red-500 text-white hover:bg-red-600 scale-110"
+                        : "text-muted-foreground hover:text-primary hover:bg-primary/10"
+                    }`}
+                    title={isListening ? "Stop listening" : "Start voice input"}
+                  >
+                    <Mic className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    onClick={sendMessage}
+                    disabled={
+                      (!input.trim() &&
+                        !attachedFiles.some((f) => f.status === "ready") &&
+                        !intentChip) ||
+                      isTyping ||
+                      attachedFiles.some((f) => f.status === "uploading")
+                    }
+                    size="icon"
+                    className="h-9 w-9 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"
+                  >
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
