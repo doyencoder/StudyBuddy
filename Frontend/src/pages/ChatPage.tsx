@@ -307,11 +307,13 @@ function renderMath(latex: string, displayMode: boolean): React.ReactNode {
 
 function applyInline(text: string): React.ReactNode[] {
   // Split on $$...$$, $...$, **...**, *...*, `...` — $$ must come before $
-  return text.split(/(\$\$[^$]+\$\$|\$[^$\r\n]+\$|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
+  return text.split(/(\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([^)]+\\\)|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
     if (/^\$\$[^$]+\$\$$/.test(part))
       return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
     if (/^\$[^$\r\n]+\$$/.test(part))
       return <span key={i}>{renderMath(part.slice(1, -1), false)}</span>;
+    if (/^\\\([^)]+\\\)$/.test(part))
+      return <span key={i}>{renderMath(part.slice(2, -2), false)}</span>;
     if (/^\*\*[^*]+\*\*$/.test(part))
       return (
         <strong key={i} className="font-semibold text-foreground">
@@ -495,6 +497,24 @@ function renderMarkdown(text: string) {
       const code = codeLines.join("\n").replace(/\n$/, "");
       elements.push(
         <CodeBlock key={`cb-${i}`} language={language} code={code} />
+      );
+      continue;
+    }
+
+    // ── Display math block: \[...\] (LaTeX style) ────────────────────────────
+    if (line.trim() === "\\[") {
+      const mathLines: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== "\\]") {
+        mathLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing \]
+      const latex = mathLines.join("\n");
+      elements.push(
+        <div key={`lm-${i}`} className="my-2 overflow-x-auto text-center">
+          {renderMath(latex, true)}
+        </div>
       );
       continue;
     }
@@ -2673,7 +2693,20 @@ const ChatPage = () => {
     }
     stopSpeech();
 
-    const cleanText = text
+    // If the whole message is just code blocks, don't call TTS at all —
+    // show a friendly nudge instead of an Azure 400 error.
+    const hasFencedCode = /```[\s\S]*?```/.test(text);
+    const textWithoutCode = text.replace(/```[\s\S]*?```/g, "").trim();
+    if (hasFencedCode && !textWithoutCode) {
+      toast("Audio isn't available for code-only messages.", { icon: "💡" });
+      return;
+    }
+
+    const cleanText = (hasFencedCode ? textWithoutCode : text)
+      .replace(/\\\[[\s\S]*?\\\]/g, "")   // strip \[...\] display math
+      .replace(/\\\([\s\S]*?\\\)/g, "")   // strip \(...\) inline math
+      .replace(/\$\$[\s\S]*?\$\$/g, "")      // strip $$...$$ display math
+      .replace(/\$[^$\r\n]+\$/g, "")          // strip $...$ inline math
       .replace(/\*\*(.*?)\*\*/g, "$1")
       .replace(/\*(.*?)\*/g, "$1")
       .replace(/`(.*?)`/g, "$1")

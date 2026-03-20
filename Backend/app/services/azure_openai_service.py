@@ -166,6 +166,50 @@ def _sanitize_and_parse_json(raw: str):
     return json.loads(escaped)
 
 
+# Common romanized Hindi function words / particles that strongly signal Hinglish.
+# Keeping the list short and high-precision to avoid false positives on English.
+_HINGLISH_MARKERS = {
+    "kya", "hai", "hain", "ho", "tha", "thi", "the", "mein", "mujhe",
+    "hum", "tum", "aap", "yeh", "woh", "kaise", "kyun", "kyunki",
+    "lekin", "aur", "ya", "se", "ke", "ki", "ka", "ko", "ne",
+    "nahi", "nahin", "matlab", "bata", "batao", "samajh", "seekh",
+    "padhna", "likhna", "bolna", "achha", "theek", "sahi", "galat",
+    "pls", "plz", "bhai", "yaar", "dost",
+}
+
+def _detect_language(text: str) -> str:
+    """
+    Classify the user's message into one of three categories:
+
+    - "english"   : Pure English (Latin script, no Hindi markers).
+    - "hinglish"  : Romanized Hindi/Hinglish (Latin script + Hindi markers).
+    - "non_latin" : A non-Latin script language (Hindi in Devanagari, Tamil, etc.).
+
+    Returns one of the three string literals above.
+    """
+    alpha_chars = [c for c in text if c.isalpha()]
+    if not alpha_chars:
+        return "english"
+
+    latin_count = sum(1 for c in alpha_chars if ord(c) < 128)
+    latin_ratio = latin_count / len(alpha_chars)
+
+    # Non-Latin script (Devanagari, Tamil, Telugu, etc.)
+    if latin_ratio <= 0.8:
+        return "non_latin"
+
+    # Latin script — distinguish English from Hinglish by looking for Hindi markers
+    words = set(re.sub(r"[^a-zA-Z\s]", "", text).lower().split())
+    hinglish_hits = words & _HINGLISH_MARKERS
+    # Require at least 2 marker hits to confidently call it Hinglish,
+    # so a single word like "the" never triggers a false positive.
+    if len(hinglish_hits) >= 2:
+        return "hinglish"
+
+    return "english"
+
+
+# Keep old name as a thin wrapper so nothing else in the file breaks.
 def _is_latin_script(text: str) -> bool:
     """Returns True if message is predominantly Latin/Roman script (Hinglish detection)."""
     alpha_chars = [c for c in text if c.isalpha()]
@@ -247,15 +291,30 @@ def chat_stream(
         current_user_text = question
         system_instruction = SYSTEM_PROMPT_GENERAL
 
-    # Script mirroring — skip when override is active (it already contains the full prompt)
-    if not system_prompt_override and _is_latin_script(question):
-        system_instruction += (
-            "\n\nIMPORTANT — Script rule: The user has written in Roman/Latin script. "
-            "You MUST respond in Roman/Latin script as well. "
-            "Do NOT use Devanagari, Tamil, Telugu, or any other non-Latin script. "
-            "If the user is mixing Hindi and English (Hinglish), reply in Hinglish too. "
-            "Match the user's exact language style."
-        )
+    # ── Strict language-mirroring rule ────────────────────────────────────────
+    # Detect the user's language and inject an unambiguous directive so the
+    # model never drifts into a different language (e.g. Hinglish for English).
+    if not system_prompt_override:
+        _lang = _detect_language(question)
+        if _lang == "english":
+            system_instruction += (
+                "\n\nCRITICAL — Language rule: The user's message is in English. "
+                "You MUST respond ONLY in English. "
+                "Do NOT use any Hindi, Hinglish, or any other language. "
+                "Every word of your response must be English."
+            )
+        elif _lang == "hinglish":
+            system_instruction += (
+                "\n\nIMPORTANT — Language rule: The user is writing in Hinglish "
+                "(a mix of Hindi and English in Roman script). "
+                "Reply in Hinglish too — match their exact mix of Hindi and English words. "
+                "Do NOT switch to pure Hindi or Devanagari script."
+            )
+        else:  # non_latin — respect whatever script they used
+            system_instruction += (
+                "\n\nIMPORTANT — Language rule: Respond in the same language and script "
+                "as the user's message. Do NOT switch to English or any other language."
+            )
 
     # Response format injection — identical to gemini_service.py
     if not system_prompt_override:

@@ -1247,7 +1247,13 @@ async def text_to_speech(request: TTSRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
-    clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    # Strip code blocks and math expressions — Azure Speech chokes on both
+    clean_text = re.sub(r"```[\s\S]*?```", "", text)   # fenced code
+    clean_text = re.sub(r"\\\[[\s\S]*?\\\]", "", clean_text)  # \[...\] display math
+    clean_text = re.sub(r"\\\([\s\S]*?\\\)", "", clean_text)  # \(...\) inline math
+    clean_text = re.sub(r"\$\$[\s\S]*?\$\$", "", clean_text)    # $$...$$ display math
+    clean_text = re.sub(r"\$[^\$\r\n]+\$", "", clean_text)       # $...$ inline math
+    clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", clean_text)
     clean_text = re.sub(r"\*(.*?)\*",     r"\1", clean_text)
     clean_text = re.sub(r"`(.*?)`",       r"\1", clean_text)
     clean_text = re.sub(r"#{1,6}\s",      "",    clean_text)
