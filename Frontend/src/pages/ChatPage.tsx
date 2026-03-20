@@ -1927,11 +1927,22 @@ const ChatPage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // Prefill input from navigation state
+  // AutoSend trigger: fires sendMessage on mount if sessionStorage flag is set.
   useEffect(() => {
-    const state = location.state as { prefillInput?: string } | null;
+    if (!sessionStorage.getItem('sb_landing_autosend')) return;
+    const t = setTimeout(() => sendMessage(), 300);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Prefill input from navigation state (autoSend from landing page)
+  useEffect(() => {
+    const state = location.state as { prefillInput?: string; autoSend?: boolean } | null;
     if (state?.prefillInput) {
       setInput(state.prefillInput);
+      if (state.autoSend) {
+        sessionStorage.setItem('sb_landing_autosend', state.prefillInput);
+      }
       window.history.replaceState({}, document.title);
     }
   }, []);
@@ -2769,11 +2780,15 @@ const ChatPage = () => {
 
   // ── sendMessage ─────────────────────────────────────────────────────────────
   const sendMessage = async () => {
+    // AutoSend from landing page: read sessionStorage override.
+    const landingMsg = sessionStorage.getItem('sb_landing_autosend') || '';
+    if (landingMsg) sessionStorage.removeItem('sb_landing_autosend');
+
     const hasContent =
-      input.trim() || attachedFiles.some((f) => f.status === "ready") || intentChip;
+      (landingMsg || input.trim()) || attachedFiles.some((f) => f.status === "ready") || intentChip;
     if (!hasContent || isTyping) return;
 
-    const userMessage = input.trim();
+    const userMessage = landingMsg || input.trim();
     const sentFiles = attachedFiles.filter((f) => f.status === "ready");
     const chipValue = intentChip;
 
