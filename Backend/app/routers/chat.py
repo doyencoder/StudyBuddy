@@ -571,10 +571,11 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
                 "topic": topic_label, "submitted": False,
                 "questions": q_for_history, "fun_fact": fun_fact,
                 "timer_seconds": timer_seconds,
+                "num_questions": num_questions,
             }),
         )
 
-        yield f"data: {json.dumps({'type': 'quiz_result', 'data': {'quiz_id': quiz_id, 'topic': topic_label, 'questions': q_for_history, 'fun_fact': fun_fact, 'timer_seconds': timer_seconds}})}\n\n"
+        yield f"data: {json.dumps({'type': 'quiz_result', 'data': {'quiz_id': quiz_id, 'topic': topic_label, 'questions': q_for_history, 'fun_fact': fun_fact, 'timer_seconds': timer_seconds, 'num_questions': num_questions}})}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': f'Quiz generation failed: {str(e)}'})}\n\n"

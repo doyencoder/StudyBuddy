@@ -249,10 +249,15 @@ async def quiz_submit(request: QuizSubmitRequest):
     correct_count = 0
     wrong_indices = []  # indices of wrong answers, for fallback classification
 
+    # Bug 2 fix: unanswered_indices are questions that timed out and were force-set
+    # to index 0 by the frontend. They must NEVER count as correct regardless of
+    # whether correct_index happens to be 0.
+    unanswered_set = set(request.unanswered_indices or [])
+
     for i, q in enumerate(stored_questions):
         selected = request.answers[i]
         correct = q["correct_index"]
-        is_correct = selected == correct
+        is_correct = (selected == correct) and (i not in unanswered_set)
 
         if is_correct:
             correct_count += 1

@@ -88,6 +88,7 @@ interface QuizData {
   weak_areas?: string[];
   results?: QuizResult[];
   timer_seconds?: number;
+  num_questions?: number;        // original question count — persisted to survive reload/retake
   unanswered_indices?: number[]; // indices that timed out unanswered — frontend-only
 }
 
@@ -2017,6 +2018,7 @@ const ChatPage = () => {
                 weak_areas: parsed.weak_areas ?? [],
                 results: parsed.results ?? [],
                 timer_seconds: parsed.timer_seconds ?? null,
+                num_questions: parsed.num_questions ?? (parsed.questions?.length ?? 5),
                 unanswered_indices: parsed.unanswered_indices?.length > 0
                   ? parsed.unanswered_indices
                   : undefined,
@@ -2461,9 +2463,20 @@ const ChatPage = () => {
     if (!activeConvId) return;
     updateConv(activeConvId, (s) => ({
       ...s,
-      messages: s.messages.map((m) =>
-        m.id === messageId ? { ...m, quizData: updatedQuizData } : m
-      ),
+      messages: s.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        // Bug 1 fix: also sync the matching entry inside quizVersions so that
+        // switching attempts via the version navigator never reverts to the
+        // unsubmitted state (quizData was updated but quizVersions was stale).
+        const updatedVersions = m.quizVersions?.map((v) =>
+          v.quiz_id === updatedQuizData.quiz_id ? updatedQuizData : v
+        );
+        return {
+          ...m,
+          quizData: updatedQuizData,
+          ...(updatedVersions ? { quizVersions: updatedVersions } : {}),
+        };
+      }),
     }));
   };
 
@@ -2471,6 +2484,15 @@ const ChatPage = () => {
     if (!activeConvId) return;
     const convId = activeConvId;
     updateConv(convId, (s) => ({ ...s, retakingMsgId: msgId }));
+
+    // Bug 3 fix: encode the original question count and timer into the message
+    // text so the backend regex parser picks them up and doesn't fall back to
+    // defaults (5 questions, no timer).
+    const numQ = originalQuizData.num_questions ?? originalQuizData.questions.length;
+    const timerPart = originalQuizData.timer_seconds
+      ? `, ${originalQuizData.timer_seconds} seconds`
+      : "";
+    const retakeMessage = `Generate a fresh quiz on: ${originalQuizData.topic}, ${numQ} questions${timerPart}`;
     try {
       const response = await fetch(`${API_BASE}/chat/message`, {
         method: "POST",
@@ -2478,7 +2500,7 @@ const ChatPage = () => {
         body: JSON.stringify({
           user_id: USER_ID,
           conversation_id: convId,
-          message: `Generate a fresh quiz on: ${originalQuizData.topic}`,
+          message: retakeMessage,
           intent_hint: "quiz",
         }),
       });
@@ -2504,6 +2526,7 @@ const ChatPage = () => {
               submitted: false,
               fun_fact: d.fun_fact ?? "",
               timer_seconds: originalQuizData.timer_seconds ?? null,
+              num_questions: numQ,
             };
             // Push new quiz into versions array on the same card — no new message
             updateConv(convId, (s) => ({
@@ -2990,6 +3013,7 @@ const ChatPage = () => {
                     submitted: false,
                     fun_fact: d.fun_fact ?? "",
                     timer_seconds: d.timer_seconds ?? null,
+                    num_questions: d.num_questions ?? (d.questions?.length ?? 5),
                 },
                   timestamp: new Date(),
                 },
