@@ -214,6 +214,7 @@ def chat_stream(
     question: str,
     context_chunks: List[str],
     history: List[dict] = None,
+    system_prompt_override: str = None,
     response_format: str = "paragraph",
     detail_level: str = "detailed",
     language_style: str = "formal",
@@ -221,12 +222,20 @@ def chat_stream(
     """
     Streams a gpt-4o-mini reply with full multi-turn conversation memory.
     Identical signature to gemini_service.chat_stream().
+    context_chunks: list of pre-tagged strings like "[Page N]\\nchunk text..."
+    history:        list of prior messages [{"role": "user"|"assistant", "content": str}]
+    system_prompt_override: when set, replaces all system-prompt building logic.
+                            Used by web search, image search, and video search paths.
     """
     client = _get_client()
     deployment = _chat_deployment()
 
-    # ── Build system prompt ───────────────────────────────────────────────────
-    if context_chunks:
+    # ── Build system prompt ────────────────────────────────────────────────
+    # If override is provided (web/image/video search paths), use it directly.
+    if system_prompt_override:
+        system_instruction = system_prompt_override
+        current_user_text = question
+    elif context_chunks:
         context_text = "\n\n---\n\n".join(context_chunks)
         current_user_text = (
             f"Use the following context from the student's study material to answer the question.\n\n"
@@ -238,8 +247,8 @@ def chat_stream(
         current_user_text = question
         system_instruction = SYSTEM_PROMPT_GENERAL
 
-    # Script mirroring
-    if _is_latin_script(question):
+    # Script mirroring — skip when override is active (it already contains the full prompt)
+    if not system_prompt_override and _is_latin_script(question):
         system_instruction += (
             "\n\nIMPORTANT — Script rule: The user has written in Roman/Latin script. "
             "You MUST respond in Roman/Latin script as well. "
@@ -248,32 +257,33 @@ def chat_stream(
             "Match the user's exact language style."
         )
 
-    # Response format injection
-    format_map = {
-        "bullet":      "Respond using bullet points.",
-        "steps":       "Respond as numbered steps.",
-        "table":       "Respond using a markdown table where appropriate.",
-        "formula":     "Focus on formulas and equations. Use LaTeX notation.",
-        "short_notes": "Respond as concise short notes with headers.",
-        "paragraph":   "Respond in clear paragraphs.",
-    }
-    detail_map = {
-        "brief":    "Keep the response short and to the point.",
-        "detailed": "Give a thorough and complete explanation.",
-        "eli5":     "Explain simply as if to a beginner with no prior knowledge.",
-    }
-    lang_map = {
-        "hinglish": "The student is writing in Hinglish (Hindi+English mix). Reply in Hinglish too.",
-        "casual":   "Use a casual, friendly tone.",
-        "formal":   "",
-    }
-    extra = " ".join(filter(None, [
-        format_map.get(response_format, ""),
-        detail_map.get(detail_level, ""),
-        lang_map.get(language_style, ""),
-    ]))
-    if extra:
-        system_instruction += f"\n\nRESPONSE STYLE: {extra}"
+    # Response format injection — identical to gemini_service.py
+    if not system_prompt_override:
+        format_map = {
+            "bullet":      "Respond using bullet points.",
+            "steps":       "Respond as numbered steps.",
+            "table":       "Respond using a markdown table where appropriate.",
+            "formula":     "Focus on formulas and equations. Use LaTeX notation.",
+            "short_notes": "Respond as concise short notes with headers.",
+            "paragraph":   "Respond in clear paragraphs.",
+        }
+        detail_map = {
+            "brief":    "Keep the response short and to the point.",
+            "detailed": "Give a thorough and complete explanation.",
+            "eli5":     "Explain simply as if to a beginner with no prior knowledge.",
+        }
+        lang_map = {
+            "hinglish": "The student is writing in Hinglish (Hindi+English mix). Reply in Hinglish too.",
+            "casual":   "Use a casual, friendly tone.",
+            "formal":   "",
+        }
+        extra = " ".join(filter(None, [
+            format_map.get(response_format, ""),
+            detail_map.get(detail_level, ""),
+            lang_map.get(language_style, ""),
+        ]))
+        if extra:
+            system_instruction += f"\n\nRESPONSE STYLE: {extra}"
 
     # ── Build messages with anchor+recent windowing ───────────────────────────
     ANCHOR_COUNT = 4

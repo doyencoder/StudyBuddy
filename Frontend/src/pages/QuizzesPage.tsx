@@ -151,8 +151,6 @@ const QuizzesPage = () => {
           setQuizzes(data.quizzes.map(mapSummary));
         }
         toast.error("Failed to delete quiz. Please try again.");
-      } else {
-        toast.success("Quiz deleted.");
       }
     } catch {
       toast.error("Failed to delete quiz. Please try again.");

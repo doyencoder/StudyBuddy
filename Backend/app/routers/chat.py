@@ -831,17 +831,66 @@ async def _dispatch_web_search(user_id, conversation_id, query, prior_messages):
         # ── Route: video / image / text query ────────────────────────────────
         if is_video_query(query):
             # ── VIDEO PATH ────────────────────────────────────────────────────
+            # SerpAPI youtube engine requires a paid plan → try it, fall back to
+            # regular web search if it returns an error or empty results.
+            videos = []
             try:
                 videos = await loop.run_in_executor(None, lambda: youtube_search(query, num_results=6))
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': f'YouTube search failed: {str(e)}'})}\n\n"
+            except Exception:
+                pass  # fall through to web-search fallback
+
+            if not videos:
+                # ── FALLBACK: regular web search for video/resource queries ──
+                try:
+                    fallback_results = await loop.run_in_executor(None, lambda: web_search(query, num_results=6))
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'Web search failed: {str(e)}'})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+                await asyncio.sleep(0)
+
+                search_context = build_search_context(fallback_results)
+                fallback_prompt = f"""You are StudyBuddy, a helpful study assistant.
+The user asked: "{query}"
+Use the web search results below to recommend the best learning resources for this topic.
+Do NOT add citation numbers like [1], [2] — sources are shown separately.
+
+{search_context}"""
+
+                from app.services.ai_service import chat_stream as _ai_stream
+                full_reply = ""
+                try:
+                    for chunk in _ai_stream(question=query, context_chunks=[], history=[], system_prompt_override=fallback_prompt):
+                        full_reply += chunk
+                        yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                yield f"data: {json.dumps({'type': 'web_search_sources', 'data': fallback_results})}\n\n"
+                await asyncio.sleep(0)
+
+                # NOTE: user message already saved by the outer endpoint — do NOT save again
+                await save_message(
+                    conversation_id=conversation_id, user_id=user_id, role="assistant",
+                    content=json.dumps({
+                        "__type": "web_search_answer",
+                        "query": query, "answer": full_reply,
+                        "sources": fallback_results, "images": [], "videos": [],
+                    }),
+                )
                 yield "data: [DONE]\n\n"
                 return
 
+            # ── Videos retrieved successfully ─────────────────────────────────
             yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
             await asyncio.sleep(0)
 
-            from app.services.gemini_service import chat_stream
+            from app.services.ai_service import chat_stream as _ai_stream
             intro_prompt = f"""You are StudyBuddy. The user asked: "{query}"
 YouTube video results are being displayed directly below your response.
 Write ONE short sentence introducing what the user will see (e.g. "Here are some YouTube videos about photosynthesis:").
@@ -849,7 +898,7 @@ Do NOT list or describe the videos. Just one short intro sentence."""
 
             full_reply = ""
             try:
-                for chunk in chat_stream(question=query, context_chunks=[], history=[], system_prompt_override=intro_prompt):
+                for chunk in _ai_stream(question=query, context_chunks=[], history=[], system_prompt_override=intro_prompt):
                     full_reply += chunk
                     yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
                     await asyncio.sleep(0)
@@ -861,7 +910,7 @@ Do NOT list or describe the videos. Just one short intro sentence."""
             yield f"data: {json.dumps({'type': 'web_search_videos', 'data': videos})}\n\n"
             await asyncio.sleep(0)
 
-            await save_message(conversation_id=conversation_id, user_id=user_id, role="user", content=query)
+            # NOTE: user message already saved by the outer endpoint — do NOT save again
             await save_message(
                 conversation_id=conversation_id, user_id=user_id, role="assistant",
                 content=json.dumps({
@@ -874,8 +923,21 @@ Do NOT list or describe the videos. Just one short intro sentence."""
 
         elif is_image_query(query):
             # ── IMAGE PATH ────────────────────────────────────────────────────
+            # Detect whether this is a pure "show me images" request OR an
+            # "explain X with images" request (needs a full text answer + images).
+            # Pure image keywords: show, display, picture(s), photo(s), give me images
+            # Mixed (explain+images): any query that also contains explain/tell/describe/what/how
+            import re as _re
+            _explain_pattern = _re.compile(
+                r'\b(explain|describe|tell|what is|what are|how does|how do|summarize|'
+                r'summary|detail|overview|teach|define|definition|elaborate)\b',
+                _re.IGNORECASE,
+            )
+            wants_explanation = bool(_explain_pattern.search(query))
+
+            # Always fetch images (used by both paths)
             try:
-                images = await loop.run_in_executor(None, lambda: image_search(query, num_results=8))
+                images = await loop.run_in_executor(None, lambda: image_search(query, num_results=4))
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'content': f'Image search failed: {str(e)}'})}\n\n"
                 yield "data: [DONE]\n\n"
@@ -884,44 +946,104 @@ Do NOT list or describe the videos. Just one short intro sentence."""
             yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
             await asyncio.sleep(0)
 
-            from app.services.gemini_service import chat_stream
-            intro_prompt = f"""You are StudyBuddy. The user asked: "{query}"
+            from app.services.ai_service import chat_stream as _ai_stream
+
+            if wants_explanation:
+                # ── EXPLAIN + IMAGES PATH ─────────────────────────────────────
+                # Do a full web search for context, then stream a complete answer,
+                # then append the image grid at the end.
+                try:
+                    search_results = await loop.run_in_executor(None, lambda: web_search(query, num_results=6))
+                except Exception:
+                    search_results = []
+
+                search_context = build_search_context(search_results) if search_results else ""
+                # Build the source instruction outside the f-string (Python 3.10 forbids
+                # backslashes inside f-string expressions).
+                if search_context:
+                    source_instruction = "Use the following web search results as your primary source:\n\n" + search_context
+                else:
+                    source_instruction = "Use your knowledge to answer."
+                explain_prompt = f"""You are StudyBuddy, a helpful study assistant.
+The user asked: "{query}"
+Give a thorough explanation of the topic. Use markdown for formatting (headings, bullet points) where helpful.
+{source_instruction}
+At the very end of your response, add ONE short sentence like "Here are some images of [topic]:".
+Do NOT add citation numbers like [1], [2]."""
+
+                full_reply = ""
+                try:
+                    for chunk in _ai_stream(
+                        question=query,
+                        context_chunks=[],
+                        history=[],
+                        system_prompt_override=explain_prompt,
+                    ):
+                        full_reply += chunk
+                        yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
+                await asyncio.sleep(0)
+
+                # NOTE: user message already saved by the outer endpoint — do NOT save again
+                await save_message(
+                    conversation_id=conversation_id, user_id=user_id, role="assistant",
+                    content=json.dumps({
+                        "__type": "web_search_answer",
+                        "query": query,
+                        "answer": full_reply,
+                        "sources": search_results,
+                        "images": images,
+                        "videos": [],
+                    }),
+                )
+                yield "data: [DONE]\n\n"
+
+            else:
+                # ── PURE IMAGE PATH ───────────────────────────────────────────
+                # User just wants to see images — one-line intro + image grid.
+                intro_prompt = f"""You are StudyBuddy. The user asked: "{query}"
 Google Images results are being displayed directly below your response.
 Write ONE short sentence introducing what the user will see (e.g. "Here are some images of photosynthesis:").
 Do NOT describe the images. Do NOT list anything. Just one short intro sentence."""
 
-            full_reply = ""
-            try:
-                for chunk in chat_stream(
-                    question=query,
-                    context_chunks=[],
-                    history=[],
-                    system_prompt_override=intro_prompt,
-                ):
-                    full_reply += chunk
-                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                    await asyncio.sleep(0)
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                full_reply = ""
+                try:
+                    for chunk in _ai_stream(
+                        question=query,
+                        context_chunks=[],
+                        history=[],
+                        system_prompt_override=intro_prompt,
+                    ):
+                        full_reply += chunk
+                        yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
+                await asyncio.sleep(0)
+
+                # NOTE: user message already saved by the outer endpoint — do NOT save again
+                await save_message(
+                    conversation_id=conversation_id, user_id=user_id, role="assistant",
+                    content=json.dumps({
+                        "__type": "web_search_answer",
+                        "query": query,
+                        "answer": full_reply,
+                        "sources": [],
+                        "images": images,
+                        "videos": [],
+                    }),
+                )
                 yield "data: [DONE]\n\n"
-                return
-
-            yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
-            await asyncio.sleep(0)
-
-            await save_message(conversation_id=conversation_id, user_id=user_id, role="user", content=query)
-            await save_message(
-                conversation_id=conversation_id, user_id=user_id, role="assistant",
-                content=json.dumps({
-                    "__type": "web_search_answer",
-                    "query": query,
-                    "answer": full_reply,
-                    "sources": [],
-                    "images": images,
-                    "videos": [],
-                }),
-            )
-            yield "data: [DONE]\n\n"
 
         else:
             # ── TEXT PATH ─────────────────────────────────────────────────────
@@ -950,10 +1072,10 @@ STRICT RULES:
 
 {search_context}"""
 
-            from app.services.gemini_service import chat_stream
+            from app.services.ai_service import chat_stream as _ai_stream
             full_reply = ""
             try:
-                for chunk in chat_stream(
+                for chunk in _ai_stream(
                     question=query,
                     context_chunks=[],
                     history=readable_history,
@@ -970,7 +1092,7 @@ STRICT RULES:
             yield f"data: {json.dumps({'type': 'web_search_sources', 'data': results})}\n\n"
             await asyncio.sleep(0)
 
-            await save_message(conversation_id=conversation_id, user_id=user_id, role="user", content=query)
+            # NOTE: user message already saved by the outer endpoint — do NOT save again
             await save_message(
                 conversation_id=conversation_id, user_id=user_id, role="assistant",
                 content=json.dumps({

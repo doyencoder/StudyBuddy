@@ -3478,7 +3478,15 @@ const ChatPage = () => {
 
           if (parsed.type === "error") {
             toast.error(`AI error: ${parsed.content}`);
-            updateConv(convKey, (s) => ({ ...s, isTyping: false }));
+            // If no AI response was ever streamed, remove the orphaned user
+            // message so the chat doesn't show a prompt with no reply.
+            updateConv(convKey, (s) => ({
+              ...s,
+              isTyping: false,
+              messages: messageAdded
+                ? s.messages
+                : s.messages.filter((m) => m.id !== userMsgId),
+            }));
             break;
           }
 
