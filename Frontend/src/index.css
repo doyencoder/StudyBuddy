@@ -216,3 +216,8 @@ body.font-dyslexic {
 .animate-scale-in { animation: scale-in 0.4s ease-out forwards; }
 .animate-glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
 .animate-float { animation: float 3s ease-in-out infinite; }
+
+/* ── Dashboard uses Geist (matches V0 design) ─────────────────────────────── */
+.dashboard-font {
+  font-family: 'Geist Sans', 'GeistSans', 'Inter', system-ui, sans-serif;
+}
