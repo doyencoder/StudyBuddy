@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from app.models import StudyPlanRequest, StudyPlanResponse, WeekPlan
 import json
 from app.services.study_plan_service import create_study_plan
-from app.services.gemini_service import parse_study_plan_intent
+from app.services.ai_service import parse_study_plan_intent
 from app.services.cosmos_service import ensure_conversation, save_message, update_message_json
 
 router = APIRouter(prefix="/study_plans", tags=["Study Plans"])

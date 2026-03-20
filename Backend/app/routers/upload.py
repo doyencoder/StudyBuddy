@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse
 from app.models import UploadResponse
 from app.services.blob_service import upload_file_to_blob, generate_fresh_sas_url
 from app.services.doc_intelligence_service import extract_pages_from_url
-from app.services.gemini_service import embed_text
+from app.services.ai_service import embed_text
 from app.services.search_service import store_chunks, create_index_if_not_exists
 from app.utils.chunking import chunk_by_paragraphs
 from app.services.cosmos_service import ensure_conversation, save_message

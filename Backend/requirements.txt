@@ -32,6 +32,7 @@ google-auth-httplib2==0.3.0
 google-genai==1.47.0
 google-generativeai==0.8.6
 googleapis-common-protos==1.72.0
+openai==1.76.0
 grpcio==1.78.0
 grpcio-status==1.71.2
 h11==0.16.0
@@ -73,3 +74,4 @@ uvicorn==0.39.0
 watchfiles==1.1.1
 websockets==15.0.1
 yarl==1.22.0
+

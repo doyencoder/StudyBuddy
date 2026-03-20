@@ -14,7 +14,7 @@ from app.models import (
     QuizHistoryResponse,
     QuizHistoryItem,
 )
-from app.services.gemini_service import embed_query, generate_quiz_questions, batch_classify_weak_areas
+from app.services.ai_service import embed_query, generate_quiz_questions, batch_classify_weak_areas
 from app.services.search_service import (
     retrieve_chunks,
     retrieve_chunks_hybrid,

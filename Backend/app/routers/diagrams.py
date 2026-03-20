@@ -19,7 +19,7 @@ from app.models import (
     ImageGenerateRequest,
     ImageGenerateResponse,
 )
-from app.services.gemini_service import embed_query, generate_mermaid, generate_image
+from app.services.ai_service import embed_query, generate_mermaid, generate_image
 from app.services.search_service import retrieve_chunks
 from app.services.blob_service import upload_generated_image_to_blob, delete_blob_by_url
 import json

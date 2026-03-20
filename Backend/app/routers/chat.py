@@ -11,7 +11,7 @@ from typing import List
 from app.services.doc_intelligence_service import extract_text_from_url, extract_pages_from_url
 from app.utils.chunking import chunk_text, chunk_by_paragraphs
 from app.models import ChatRequest, ChatHistoryResponse, ChatMessage
-from app.services.gemini_service import (
+from app.services.ai_service import (
     embed_query, embed_text, chat_stream, infer_topic_from_messages,
     classify_intent,
     generate_quiz_questions,
