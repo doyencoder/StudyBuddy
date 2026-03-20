@@ -647,33 +647,174 @@ const DashboardPage = () => {
     [submittedQuizzes]);
 
   // ── Loading skeleton ──────────────────────────────────────────────────────────
-  if (loading) {
-    return (
-      <div className="p-4 md:p-8 overflow-y-auto h-full space-y-6">
-        <div className="space-y-2">
-          <div className="h-8 w-64 bg-secondary/60 rounded-xl animate-pulse" />
-          <div className="h-4 w-48 bg-secondary/40 rounded-lg animate-pulse" />
+if (loading) {
+  return (
+    <div className="dashboard-font p-4 md:p-8 overflow-y-auto h-full">
+      <div className="mx-auto max-w-7xl space-y-8 animate-pulse">
+        {/* Header skeleton */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div className="space-y-3">
+            <div className="h-5 w-28 rounded-full bg-secondary/50" />
+            <div className="h-10 w-72 rounded-xl bg-secondary/40" />
+            <div className="h-4 w-80 rounded-full bg-secondary/30" />
+          </div>
+
+          <div className="flex flex-col items-end gap-2">
+            <div className="h-8 w-20 rounded-full bg-secondary/40" />
+            <div className="h-4 w-28 rounded-full bg-secondary/30" />
+          </div>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+
+        {/* Stat cards skeleton */}
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-card border border-border rounded-2xl p-6 space-y-4 animate-pulse">
-              <div className="h-9 w-9 bg-secondary/60 rounded-xl" />
-              <div className="h-10 w-20 bg-secondary/80 rounded-lg" />
-              <div className="h-3 w-24 bg-secondary/40 rounded" />
+            <div
+              key={i}
+              className="relative h-[200px] overflow-hidden rounded-2xl border border-border bg-card p-6"
+            >
+              <div className="mb-10 flex items-start justify-between">
+                <div className="h-12 w-12 rounded-xl bg-secondary/40" />
+                <div className="h-4 w-4 rounded-full bg-secondary/30" />
+              </div>
+
+              <div className="h-11 w-24 rounded-lg bg-secondary/40" />
+              <div className="mt-3 h-4 w-32 rounded-full bg-secondary/30" />
+              <div className="mt-4 h-3 w-20 rounded-full bg-secondary/25" />
             </div>
           ))}
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="bg-card border border-border rounded-2xl p-6 space-y-4 animate-pulse">
-              <div className="h-5 w-36 bg-secondary/60 rounded-lg" />
-              <div className="h-[200px] w-full bg-secondary/30 rounded-xl" />
+        </section>
+
+        {/* Charts skeleton */}
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2 auto-rows-fr">
+          <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+            <div className="mb-6 space-y-2">
+              <div className="h-6 w-52 rounded-full bg-secondary/40" />
+              <div className="h-4 w-36 rounded-full bg-secondary/30" />
             </div>
-          ))}
-        </div>
+            <div className="h-[200px] w-full rounded-xl bg-secondary/20" />
+          </div>
+
+          <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+            <div className="mb-6 space-y-2">
+              <div className="h-6 w-52 rounded-full bg-secondary/40" />
+              <div className="h-4 w-36 rounded-full bg-secondary/30" />
+            </div>
+            <div className="flex flex-1 items-center justify-center gap-6">
+              <div className="h-[160px] w-[160px] rounded-full bg-secondary/20" />
+              <div className="flex flex-col gap-4">
+                <div className="h-4 w-44 rounded-full bg-secondary/25" />
+                <div className="h-4 w-44 rounded-full bg-secondary/25" />
+                <div className="h-4 w-44 rounded-full bg-secondary/25" />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Heatmap & goals skeleton */}
+        <section className="grid grid-cols-1 gap-4 lg:grid-cols-2 auto-rows-fr">
+          <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+            <div className="mb-4 space-y-2">
+              <div className="h-6 w-40 rounded-full bg-secondary/40" />
+              <div className="h-4 w-28 rounded-full bg-secondary/30" />
+            </div>
+
+            <div className="flex flex-1 items-start gap-3">
+              <div className="flex flex-col gap-[10px] pt-1 shrink-0">
+                {[...Array(7)].map((_, i) => (
+                  <div key={i} className="h-[18px] w-7 rounded-full bg-secondary/20" />
+                ))}
+              </div>
+
+              <div className="flex gap-[12px]">
+                {[...Array(16)].map((_, wi) => (
+                  <div key={wi} className="flex flex-col gap-[10px]">
+                    {[...Array(7)].map((_, di) => (
+                      <div
+                        key={di}
+                        className="h-[18px] w-[18px] rounded-[4px] bg-secondary/20"
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <div className="h-4 w-10 rounded-full bg-secondary/20" />
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="h-[18px] w-[18px] rounded-[4px] bg-secondary/25" />
+              ))}
+              <div className="h-4 w-10 rounded-full bg-secondary/20" />
+            </div>
+          </div>
+
+          <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+            <div className="mb-6 space-y-2">
+              <div className="h-6 w-44 rounded-full bg-secondary/40" />
+              <div className="h-4 w-36 rounded-full bg-secondary/30" />
+            </div>
+
+            <div className="flex flex-col gap-5">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="h-4 w-56 rounded-full bg-secondary/30" />
+                    <div className="h-4 w-10 rounded-full bg-secondary/25" />
+                  </div>
+                  <div className="h-2 w-full rounded-full bg-secondary/25" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Bottom row skeleton */}
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 auto-rows-fr">
+          <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+            <div className="mb-6 space-y-2">
+              <div className="h-6 w-44 rounded-full bg-secondary/40" />
+              <div className="h-4 w-32 rounded-full bg-secondary/30" />
+            </div>
+
+            <div className="flex flex-col gap-4">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="flex items-center justify-between rounded-xl border border-border bg-secondary/20 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-4 w-4 rounded-full bg-secondary/30" />
+                    <div className="space-y-2">
+                      <div className="h-4 w-40 rounded-full bg-secondary/30" />
+                      <div className="h-3 w-20 rounded-full bg-secondary/25" />
+                    </div>
+                  </div>
+                  <div className="h-8 w-20 rounded-lg bg-secondary/25" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+            <div className="mb-6 space-y-2">
+              <div className="h-6 w-40 rounded-full bg-secondary/40" />
+              <div className="h-4 w-28 rounded-full bg-secondary/30" />
+            </div>
+
+            <div className="flex flex-col">
+              {[...Array(5)].map((_, i) => (
+                <div key={i} className="flex items-center justify-between border-b border-border py-3 last:border-b-0">
+                  <div className="space-y-2">
+                    <div className="h-4 w-36 rounded-full bg-secondary/30" />
+                    <div className="h-3 w-20 rounded-full bg-secondary/25" />
+                  </div>
+                  <div className="h-4 w-10 rounded-full bg-secondary/30" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
       </div>
-    );
-  }
+    </div>
+  );
+}
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
