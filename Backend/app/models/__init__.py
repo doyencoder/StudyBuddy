@@ -29,6 +29,10 @@ class ChatRequest(BaseModel):
     attachments: Optional[List["ChatAttachment"]] = None
     # Set when user clicked an intent tile chip ("quiz", "flowchart", "mindmap", "study_plan", "image")
     intent_hint: Optional[str] = None
+    # Optional overrides for quiz retake — avoids encoding these in message text
+    # which caused the intent prefix to leak into quiz titles.
+    num_questions_override: Optional[int] = None
+    timer_seconds_override: Optional[int] = None
 
 
 class ChatMessage(BaseModel):

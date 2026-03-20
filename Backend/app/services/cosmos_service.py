@@ -469,6 +469,22 @@ async def list_quizzes(user_id: str) -> list:
         return results
 
 
+async def delete_quiz(quiz_id: str, user_id: str) -> bool:
+    """
+    Hard-deletes a quiz document from Cosmos DB.
+    Returns True if deleted, False if not found.
+    The quiz is permanently removed — no soft-delete.
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(QUIZZES_CONTAINER)
+        try:
+            await container.delete_item(item=quiz_id, partition_key=user_id)
+            return True
+        except CosmosResourceNotFoundError:
+            return False
+
+
 # ── Diagrams ──────────────────────────────────────────────────────────────────
 
 async def save_diagram(

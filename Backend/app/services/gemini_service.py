@@ -196,6 +196,7 @@ def chat_stream(
     question: str,
     context_chunks: List[str],
     history: List[dict] = None,
+    system_prompt_override: str = None,
     response_format: str = "paragraph",
     detail_level: str = "detailed",
     language_style: str = "formal",
@@ -213,10 +214,14 @@ def chat_stream(
     client = _get_client()
 
     # ── Build system prompt ───────────────────────────────────────────────────
-    if context_chunks:
-        # Chunks already contain [Page N] labels from _tag_chunks_with_pages()
-        # Join with separator — NO extra [Chunk N] wrapper needed
-        context_text = "\n\n---\n\n".join(context_chunks)
+    if system_prompt_override:
+        system_instruction = system_prompt_override
+        current_user_text = question
+    elif context_chunks:
+        context_text = "\n\n---\n\n".join(
+            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
+        )
+        # Inject RAG context into the current user turn only
         current_user_text = (
             f"Use the following context from the student's study material to answer the question.\n\n"
             f"CONTEXT:\n{context_text}\n\n"
@@ -915,7 +920,7 @@ CONTEXT:
 {history_text}
 - Current user message: "{message}"
 
-INTENT OPTIONS: chat | quiz | flowchart | mindmap | study_plan | image
+INTENT OPTIONS: chat | quiz | flowchart | mindmap | study_plan | image | web_search
 
 CLASSIFICATION RULES:
 1. If intent_hint is set → use it as the intent. NEVER override intent_hint.
@@ -924,7 +929,8 @@ CLASSIFICATION RULES:
 4. "image" = AI-generated concept picture (e.g. "show me an image of the heart", "generate a picture of mitosis").
 5. "flowchart" = step-by-step process diagram. "mindmap" = concept/topic overview diagram.
 6. "quiz" = test/MCQ request ("quiz me", "make a quiz", "10 questions on").
-7. Default to "chat" when no feature-specific intent is detectable.
+7. "web_search" = user explicitly asks to search the web, browse the internet, look something up online, or get current/latest news.
+8. Default to "chat" when no feature-specific intent is detectable.
 
 TOPIC EXTRACTION (priority order):
 1. Explicit topic in the current message (highest priority).

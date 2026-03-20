@@ -1,8 +1,14 @@
 import { useState, useEffect } from "react";
-import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle, Clock, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
 import { API_BASE } from "@/config/api";
 
 const USER_ID = "student-001";
@@ -72,6 +78,10 @@ const QuizzesPage = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError]     = useState<string | null>(null);
 
+  // ── Delete state ───────────────────────────────────────────────────────────
+  const [deleteTarget, setDeleteTarget] = useState<QuizSummary | null>(null);
+  const [isDeleting, setIsDeleting]     = useState(false);
+
   // ── Fetch lightweight list on mount ───────────────────────────────────────
   useEffect(() => {
     const fetchQuizzes = async () => {
@@ -121,7 +131,35 @@ const QuizzesPage = () => {
     }
   };
 
-  // ── Detail skeleton ────────────────────────────────────────────────────────
+  // ── Confirm and execute delete ────────────────────────────────────────────
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    // Optimistic removal — remove from list immediately so UI feels instant
+    setQuizzes((prev) => prev.filter((q) => q.id !== deleteTarget.id));
+    setDeleteTarget(null);
+    try {
+      const response = await fetch(
+        `${API_BASE}/quiz/${deleteTarget.id}?user_id=${USER_ID}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        // Rollback on failure — refetch the list so nothing is silently lost
+        const res = await fetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`);
+        if (res.ok) {
+          const data = await res.json();
+          setQuizzes(data.quizzes.map(mapSummary));
+        }
+        toast.error("Failed to delete quiz. Please try again.");
+      } else {
+        toast.success("Quiz deleted.");
+      }
+    } catch {
+      toast.error("Failed to delete quiz. Please try again.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
   if (detailLoading) {
     return (
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4 animate-pulse">
@@ -257,6 +295,30 @@ const QuizzesPage = () => {
   // ── List view ──────────────────────────────────────────────────────────────
   return (
     <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
+      {/* Delete confirmation dialog */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-foreground">Delete Quiz?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground">
+              This will permanently delete <span className="font-semibold text-foreground">"{deleteTarget?.topic}"</span> and all its results. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-border text-muted-foreground hover:text-foreground">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              disabled={isDeleting}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+            >
+              {isDeleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <div>
         <h1 className="text-2xl font-bold text-foreground">My Quizzes</h1>
         <p className="text-muted-foreground mt-1">Review your quiz history and performance.</p>
@@ -324,9 +386,19 @@ const QuizzesPage = () => {
                       <p className="text-xs text-muted-foreground">{quiz.date}</p>
                     </div>
                   </div>
-                  <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
-                    {quiz.difficulty}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
+                      {quiz.difficulty}
+                    </Badge>
+                    {/* Delete button — stopPropagation prevents card click from firing */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(quiz); }}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100"
+                      title="Delete quiz"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between">

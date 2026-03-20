@@ -20,7 +20,7 @@ from app.services.search_service import (
     retrieve_chunks_hybrid,
     conversation_has_documents,
 )
-from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message, update_message_json, patch_weak_area_labels
+from app.services.cosmos_service import save_quiz, get_quiz, submit_quiz, list_quizzes, ensure_conversation, save_message, update_message_json, patch_weak_area_labels, delete_quiz
 
 router = APIRouter(prefix="/quiz", tags=["Quiz"])
 
@@ -410,3 +410,24 @@ async def quiz_detail(quiz_id: str, user_id: str = Query(...)):
         "results":        results,
         "unanswered_indices": q.get("unanswered_indices", []),
     }
+
+# ── DELETE /quiz/{quiz_id} ────────────────────────────────────────────────────
+
+@router.delete("/{quiz_id}")
+async def quiz_delete(quiz_id: str, user_id: str = Query(...)):
+    """
+    Permanently deletes a quiz from Cosmos DB.
+    The quiz is hard-deleted — it will not appear in /quiz/history
+    on any subsequent fetch, including after a full page reload.
+
+    Returns 404 if the quiz does not exist or does not belong to the user.
+    """
+    try:
+        deleted = await delete_quiz(quiz_id=quiz_id, user_id=user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete quiz: {str(e)}")
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Quiz not found.")
+
+    return {"deleted": True, "quiz_id": quiz_id}

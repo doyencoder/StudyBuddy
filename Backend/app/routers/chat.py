@@ -42,6 +42,7 @@ from app.services.blob_service import upload_generated_image_to_blob
 from app.services.study_plan_service import create_study_plan
 from app.services.translator_service import translate_text
 from app.services.tts_service import synthesize_speech
+from app.services.web_search_service import web_search, build_search_context, image_search, is_image_query, youtube_search, is_video_query
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -246,10 +247,27 @@ async def chat_message(request: ChatRequest):
         if timer_match:
             n = int(timer_match.group(1))
             timer_val = n * 60 if "min" in timer_match.group(2) else n
+
+        # ── Override fields take priority (used by retake to avoid encoding
+        #    count/timer in the message text, which polluted quiz titles) ──────
+        if request.num_questions_override is not None:
+            num_q_match = None  # suppress regex result
+            num_questions_val = request.num_questions_override
+        else:
+            num_questions_val = int(num_q_match.group(1)) if num_q_match else 5
+
+        if request.timer_seconds_override is not None:
+            timer_val = request.timer_seconds_override
+
         # Topic is missing only when: no message text AND no file attached.
         # If a file is attached, topic will be inferred from the document.
+        # web_search is special: the message itself is the query — never ask for clarification.
         has_attachment = bool(request.filename or request.attachments)
-        no_topic = not request.message.strip() and not has_attachment
+        no_topic = (
+            not request.message.strip()
+            and not has_attachment
+            and request.intent_hint != "web_search"
+        )
 
         # ── Clean topic from raw message ───────────────────────────────────────
         # The chip already tells us the INTENT (quiz / flowchart / etc.), so we
@@ -260,25 +278,39 @@ async def chat_message(request: ChatRequest):
         # confusing Gemini and producing irrelevant / garbled questions.
         #
         # Strategy: remove common intent-verb phrases and prepositions that
-        # precede the actual topic, then trim whitespace.
+        # precede the actual topic, then trim whitespace. Apply TRAILING_STRIP
+        # in a loop to handle multiple trailing quantity/time phrases.
         _INTENT_STRIP = re.compile(
             r'^(please\s+)?(can\s+you\s+)?'
             r'(give\s+me\s+(a\s+)?|make\s+(a\s+|me\s+(a\s+)?)?|'
-            r'create\s+(a\s+)?|generate\s+(a\s+)?|show\s+me\s+(a\s+)?|build\s+(a\s+)?|'
+            r'create\s+(a\s+)?|generate\s+(a\s+)?(fresh\s+)?|show\s+me\s+(a\s+)?|build\s+(a\s+)?|'
             r'i\s+want\s+(a\s+)?|produce\s+(a\s+)?)?'
             r'(timed\s+)?(quiz\s+me\s+on|quiz|test|questions?|mcq|flowchart|flow\s+chart|mindmap|mind\s+map|'
             r'diagram|image\s+of|image|picture\s+of|picture|illustration|study\s+plan|plan)\s*'
-            r'(me\s+on\s+|about|on|for|of|regarding|related\s+to|covering)?\s*',
+            r'(me\s+on\s+|about|on\s*:?\s*|for|of|regarding|related\s+to|covering)?\s*',
             re.IGNORECASE,
         )
-        # Also strip trailing quantity phrases that got swept in ("5 questions", "10 mcqs")
+        # Strip trailing quantity/time phrases — loop until stable so that
+        # "rohit sharma, 3 questions, 60 seconds" strips both suffixes cleanly.
         _TRAILING_STRIP = re.compile(
-            r'\s*(with\s+)?\d+\s*(questions?|ques|qs\b|q\b|mcqs?|items?|mins?|minutes?|seconds?|secs?)\s*$',
+            r'[\s,]*(with\s+)?\d+\s*(questions?|ques|qs\b|q\b|mcqs?|items?|mins?|minutes?|seconds?|secs?)\s*$',
             re.IGNORECASE,
         )
         raw_msg = request.message.strip()
-        cleaned_topic = _INTENT_STRIP.sub("", raw_msg).strip()
-        cleaned_topic = _TRAILING_STRIP.sub("", cleaned_topic).strip()
+        # Loop intent strip to handle legacy doubled prefixes (e.g. old retake messages
+        # that inadvertently stacked "Generate a fresh quiz on:" twice).
+        cleaned_topic = raw_msg
+        while True:
+            stripped = _INTENT_STRIP.sub("", cleaned_topic).strip()
+            if stripped == cleaned_topic:
+                break
+            cleaned_topic = stripped
+        # Loop trailing strip until nothing more is removed
+        while True:
+            stripped = _TRAILING_STRIP.sub("", cleaned_topic).strip().rstrip(",").strip()
+            if stripped == cleaned_topic:
+                break
+            cleaned_topic = stripped
         # Fall back to full message only if stripping removed everything
         topic_val = cleaned_topic or raw_msg or ("[from_document]" if has_attachment else None)
 
@@ -286,7 +318,7 @@ async def chat_message(request: ChatRequest):
             "intent":               request.intent_hint,
             "topic":                topic_val,
             "topic_source":         "message" if request.message.strip() else ("document" if has_attachment else "null"),
-            "num_questions":        int(num_q_match.group(1)) if num_q_match else 5,
+            "num_questions":        num_questions_val,
             "timeline_weeks":       weeks_val,
             "hours_per_week":       None,
             "timer_seconds":        timer_val,
@@ -548,6 +580,16 @@ async def chat_message(request: ChatRequest):
                 yield evt
             return
 
+        if intent == "web_search":
+            async for evt in _dispatch_web_search(
+                user_id=request.user_id,
+                conversation_id=conversation_id,
+                query=request.message,
+                prior_messages=prior_messages,
+            ):
+                yield evt
+            return
+
         # ── Regular chat ──────────────────────────────────────────────────────
         full_reply = ""
         try:
@@ -760,6 +802,190 @@ async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, 
         yield "data: [DONE]\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': f'Study plan generation failed: {str(e)}'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+
+# ── _dispatch_web_search ──────────────────────────────────────────────────────
+
+async def _dispatch_web_search(user_id, conversation_id, query, prior_messages):
+    """
+    Routes to either image search or text search based on the query:
+
+    IMAGE PATH (query asks for pictures/photos/diagrams):
+      1. Calls SerpAPI google_images → returns thumbnail grid
+      2. Gemini writes a one-line intro ("Here are images of X:")
+      3. Emits web_search_images SSE event with image array
+      4. No text sources row (images speak for themselves)
+
+    TEXT PATH (factual / informational query):
+      1. Calls SerpAPI google organic results
+      2. Gemini streams a full answer from the snippets
+      3. Emits web_search_sources SSE event with source chips
+    """
+    try:
+        yield f"data: {json.dumps({'type': 'status', 'content': 'searching_web'})}\n\n"
+        await asyncio.sleep(0)
+
+        loop = asyncio.get_event_loop()
+
+        # ── Route: video / image / text query ────────────────────────────────
+        if is_video_query(query):
+            # ── VIDEO PATH ────────────────────────────────────────────────────
+            try:
+                videos = await loop.run_in_executor(None, lambda: youtube_search(query, num_results=6))
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': f'YouTube search failed: {str(e)}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+            await asyncio.sleep(0)
+
+            from app.services.gemini_service import chat_stream
+            intro_prompt = f"""You are StudyBuddy. The user asked: "{query}"
+YouTube video results are being displayed directly below your response.
+Write ONE short sentence introducing what the user will see (e.g. "Here are some YouTube videos about photosynthesis:").
+Do NOT list or describe the videos. Just one short intro sentence."""
+
+            full_reply = ""
+            try:
+                for chunk in chat_stream(question=query, context_chunks=[], history=[], system_prompt_override=intro_prompt):
+                    full_reply += chunk
+                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                    await asyncio.sleep(0)
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'web_search_videos', 'data': videos})}\n\n"
+            await asyncio.sleep(0)
+
+            await save_message(conversation_id=conversation_id, user_id=user_id, role="user", content=query)
+            await save_message(
+                conversation_id=conversation_id, user_id=user_id, role="assistant",
+                content=json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query, "answer": full_reply,
+                    "sources": [], "images": [], "videos": videos,
+                }),
+            )
+            yield "data: [DONE]\n\n"
+
+        elif is_image_query(query):
+            # ── IMAGE PATH ────────────────────────────────────────────────────
+            try:
+                images = await loop.run_in_executor(None, lambda: image_search(query, num_results=8))
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': f'Image search failed: {str(e)}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+            await asyncio.sleep(0)
+
+            from app.services.gemini_service import chat_stream
+            intro_prompt = f"""You are StudyBuddy. The user asked: "{query}"
+Google Images results are being displayed directly below your response.
+Write ONE short sentence introducing what the user will see (e.g. "Here are some images of photosynthesis:").
+Do NOT describe the images. Do NOT list anything. Just one short intro sentence."""
+
+            full_reply = ""
+            try:
+                for chunk in chat_stream(
+                    question=query,
+                    context_chunks=[],
+                    history=[],
+                    system_prompt_override=intro_prompt,
+                ):
+                    full_reply += chunk
+                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                    await asyncio.sleep(0)
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
+            await asyncio.sleep(0)
+
+            await save_message(conversation_id=conversation_id, user_id=user_id, role="user", content=query)
+            await save_message(
+                conversation_id=conversation_id, user_id=user_id, role="assistant",
+                content=json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query,
+                    "answer": full_reply,
+                    "sources": [],
+                    "images": images,
+                    "videos": [],
+                }),
+            )
+            yield "data: [DONE]\n\n"
+
+        else:
+            # ── TEXT PATH ─────────────────────────────────────────────────────
+            try:
+                results = await loop.run_in_executor(None, lambda: web_search(query, num_results=6))
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': f'Web search failed: {str(e)}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+            await asyncio.sleep(0)
+
+            search_context = build_search_context(results)
+            readable_history = []
+
+            system_prompt = f"""You are StudyBuddy, a helpful study assistant answering ONE specific question using live web search results.
+
+CURRENT QUESTION: "{query}"
+
+STRICT RULES:
+- Answer ONLY the question above. Do not address any other topics.
+- Base your answer exclusively on the search results below — do not use prior conversation context.
+- Do NOT add citation numbers like [1], [2], [3] anywhere in your answer. Sources are shown separately.
+- Be comprehensive yet concise. Use markdown for formatting where appropriate.
+
+{search_context}"""
+
+            from app.services.gemini_service import chat_stream
+            full_reply = ""
+            try:
+                for chunk in chat_stream(
+                    question=query,
+                    context_chunks=[],
+                    history=readable_history,
+                    system_prompt_override=system_prompt,
+                ):
+                    full_reply += chunk
+                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                    await asyncio.sleep(0)
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'web_search_sources', 'data': results})}\n\n"
+            await asyncio.sleep(0)
+
+            await save_message(conversation_id=conversation_id, user_id=user_id, role="user", content=query)
+            await save_message(
+                conversation_id=conversation_id, user_id=user_id, role="assistant",
+                content=json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query,
+                    "answer": full_reply,
+                    "sources": results,
+                    "images": [],
+                    "videos": [],
+                }),
+            )
+            yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'content': f'Web search dispatch failed: {str(e)}'})}\n\n"
         yield "data: [DONE]\n\n"
 
 

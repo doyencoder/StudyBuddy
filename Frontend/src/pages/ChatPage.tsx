@@ -16,6 +16,7 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
+  Search,
   Maximize2, ZoomIn, ZoomOut, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,11 @@ if (typeof document !== "undefined" && !document.getElementById("sb-welcome-anim
       from { opacity: 0; transform: translateY(12px); }
       to   { opacity: 1; transform: translateY(0); }
     }
+    @keyframes slideInRight {
+      from { transform: translateX(100%); opacity: 0; }
+      to   { transform: translateX(0);   opacity: 1; }
+    }
+    .animate-slide-in-right { animation: slideInRight 0.22s cubic-bezier(0.16,1,0.3,1) both; }
   `;
   document.head.appendChild(style);
 }
@@ -126,6 +132,32 @@ interface ImageData {
   created_at: string;
 }
 
+interface WebSearchSource {
+  title: string;
+  url: string;
+  snippet: string;
+  favicon: string;
+  source: string;
+}
+
+interface WebSearchImage {
+  thumbnail: string;
+  original: string;
+  title: string;
+  source: string;
+  link: string;
+}
+
+interface WebSearchVideo {
+  thumbnail: string;
+  title: string;
+  channel: string;
+  duration: string;
+  views: string;
+  url: string;
+  published: string;
+}
+
 interface Message {
   id: string;
   role: "user" | "assistant" | "quiz" | "diagram" | "study_plan" | "image";
@@ -138,6 +170,9 @@ interface Message {
   diagramData?: DiagramData;
   studyPlanData?: StudyPlanData;
   imageData?: ImageData;
+  webSearchSources?: WebSearchSource[]; // populated by web_search_sources SSE event
+  webSearchImages?: WebSearchImage[];   // populated by web_search_images SSE event
+  webSearchVideos?: WebSearchVideo[];   // populated by web_search_videos SSE event
   timestamp: Date;
 }
 
@@ -150,6 +185,7 @@ const TOOLS = [
   { label: "Generate Diagram", icon: GitBranch, intent: "image" },
   { label: "Generate Flowchart", icon: Network, intent: "flowchart" },
   { label: "Generate Mindmap", icon: Brain, intent: "mindmap" },
+  { label: "Search Web", icon: Search, intent: "web_search" },
 ];
 
 const INTENT_LABELS: Record<string, string> = {
@@ -158,6 +194,7 @@ const INTENT_LABELS: Record<string, string> = {
   image: "🎨 Generate Diagram",
   flowchart: "📊 Generate Flowchart",
   mindmap: "🧠 Generate Mindmap",
+  web_search: "🔍 Search Web",
 };
 
 const CHIP_PLACEHOLDERS: Record<string, string> = {
@@ -166,6 +203,7 @@ const CHIP_PLACEHOLDERS: Record<string, string> = {
   flowchart:  `e.g. "the water cycle" or "how TCP handshake works"`,
   mindmap:    `e.g. "World War 2" or "photosynthesis concepts"`,
   image:      `e.g. "mitosis" or "structure of a neuron"`,
+  web_search: `e.g. "latest AI research 2025" or "how does CRISPR work"`,
 };
 
 const INITIAL_MESSAGES: Message[] = [
@@ -185,6 +223,7 @@ interface ConvState {
   messages: Message[];
   isTyping: boolean;
   isReadingDoc: boolean;
+  isSearchingWeb: boolean;
   regeneratingMsgId: string | null;
   retakingMsgId: string | null;
 }
@@ -197,6 +236,7 @@ function defaultConvState(): ConvState {
     messages: INITIAL_MESSAGES,
     isTyping: false,
     isReadingDoc: false,
+    isSearchingWeb: false,
     regeneratingMsgId: null,
     retakingMsgId: null,
   };
@@ -645,6 +685,295 @@ const TimerRing = ({ seconds, total }: { seconds: number; total: number }) => {
           style={{ transition: "stroke-dasharray 0.95s linear, stroke 0.3s ease" }} />
       </svg>
       <span className="absolute text-[11px] font-bold tabular-nums leading-none" style={{ color: stroke }}>{label}</span>
+    </div>
+  );
+};
+
+// ── WebSearchSourceCards ──────────────────────────────────────────────────────
+// Mimics ChatGPT's source UI:
+//   • Inline: compact chips (favicon + domain) in a horizontal row + "Sources" button
+//   • Click "Sources" → fixed right-side panel slides in with full title + snippet per source
+const WebSearchSourcePanel = ({
+  sources,
+  onClose,
+}: {
+  sources: WebSearchSource[];
+  onClose: () => void;
+}) => {
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return createPortal(
+    <>
+      {/* Backdrop — clicking outside closes panel */}
+      <div
+        className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      {/* Side panel */}
+      <div className="fixed top-0 right-0 h-full w-80 max-w-[90vw] z-50 bg-card border-l border-border shadow-2xl flex flex-col animate-slide-in-right">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-border shrink-0">
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">Sources</span>
+            <span className="text-xs text-muted-foreground bg-secondary rounded-full px-1.5 py-0.5">
+              {sources.length}
+            </span>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Source list */}
+        <div className="flex-1 overflow-y-auto py-2">
+          {sources.map((s, i) => (
+            <a
+              key={i}
+              href={s.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex items-start gap-3 px-4 py-3 hover:bg-secondary/50 transition-colors border-b border-border/30 last:border-b-0"
+            >
+              {/* Citation number badge */}
+              <span className="shrink-0 w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex items-center justify-center mt-0.5">
+                {i + 1}
+              </span>
+
+              <div className="min-w-0 flex-1">
+                {/* Source name row */}
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <img
+                    src={s.favicon}
+                    alt=""
+                    className="w-3.5 h-3.5 rounded-sm shrink-0"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  />
+                  <span className="text-[11px] text-muted-foreground truncate">{s.source}</span>
+                </div>
+                {/* Title */}
+                <p className="text-xs font-medium text-foreground group-hover:text-primary line-clamp-2 leading-snug mb-1">
+                  {s.title}
+                </p>
+                {/* Snippet */}
+                {s.snippet && (
+                  <p className="text-[11px] text-muted-foreground/70 line-clamp-2 leading-relaxed">
+                    {s.snippet}
+                  </p>
+                )}
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
+    </>,
+    document.body
+  );
+};
+
+const WebSearchSourceCards = ({ sources }: { sources: WebSearchSource[] }) => {
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  if (!sources || sources.length === 0) return null;
+
+  const MAX_INLINE = 3;
+  const visible = showAll ? sources : sources.slice(0, MAX_INLINE);
+  const hiddenCount = sources.length - MAX_INLINE;
+
+  return (
+    <>
+      {panelOpen && (
+        <WebSearchSourcePanel sources={sources} onClose={() => setPanelOpen(false)} />
+      )}
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        {/* Compact domain chips */}
+        {visible.map((s, i) => (
+          <a
+            key={i}
+            href={s.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={s.title}
+            className="flex items-center gap-1.5 bg-secondary/50 hover:bg-secondary border border-border/40 hover:border-primary/30 rounded-full px-2.5 py-1 transition-all duration-150 max-w-[140px]"
+          >
+            <img
+              src={s.favicon}
+              alt=""
+              className="w-3 h-3 rounded-sm shrink-0"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+            <span className="text-[11px] text-muted-foreground truncate">{s.source}</span>
+          </a>
+        ))}
+
+        {/* Show more inline chips */}
+        {!showAll && hiddenCount > 0 && (
+          <button
+            onClick={() => setShowAll(true)}
+            className="text-[11px] text-muted-foreground/70 hover:text-primary px-2 py-1 rounded-full hover:bg-secondary/50 transition-colors"
+          >
+            +{hiddenCount} more
+          </button>
+        )}
+
+        {/* Sources panel trigger */}
+        <button
+          onClick={() => setPanelOpen(true)}
+          className="flex items-center gap-1 text-[11px] text-muted-foreground/70 hover:text-primary px-2.5 py-1 rounded-full hover:bg-secondary/50 border border-transparent hover:border-primary/20 transition-all ml-auto"
+        >
+          <Search className="w-3 h-3" />
+          Sources
+        </button>
+      </div>
+    </>
+  );
+};
+
+// ── WebSearchImageGrid ────────────────────────────────────────────────────────
+// Horizontal scrollable strip (like ChatGPT) — fixed height, source link on hover
+const WebSearchImageGrid = ({ images }: { images: WebSearchImage[] }) => {
+  const [lightbox, setLightbox] = useState<WebSearchImage | null>(null);
+  if (!images || images.length === 0) return null;
+
+  return (
+    <>
+      {/* Lightbox */}
+      {lightbox && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative max-w-3xl max-h-[85vh] flex flex-col items-center gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute -top-10 right-0 text-white/70 hover:text-white transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <img
+              src={lightbox.original}
+              alt={lightbox.title}
+              className="max-h-[72vh] max-w-full rounded-xl object-contain shadow-2xl"
+              onError={(e) => { (e.target as HTMLImageElement).src = lightbox.thumbnail; }}
+            />
+            {/* Source link in lightbox */}
+            <a
+              href={lightbox.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors"
+            >
+              <Globe className="w-3 h-3" />
+              <span className="truncate max-w-xs">{lightbox.source}</span>
+            </a>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Horizontal scrollable strip — fixed height, no wrap */}
+      <div className="mt-3 flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent" style={{ height: "156px" }}>
+        {images.map((img, i) => (
+          <div key={i} className="relative shrink-0 group" style={{ width: "140px", height: "140px" }}>
+            {/* Image button — opens lightbox */}
+            <button
+              onClick={() => setLightbox(img)}
+              className="w-full h-full rounded-xl overflow-hidden border border-border/30 hover:border-primary/40 transition-all duration-150 focus:outline-none"
+              title={img.title}
+            >
+              <img
+                src={img.thumbnail}
+                alt={img.title}
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                loading="lazy"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+              />
+            </button>
+            {/* Source link chip — appears on hover at bottom of image */}
+            <a
+              href={img.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="absolute bottom-1.5 left-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 flex items-center gap-1 bg-black/70 backdrop-blur-sm rounded-md px-1.5 py-0.5"
+              title={`View on ${img.source}`}
+            >
+              <Globe className="w-2.5 h-2.5 text-white/80 shrink-0" />
+              <span className="text-[9px] text-white/90 truncate leading-tight">{img.source}</span>
+            </a>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
+// ── WebSearchVideoCards ───────────────────────────────────────────────────────
+// Horizontal scrollable strip of YouTube video cards
+const WebSearchVideoCards = ({ videos }: { videos: WebSearchVideo[] }) => {
+  if (!videos || videos.length === 0) return null;
+
+  return (
+    <div className="mt-3 flex gap-3 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+      {videos.map((v, i) => (
+        <a
+          key={i}
+          href={v.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 group flex flex-col rounded-xl overflow-hidden border border-border/30 hover:border-primary/40 bg-secondary/30 hover:bg-secondary/60 transition-all duration-150"
+          style={{ width: "220px" }}
+        >
+          {/* Thumbnail */}
+          <div className="relative w-full overflow-hidden" style={{ height: "124px" }}>
+            <img
+              src={v.thumbnail}
+              alt={v.title}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+              loading="lazy"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+            {/* Duration badge */}
+            {v.duration && (
+              <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
+                {v.duration}
+              </span>
+            )}
+            {/* Play icon overlay */}
+            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
+              <div className="w-10 h-10 rounded-full bg-red-600/90 flex items-center justify-center">
+                <svg className="w-4 h-4 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+          {/* Info */}
+          <div className="p-2.5 flex flex-col gap-1">
+            <p className="text-xs font-medium text-foreground line-clamp-2 leading-snug group-hover:text-primary transition-colors">
+              {v.title}
+            </p>
+            <p className="text-[10px] text-muted-foreground/70 truncate">{v.channel}</p>
+            {(v.views || v.published) && (
+              <p className="text-[9px] text-muted-foreground/50">
+                {[v.views, v.published].filter(Boolean).join(" · ")}
+              </p>
+            )}
+          </div>
+        </a>
+      ))}
     </div>
   );
 };
@@ -1866,7 +2195,7 @@ const ChatPage = () => {
   // Derived: the state for whichever conversation is currently on screen.
   // Priority: real conv ID > active pending stream > blank new-chat slot.
   const viewKey = activeConvId ?? pendingConvKey ?? NEW_CONV_KEY;
-  const { messages, isTyping, isReadingDoc, regeneratingMsgId, retakingMsgId } =
+  const { messages, isTyping, isReadingDoc, isSearchingWeb, regeneratingMsgId, retakingMsgId } =
     convStates[viewKey] ?? defaultConvState();
 
   // Convenience alias so the rest of the code can still read `conversationId`
@@ -1987,6 +2316,7 @@ const ChatPage = () => {
         messages: [],
         isTyping: false,
         isReadingDoc: false,
+        isSearchingWeb: false,
         regeneratingMsgId: null,
         retakingMsgId: null,
       },
@@ -2088,6 +2418,19 @@ const ChatPage = () => {
             };
           }
 
+          // Reconstruct web search answers: restore answer text + source cards + image grid from Cosmos
+          if (parsed?.__type === "web_search_answer") {
+            return {
+              id: m.id,
+              role: "assistant" as const,
+              content: parsed.answer ?? "",
+              webSearchSources: parsed.sources?.length > 0 ? parsed.sources : undefined,
+              webSearchImages: parsed.images?.length > 0 ? parsed.images : undefined,
+              webSearchVideos: parsed.videos?.length > 0 ? parsed.videos : undefined,
+              timestamp: new Date(m.timestamp),
+            };
+          }
+
           // Detect user messages with attachments and/or intent chip
           if (
             m.role === "user" &&
@@ -2174,6 +2517,7 @@ const ChatPage = () => {
               : INITIAL_MESSAGES,
           isTyping: false,
           isReadingDoc: false,
+          isSearchingWeb: false,
           regeneratingMsgId: null,
           retakingMsgId: null,
         }));
@@ -2496,14 +2840,11 @@ const ChatPage = () => {
     const convId = activeConvId;
     updateConv(convId, (s) => ({ ...s, retakingMsgId: msgId }));
 
-    // Bug 3 fix: encode the original question count and timer into the message
-    // text so the backend regex parser picks them up and doesn't fall back to
-    // defaults (5 questions, no timer).
-    const numQ = originalQuizData.num_questions ?? originalQuizData.questions.length;
-    const timerPart = originalQuizData.timer_seconds
-      ? `, ${originalQuizData.timer_seconds} seconds`
-      : "";
-    const retakeMessage = `Generate a fresh quiz on: ${originalQuizData.topic}, ${numQ} questions${timerPart}`;
+    // Bug: quiz titles fix — send the raw topic as the message (no "Generate a fresh quiz on:" prefix),
+    // and pass count + timer as dedicated override fields so the backend never needs to regex-parse
+    // them from text. The old approach embedded them in message text which broke the _INTENT_STRIP
+    // regex and polluted quiz titles with "Generate a fresh quiz on: Generate a fresh quiz on: ..."
+    const retakeMessage = originalQuizData.topic;
     try {
       const response = await fetch(`${API_BASE}/chat/message`, {
         method: "POST",
@@ -2513,6 +2854,8 @@ const ChatPage = () => {
           conversation_id: convId,
           message: retakeMessage,
           intent_hint: "quiz",
+          num_questions_override: originalQuizData.num_questions ?? originalQuizData.questions.length,
+          timer_seconds_override: originalQuizData.timer_seconds ?? null,
         }),
       });
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -2537,7 +2880,7 @@ const ChatPage = () => {
               submitted: false,
               fun_fact: d.fun_fact ?? "",
               timer_seconds: originalQuizData.timer_seconds ?? null,
-              num_questions: numQ,
+              num_questions: originalQuizData.num_questions ?? originalQuizData.questions.length,
             };
             // Push new quiz into versions array on the same card — no new message
             updateConv(convId, (s) => ({
@@ -2998,6 +3341,7 @@ const ChatPage = () => {
             updateConv(convKey, (s) => ({
               ...s,
               isReadingDoc: parsed.content === "reading_document",
+              isSearchingWeb: parsed.content === "searching_web",
             }));
           }
 
@@ -3086,6 +3430,50 @@ const ChatPage = () => {
               ],
             }));
             messageAdded = true;
+          }
+
+          // web_search_sources: attach citation cards to the streamed assistant message
+          // IMPORTANT: flush RAF-buffered text first so aiMsgId exists in messages
+          if (parsed.type === "web_search_sources" && parsed.data) {
+            flushPending();
+            updateConv(convKey, (s) => ({
+              ...s,
+              isSearchingWeb: false,
+              messages: s.messages.map((m) =>
+                m.id === aiMsgId
+                  ? { ...m, webSearchSources: parsed.data as WebSearchSource[] }
+                  : m
+              ),
+            }));
+          }
+
+          // web_search_images: attach image grid to the streamed assistant message
+          // IMPORTANT: flush RAF-buffered text first so aiMsgId exists in messages
+          if (parsed.type === "web_search_images" && parsed.data) {
+            flushPending();
+            updateConv(convKey, (s) => ({
+              ...s,
+              isSearchingWeb: false,
+              messages: s.messages.map((m) =>
+                m.id === aiMsgId
+                  ? { ...m, webSearchImages: parsed.data as WebSearchImage[] }
+                  : m
+              ),
+            }));
+          }
+
+          // web_search_videos: attach YouTube video cards (flush first same reason)
+          if (parsed.type === "web_search_videos" && parsed.data) {
+            flushPending();
+            updateConv(convKey, (s) => ({
+              ...s,
+              isSearchingWeb: false,
+              messages: s.messages.map((m) =>
+                m.id === aiMsgId
+                  ? { ...m, webSearchVideos: parsed.data as WebSearchVideo[] }
+                  : m
+              ),
+            }));
           }
 
           if (parsed.type === "error") {
@@ -3589,6 +3977,21 @@ const ChatPage = () => {
                         )}
                       </div>
                     )}
+
+                    {/* Web search source cards — rendered below the answer bubble */}
+                    {msg.role === "assistant" && msg.webSearchSources && msg.webSearchSources.length > 0 && (
+                      <WebSearchSourceCards sources={msg.webSearchSources} />
+                    )}
+
+                    {/* Web search image grid — rendered below the answer bubble */}
+                    {msg.role === "assistant" && msg.webSearchImages && msg.webSearchImages.length > 0 && (
+                      <WebSearchImageGrid images={msg.webSearchImages} />
+                    )}
+
+                    {/* YouTube video cards — rendered below the answer bubble */}
+                    {msg.role === "assistant" && msg.webSearchVideos && msg.webSearchVideos.length > 0 && (
+                      <WebSearchVideoCards videos={msg.webSearchVideos} />
+                    )}
                   </>
                 )}
 
@@ -3721,6 +4124,12 @@ const ChatPage = () => {
             {isReadingDoc && (
               <span className="text-xs text-muted-foreground/60 italic">
                 Reading document...
+              </span>
+            )}
+            {isSearchingWeb && (
+              <span className="text-xs text-muted-foreground/60 italic flex items-center gap-1.5">
+                <Search className="w-3 h-3 animate-pulse" />
+                Searching the web...
               </span>
             )}
           </div>
