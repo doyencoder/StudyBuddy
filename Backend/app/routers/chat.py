@@ -3,11 +3,13 @@ import io
 import json
 import re
 import uuid
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
-
+from app.services.doc_intelligence_service import extract_text_from_url, extract_pages_from_url
+from app.utils.chunking import chunk_text, chunk_by_paragraphs
 from app.models import ChatRequest, ChatHistoryResponse, ChatMessage
 from app.services.gemini_service import (
     embed_query, embed_text, chat_stream, infer_topic_from_messages,
@@ -19,9 +21,8 @@ from app.services.gemini_service import (
 from app.services.search_service import (
     retrieve_chunks, retrieve_chunks_hybrid, store_chunks,
     create_index_if_not_exists, conversation_has_documents,
+    retrieve_chunks_smart,
 )
-from app.services.doc_intelligence_service import extract_text_from_url
-from app.utils.chunking import chunk_text
 from app.services.cosmos_service import (
     create_conversation,
     save_message,
@@ -68,6 +69,26 @@ class RegenerateRequest(BaseModel):
     message_id: str  # ID of the assistant message to regenerate
 
 
+# ── Helper: tag chunks with page numbers so Gemini knows which page ───────────
+
+def _tag_chunks_with_pages(chunk_tuples: list) -> list:
+    """
+    Takes list of (text, page_number) tuples from retrieve_chunks_smart().
+    Sorts by page number so Gemini receives content in document order,
+    then prefixes each chunk with [Page N] so Gemini knows which page it came from.
+
+    Returns plain list of tagged strings ready to pass to chat_stream().
+    """
+    if not chunk_tuples:
+        return []
+    # Sort by page number — ensures Q1 comes before Q2, page 3 before page 5, etc.
+    sorted_tuples = sorted(
+        [item for item in chunk_tuples if isinstance(item, tuple)],
+        key=lambda x: x[1]  # x[1] is page_number
+    )
+    return [f"[Page {page_num}]\n{text}" for text, page_num in sorted_tuples]
+
+
 # ── POST /chat/regenerate ─────────────────────────────────────────────────────
 
 @router.post("/regenerate")
@@ -81,11 +102,9 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
       - Injects an explicit variation instruction so Gemini produces a different
         answer instead of repeating the previous one verbatim.
     """
-    # ── Fetch full conversation history ───────────────────────────────────────
     conv_data = await get_conversation_full(request.conversation_id)
     all_messages = conv_data["messages"]
 
-    # ── Locate the target assistant message ───────────────────────────────────
     target_idx = next(
         (i for i, m in enumerate(all_messages) if m.get("id") == request.message_id),
         None,
@@ -93,7 +112,6 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
     if target_idx is None:
         raise HTTPException(status_code=404, detail="Message not found in conversation.")
 
-    # ── Find the preceding user message ───────────────────────────────────────
     prior_messages = all_messages[:target_idx]
     preceding_user = next(
         (m for m in reversed(prior_messages) if m.get("role") == "user"), None
@@ -101,7 +119,6 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
     if not preceding_user:
         raise HTTPException(status_code=400, detail="No preceding user message found.")
 
-    # Unwrap structured user content (chip / attachment JSON wrapper) to plain text
     user_text = preceding_user.get("content", "")
     if user_text.startswith('{"__type":'):
         try:
@@ -110,10 +127,8 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
         except Exception:
             pass
 
-    # ── Previous assistant response (used to request variation) ───────────────
     prev_response = all_messages[target_idx].get("content", "")
 
-    # ── RAG retrieval (same thresholds as regular chat) ───────────────────────
     q_text = user_text or "key concepts"
     context_chunks: list = []
     try:
@@ -144,12 +159,9 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
     except Exception:
         pass  # RAG failure is non-fatal — fall back to general knowledge
 
-    # ── SSE stream ────────────────────────────────────────────────────────────
     async def regen_stream():
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': request.conversation_id})}\n\n"
 
-        # Build the question with an explicit variation instruction so Gemini
-        # produces a meaningfully different answer, not a verbatim repeat.
         if prev_response.strip():
             regen_question = (
                 f"{user_text}\n\n"
@@ -166,16 +178,15 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
             for chunk in chat_stream(
                 question=regen_question,
                 context_chunks=context_chunks,
-                history=prior_messages,  # history up to (not including) the target msg
+                history=prior_messages,
             ):
                 full_reply += chunk
                 yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                await asyncio.sleep(0)  # flush TCP buffer after every token
+                await asyncio.sleep(0)
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
 
-        # ── Replace existing message in Cosmos (NO new record created) ────────
         await update_message_content(
             conversation_id=request.conversation_id,
             user_id=request.user_id,
@@ -202,7 +213,7 @@ async def chat_message(request: ChatRequest):
     2a. [OPT 1] If intent_hint set (chip click) → skip Gemini classify call entirely.
     2b. [OPT 2] Otherwise → run classify_intent + embed_query IN PARALLEL on thread pool.
     3. Clarification → streams question + stores pending_intent in Cosmos.
-    4. [OPT 3] Skip Azure AI Search RAG calls when no documents exist in conversation.
+    4. [OPT 3] Smart retrieval: page filter, hybrid search, dynamic top_k, skip when scope=general.
     5. Feature intent → dispatches to quiz / diagram / image / study_plan.
     6. Default → existing RAG chat stream.
     """
@@ -217,21 +228,15 @@ async def chat_message(request: ChatRequest):
     prior_messages = conv_data["messages"]
     pending_intent = conv_data["pending_intent"]
 
-    # ── OPTIMISATION 1: Skip classify_intent when chip already tells us intent ─
-    # When intent_hint is set the user clicked a + menu chip — intent is 100%
-    # known before any AI call. No reason to spend ~2000ms confirming it.
-    # ── OPTIMISATION 2: Parallelise classify_intent + embed_query ─────────────
-    # On the natural language path both calls are fully independent.
-    # Running them on thread-pool workers via asyncio.gather() saves ~400ms.
     pre_embedding = None  # may be pre-computed by Opt 2 below
 
     if request.intent_hint:
         # Intent known from chip — build classification dict with no Gemini call
         msg_lower = (request.message or "").lower()
-        num_q_match = re.search(r'(\d+)\s*(questions?|ques|qs\b|q\b|mcqs?)', msg_lower)
+        num_q_match = re.search(r"(\d+)\s*(questions?|ques|qs\b|q\b|mcqs?)", msg_lower)
         # Parse weeks for study_plan chip: "4 weeks", "2 months" → weeks. Default 4.
         weeks_match = re.search(r'(\d+)\s*(week|month)', msg_lower)
-        weeks_val = 4  # default — never ask the user for weeks
+        weeks_val = 4
         if weeks_match:
             n = int(weeks_match.group(1))
             weeks_val = n * 4 if "month" in weeks_match.group(2) else n
@@ -291,11 +296,16 @@ async def chat_message(request: ChatRequest):
                 f"{request.intent_hint.replace('_', ' ')}?"
                 if no_topic else None
             ),
+            # default values for new fields when chip path is used
+            "page_numbers": [], "keywords": [], "query_type": "broad",
+            "top_k_hint": "medium", "scope": "topic",
+            "response_format": "paragraph", "detail_level": "detailed",
+            "language_style": "formal", "is_comparison": False,
+            "entities": [], "needs_document": True,
+            "is_followup": False, "refers_to_previous": False,
         }
     else:
         # Natural language path — run classify + embed concurrently on thread pool
-        # Both are synchronous/blocking; run_in_executor pushes each to a worker
-        # thread so they execute in parallel instead of sequentially.
         loop = asyncio.get_event_loop()
         classification, pre_embedding = await asyncio.gather(
             loop.run_in_executor(None, lambda: classify_intent(
@@ -318,6 +328,23 @@ async def chat_message(request: ChatRequest):
     timer_seconds       = classification.get("timer_seconds")
     needs_clarification = classification["needs_clarification"]
     clarification_q     = classification.get("clarification_question") or "Could you tell me more?"
+
+    # new classification fields
+    page_numbers        = classification.get("page_numbers") or []
+    keywords            = classification.get("keywords") or []
+    query_type          = classification.get("query_type") or "broad"
+    top_k_hint          = classification.get("top_k_hint") or "medium"
+    scope               = classification.get("scope") or "topic"
+    response_format     = classification.get("response_format") or "paragraph"
+    detail_level        = classification.get("detail_level") or "detailed"
+    language_style      = classification.get("language_style") or "formal"
+    is_comparison       = classification.get("is_comparison") or False
+    entities            = classification.get("entities") or []
+    needs_document      = classification.get("needs_document", True)
+    is_followup         = classification.get("is_followup") or False
+
+    print(f"[DEBUG] page_numbers={page_numbers}, scope={scope}, top_k_hint={top_k_hint}, query_type={query_type}, needs_document={needs_document}")
+    print(f"[DEBUG] response_format={response_format}, detail_level={detail_level}, language_style={language_style}")
 
     # "[from_document]" is sentinel meaning "derive topic from uploaded material"
     topic = "" if topic_raw == "[from_document]" else topic_raw
@@ -390,39 +417,50 @@ async def chat_message(request: ChatRequest):
         pending_intent_update=None,
     )
 
-    # ── OPTIMISATION 3: Skip RAG entirely when no documents exist ─────────────
-    # conversation_has_documents() is a lightweight Azure Search call (top=1).
-    # When no docs are uploaded both retrieve_chunks calls are guaranteed to
-    # return [] — wasting ~600ms on two round-trips. Skip them entirely.
-    # NOTE: This does NOT affect conversation memory — that comes from Cosmos
-    # (prior_messages above), not from Azure Search.
+    # ── Smart retrieval ───────────────────────────────────────────────────────
+    # - scope=general / needs_document=False → skip Azure Search entirely
+    # - page_numbers present → filter to specific pages only
+    # - keywords present → use hybrid (BM25 + vector)
+    # - scope=document → top_k=50 to fetch all chunks
+    # NOTE: When file is uploaded inline with message, retrieval runs AGAIN
+    # inside event_stream() AFTER chunks are stored. This pre-stream retrieval
+    # only hits when docs were uploaded in a previous message.
     q_text = request.message or topic or "key concepts"
     query_embedding = None
     context_chunks  = []
     try:
-        has_docs = conversation_has_documents(
-            user_id=request.user_id,
-            conversation_id=conversation_id,
-        )
-        if has_docs:
-            # Use pre_embedding from Opt 2 parallelisation if available,
-            # otherwise compute now (chip path didn't pre-compute one).
-            query_embedding = pre_embedding if pre_embedding is not None else embed_query(q_text)
-            context_chunks = retrieve_chunks(
-                query_embedding=query_embedding,
+        skip_retrieval = (scope == "general") or (not needs_document)
+        print(f"[DEBUG-RETRIEVAL] page_numbers={page_numbers}, scope={scope}, skip={skip_retrieval}, use_hybrid={bool(keywords)}")
+
+        if not skip_retrieval:
+            has_docs = conversation_has_documents(
                 user_id=request.user_id,
                 conversation_id=conversation_id,
-                top_k=5,
             )
-            if not context_chunks:
-                context_chunks = retrieve_chunks(
+            if has_docs:
+                top_k_map = {"low": 3, "medium": 7, "high": 20}
+                top_k = top_k_map.get(top_k_hint, 7)
+
+                if scope == "document":
+                    top_k = 50  # fetch all chunks for full-document queries
+
+                query_embedding = pre_embedding if pre_embedding is not None else embed_query(q_text)
+
+                use_hybrid = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
+                context_chunks = retrieve_chunks_smart(
                     query_embedding=query_embedding,
                     user_id=request.user_id,
                     conversation_id=conversation_id,
-                    top_k=5,
-                    score_threshold=0.5,
+                    keywords=keywords if use_hybrid else None,
+                    page_numbers=page_numbers if page_numbers else None,
+                    top_k=top_k,
+                    use_hybrid=use_hybrid,
                 )
-        # else: no docs → skip embed + both retrieval calls (~600ms saved)
+                print(f"[DEBUG-RETRIEVAL] pre-stream chunks retrieved: {len(context_chunks)}")
+
+                # Sort by page number and tag each chunk with [Page N]
+                context_chunks = _tag_chunks_with_pages(context_chunks)
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG retrieval failed: {str(e)}")
 
@@ -432,27 +470,58 @@ async def chat_message(request: ChatRequest):
 
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id})}\n\n"
 
-        # Blob RAG ingestion (when a file is sent with this message)
+        # Blob RAG ingestion (when a file is sent WITH this message)
+        # Runs INSIDE the stream so retrieval happens AFTER chunks are stored —
+        # this is critical for page filtering to work on the first message with a file.
         if request.blob_url and request.filename:
             try:
                 yield f"data: {json.dumps({'type': 'status', 'content': 'reading_document'})}\n\n"
-                extracted = extract_text_from_url(request.blob_url)
-                if extracted.strip():
-                    chunks  = chunk_text(extracted)
-                    embeddings = [embed_text(c) for c in chunks]
+                loop = asyncio.get_event_loop()
+                pages = await loop.run_in_executor(None, lambda: extract_pages_from_url(request.blob_url))
+                if pages:
+                    chunk_dicts         = chunk_by_paragraphs(pages)
+                    chunks              = [c["text"] for c in chunk_dicts]
+                    page_numbers_stored = [c["page_number"] for c in chunk_dicts]
+
+                    semaphore = asyncio.Semaphore(5)
+                    async def embed_one(c):
+                        async with semaphore:
+                            return await asyncio.get_event_loop().run_in_executor(None, lambda: embed_text(c))
+                    embeddings = await asyncio.gather(*[embed_one(c) for c in chunks])
+
                     create_index_if_not_exists()
                     fid = str(uuid.uuid4())
                     store_chunks(
                         chunks=chunks, embeddings=embeddings,
                         user_id=request.user_id, conversation_id=conversation_id,
                         file_id=fid, filename=request.filename,
+                        page_numbers=page_numbers_stored,
                     )
+
+                    # ── Retrieval AFTER store so page filter actually finds chunks ──
+                    total = len(chunks)
+                    tk = total if scope == "document" else min(total, 20)
                     q_emb = embed_query(q_text)
-                    active_chunks = retrieve_chunks(q_emb, request.user_id, conversation_id, top_k=5)
-                    if not active_chunks:
-                        active_chunks = retrieve_chunks(q_emb, request.user_id, conversation_id, top_k=5, score_threshold=0.5)
+                    use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
+                    active_chunks = retrieve_chunks_smart(
+                        query_embedding=q_emb,
+                        user_id=request.user_id,
+                        conversation_id=conversation_id,
+                        keywords=keywords if use_hybrid_post else None,
+                        page_numbers=page_numbers if page_numbers else None,
+                        top_k=tk,
+                        use_hybrid=use_hybrid_post,
+                    )
+                    print(f"[DEBUG-RETRIEVAL] post-ingestion chunks retrieved: {len(active_chunks)}")
+
+                    # Sort by page and tag each chunk with [Page N]
+                    active_chunks = _tag_chunks_with_pages(active_chunks)
+
                 yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
-            except Exception:
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] Ingestion failed: {e}")
+                traceback.print_exc()
                 yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
 
         # ── Dispatch ─────────────────────────────────────────────────────────
@@ -480,20 +549,19 @@ async def chat_message(request: ChatRequest):
             return
 
         # ── Regular chat ──────────────────────────────────────────────────────
-        # asyncio.sleep(0) after each chunk yields control back to the event loop,
-        # forcing Uvicorn to flush its send buffer immediately instead of batching
-        # multiple chunks together. Without this, the sync chat_stream() generator
-        # blocks the event loop and causes tokens to arrive in bursts on the frontend.
         full_reply = ""
         try:
             for chunk in chat_stream(
                 question=request.message,
                 context_chunks=active_chunks,
                 history=prior_messages,
+                response_format=response_format,
+                detail_level=detail_level,
+                language_style=language_style,
             ):
                 full_reply += chunk
                 yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                await asyncio.sleep(0)  # ← flush: yield event loop control after every token
+                await asyncio.sleep(0)  # flush: yield event loop control after every token
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
@@ -504,9 +572,6 @@ async def chat_message(request: ChatRequest):
             role="assistant",
             content=full_reply,
         )
-        # Emit the real Cosmos message ID so the frontend can update its local
-        # UUID to match. Without this, clicking Regenerate immediately after
-        # sending would pass a frontend-only UUID that Cosmos has never seen.
         yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved['id']})}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -586,9 +651,6 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
     try:
         effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
 
-        # ── Extract layout hint from the original user message ────────────────
-        # classify_intent() strips keywords like "circular"/"horizontal" when
-        # extracting topic — so we scan the raw message here to recover them.
         msg_lower = (raw_message or "").lower()
         if any(w in msg_lower for w in ("circular", "circle", "cyclic", "cycle diagram", "loop diagram")):
             layout_hint = "circular"
@@ -597,9 +659,9 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         elif any(w in msg_lower for w in ("vertical", "top down", "td", "top to bottom")):
             layout_hint = "vertical"
         elif any(w in msg_lower for w in ("diagonal",)):
-            layout_hint = "horizontal"  # closest Mermaid equivalent
+            layout_hint = "horizontal"
         else:
-            layout_hint = None  # let gemini_service decide intelligently
+            layout_hint = None
 
         chunks = []
         try:

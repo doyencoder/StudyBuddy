@@ -3,10 +3,11 @@ gemini_service.py
 Wraps all Gemini API calls using the new google.genai SDK:
   - embed_text()   → embed a document chunk
   - embed_query()  → embed a user query
-  - chat_stream()  → stream a RAG chat response from Gemini 1.5 Flash
+  - chat_stream()  → stream a RAG chat response from Gemini 2.5 Flash
   - generate_quiz_questions() → generate MCQ quiz
   - generate_mermaid()        → generate Mermaid diagram
   - generate_study_plan()     → generate structured study plan JSON
+  - classify_intent()         → extended 22-field intent + retrieval classification
 """
 
 import os
@@ -50,7 +51,11 @@ CRITICAL — Answer discipline:
 CRITICAL — Conversation memory rule:
 The conversation history may contain facts the student has shared (e.g. name, favourite players, preferences).
 Treat these as established facts — BUT only recall them when the student is DIRECTLY and EXPLICITLY asking about them.
-NEVER proactively mention prior personal facts or prior topics when answering an unrelated question."""
+NEVER proactively mention prior personal facts or prior topics when answering an unrelated question.
+
+CRITICAL — Page references:
+Each context excerpt is labelled with [Page N]. When referring to document content, always say "Page N" not "Chunk N".
+Never use the word "chunk" in your response."""
 
 # When no uploaded material exists or nothing relevant was found
 SYSTEM_PROMPT_GENERAL = """You are StudyBuddy, an educational AI assistant.
@@ -92,33 +97,26 @@ def _sanitize_and_parse_json(raw: str) -> any:
     """
     import re
 
-    # Strip markdown fences Gemini sometimes adds despite instructions
     text = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
     text = re.sub(r"```\s*$", "", text.strip())
     text = text.strip()
 
-    # First attempt — plain parse (fast path, works most of the time)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Second attempt — strip invalid control chars (\x00-\x08, \x0b, \x0c, \x0e-\x1f)
-    # We keep \t (\x09), \n (\x0a), \r (\x0d) which are legal in JSON outside strings.
     cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Third attempt — replace literal newlines/tabs INSIDE string literals only,
-    # converting them to their escaped equivalents so the JSON becomes valid.
     def _escape_inner(m):
         s = m.group(0)
         s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
         return s
 
-    # Match JSON string values (simplified — handles the common Gemini output pattern)
     escaped = re.sub(r'"(?:[^"\\]|\\.)*"', _escape_inner, cleaned)
     return json.loads(escaped)
 
@@ -198,25 +196,27 @@ def chat_stream(
     question: str,
     context_chunks: List[str],
     history: List[dict] = None,
+    response_format: str = "paragraph",
+    detail_level: str = "detailed",
+    language_style: str = "formal",
 ) -> Generator[str, None, None]:
     """
     Streams a Gemini reply with full multi-turn conversation memory.
 
-    history: list of prior messages [{\"role\": \"user\"|\"assistant\", \"content\": str}]
-             fetched from Cosmos BEFORE the current user message was saved.
-             If None or empty, behaves exactly as before (single-turn).
-
-    The current user message (question) is always the final turn in the
-    contents list so Gemini sees the complete conversation in order.
+    context_chunks: list of pre-tagged strings like "[Page N]\nchunk text..."
+                    — already sorted by page number by _tag_chunks_with_pages()
+    history:        list of prior messages [{"role": "user"|"assistant", "content": str}]
+                    fetched from Cosmos BEFORE the current user message was saved.
+    response_format, detail_level, language_style: from classify_intent() — injected
+                    into system prompt as RESPONSE STYLE instructions.
     """
     client = _get_client()
 
     # ── Build system prompt ───────────────────────────────────────────────────
     if context_chunks:
-        context_text = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-        )
-        # Inject RAG context into the current user turn only
+        # Chunks already contain [Page N] labels from _tag_chunks_with_pages()
+        # Join with separator — NO extra [Chunk N] wrapper needed
+        context_text = "\n\n---\n\n".join(context_chunks)
         current_user_text = (
             f"Use the following context from the student's study material to answer the question.\n\n"
             f"CONTEXT:\n{context_text}\n\n"
@@ -237,6 +237,33 @@ def chat_stream(
             "(e.g. 'Photosynthesis ek process hai jisme plants sunlight use karte hain'). "
             "Match the user's exact language style."
         )
+
+    # ── Inject response format instructions ──────────────────────────────────
+    format_map = {
+        "bullet":      "Respond using bullet points.",
+        "steps":       "Respond as numbered steps.",
+        "table":       "Respond using a markdown table where appropriate.",
+        "formula":     "Focus on formulas and equations. Use LaTeX notation.",
+        "short_notes": "Respond as concise short notes with headers.",
+        "paragraph":   "Respond in clear paragraphs.",
+    }
+    detail_map = {
+        "brief":    "Keep the response short and to the point.",
+        "detailed": "Give a thorough and complete explanation.",
+        "eli5":     "Explain simply as if to a beginner with no prior knowledge.",
+    }
+    lang_map = {
+        "hinglish": "The student is writing in Hinglish (Hindi+English mix). Reply in Hinglish too.",
+        "casual":   "Use a casual, friendly tone.",
+        "formal":   "",
+    }
+    format_instruction = format_map.get(response_format, "")
+    detail_instruction = detail_map.get(detail_level, "")
+    lang_instruction   = lang_map.get(language_style, "")
+
+    extra = " ".join(filter(None, [format_instruction, detail_instruction, lang_instruction]))
+    if extra:
+        system_instruction += f"\n\nRESPONSE STYLE: {extra}"
 
     # ── Build multi-turn contents list ────────────────────────────────────────
     # Strategy: "anchor + recent" windowing to prevent context being lost.
@@ -264,13 +291,11 @@ def chat_stream(
     contents = []
 
     if history:
-        # Filter out rich-card messages entirely — they are not readable prose
         readable = [m for m in history if not _is_rich_card(m)]
 
         anchor  = readable[:ANCHOR_COUNT]
         recent  = readable[-RECENT_COUNT:] if len(readable) > ANCHOR_COUNT else []
 
-        # Combine, preserving chronological order and deduplicating by index
         anchor_indices = set(range(len(anchor)))
         recent_start   = max(0, len(readable) - RECENT_COUNT)
         seen = set(anchor_indices)
@@ -322,7 +347,6 @@ def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions
     client = _get_client()
 
     if context_chunks:
-        # ── Document-based mode ───────────────────────────────────────────────
         context_text = "\n\n---\n\n".join(
             f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
         )
@@ -341,7 +365,7 @@ STRICT RULES:
 - Only one option is correct
 - Base every question strictly on the provided material — no outside knowledge
 - The explanation must reference the material directly
-- NEVER mention chunk numbers in any explanation (do NOT write "Chunk 1", "Chunk 2", "(Chunk 1 and 2)" etc.) — explain the answer in plain language only
+- NEVER mention chunk numbers in any explanation (do NOT write "Chunk 1", "Chunk 2", etc.) — explain the answer in plain language only
 
 Also generate exactly 1 fun_fact: a single interesting, surprising fact related to this topic.
 It should be engaging and educational — something a student would find genuinely interesting.
@@ -361,7 +385,6 @@ The object must have exactly these two fields:
 }}"""
 
     else:
-        # ── General knowledge mode ────────────────────────────────────────────
         if not topic:
             topic = "general knowledge"
 
@@ -403,11 +426,9 @@ The object must have exactly these two fields:
 
     response = _call_with_retry(_generate)
 
-    import json
     raw = response.text.strip()
     parsed = _sanitize_and_parse_json(raw)
 
-    # Support both old array format (fallback) and new object format
     if isinstance(parsed, list):
         raw_questions = parsed
         fun_fact = "Did you know? The brain strengthens memories during sleep — a great reason to rest after studying!"
@@ -435,13 +456,6 @@ def batch_classify_weak_areas(questions: list) -> list:
 
     Used by POST /quiz/preclassify — runs while the student is attempting
     the quiz so labels are already cached in Cosmos by submit time.
-
-    Args:
-        questions: list of quiz question dicts (must have "question" key)
-
-    Returns:
-        list of short topic label strings, same length as questions.
-        Falls back to "General" for any that can't be classified.
     """
     client = _get_client()
 
@@ -475,7 +489,6 @@ No extra text. No markdown. No code fences. Example:
         labels = _sanitize_and_parse_json(response.text.strip())
         if isinstance(labels, list) and len(labels) == len(questions):
             return [str(l).strip() or "General" for l in labels]
-        # Wrong length — pad or trim to match
         result = [str(l).strip() or "General" for l in labels]
         while len(result) < len(questions):
             result.append("General")
@@ -489,16 +502,12 @@ def infer_topic_from_messages(messages: list) -> str:
     Given a list of recent chat messages [{"role": ..., "content": ...}],
     asks Gemini to extract a clean 3-5 word topic that the student was
     studying. Falls back to "General Topic" if inference fails.
-
-    Called by POST /chat/infer-topic when user requests a diagram
-    mid-conversation without specifying a topic.
     """
     client = _get_client()
 
-    # Build a readable conversation summary (cap content length to save tokens)
     conversation_text = "\n".join(
         f"{'Student' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:300]}"
-        for m in messages[-8:]   # last 8 messages max
+        for m in messages[-8:]
         if m.get("role") in ("user", "assistant")
     )
 
@@ -521,7 +530,6 @@ TOPIC:"""
     response = _call_with_retry(_generate)
     topic = response.text.strip().strip('"').strip("'").strip(".")
 
-    # Sanity check — if Gemini returned something too long or empty, fallback
     if not topic or len(topic) > 60:
         return "General Topic"
 
@@ -532,9 +540,6 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
     """
     Generates a real AI image for a study topic using FLUX.1-schnell
     via the Hugging Face Inference API.
-    If context_chunks are provided, the prompt is grounded in the student's
-    uploaded material. Otherwise falls back to general knowledge.
-
     Returns raw PNG bytes ready to be uploaded to Azure Blob Storage.
     """
     import requests
@@ -546,10 +551,10 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
     if context_chunks:
         context_summary = " ".join(context_chunks[:3])[:400]
         prompt = (
-        f"Detailed anatomical and scientific illustration of: {topic}. "
-        f"Based on these study notes: {context_summary}. "
-        "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
-    )
+            f"Detailed anatomical and scientific illustration of: {topic}. "
+            f"Based on these study notes: {context_summary}. "
+            "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
+        )
     else:
         prompt = (
             f"Detailed anatomical and scientific illustration of: {topic}. "
@@ -565,11 +570,10 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
             "Content-Type": "application/json",
         },
         json={"inputs": prompt},
-        timeout=120,  # first request can take 20-30s if model is cold
+        timeout=120,
     )
 
     if response.status_code == 503:
-        # Model is loading — wait and retry once
         import time
         time.sleep(30)
         response = requests.post(
@@ -587,7 +591,6 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
             f"Hugging Face API error {response.status_code}: {response.text[:300]}"
         )
 
-    # HF returns raw image bytes directly
     return response.content
 
 
@@ -595,7 +598,7 @@ def generate_mermaid(
     topic: str,
     diagram_type: str,
     context_chunks: List[str],
-    layout_hint: str = None,  # "circular" | "horizontal" | "vertical" | None
+    layout_hint: str = None,
 ) -> str:
     """
     Generates valid Mermaid syntax for a flowchart or concept diagram.
@@ -619,10 +622,6 @@ def generate_mermaid(
         else "No specific material uploaded. Use your general knowledge about this topic."
     )
 
-    # ── Auto-detect circular topics when no explicit hint given ───────────────
-    # Many scientific/biological processes are inherently cyclic — detect them
-    # so the diagram automatically uses a circular layout even without the user
-    # typing "circular".
     _CIRCULAR_KEYWORDS = {
         "cycle", "cycling", "circular", "krebs", "calvin", "citric acid",
         "water cycle", "carbon cycle", "nitrogen cycle", "rock cycle",
@@ -642,7 +641,7 @@ def generate_mermaid(
 - Represent the cycle by connecting the LAST node back to the FIRST node with an arrow, forming a closed loop.
 - Use 4 to 8 nodes that represent the key stages of the cycle in order.
 - Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
-- Node shapes: rounded A(Label) for all cycle stages  — rounded shapes look best in cycles
+- Node shapes: rounded A(Label) for all cycle stages
 - Arrows: A --> B  and the last node must have an arrow pointing back to A to close the loop
 - CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
 - Keep labels short: 2-4 words maximum per node
@@ -676,7 +675,6 @@ flowchart LR
 - No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
 
         else:
-            # Auto mode — Gemini picks the best direction based on content
             format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
 - DIRECTION: Intelligently pick the best layout for this specific topic:
   * "flowchart LR" (left-to-right) — use for linear sequential processes with 5+ steps and few/no decision branches. DEFAULT choice for most topics.
@@ -728,7 +726,6 @@ STUDY MATERIAL CONTEXT:
 
     raw = _call_with_retry(_generate)
 
-    # Strip any accidental markdown fences Gemini might add
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
@@ -750,7 +747,6 @@ def generate_study_plan(
     Generates a structured study plan as JSON using Gemini.
     If context_chunks provided: grounds the plan in uploaded material.
     If empty: uses general knowledge.
-    Returns parsed dict with title, start_date, end_date, weeks[], summary.
     """
     client = _get_client()
 
@@ -822,7 +818,6 @@ def parse_study_plan_intent(raw_input: str) -> dict:
     """
     Uses Gemini to parse a free-form study plan request into structured fields.
     Returns {"topic": str|null, "timeline_weeks": int|null, "hours_per_week": int|null}.
-    Handles inputs like "7", "machine learning for 6 weeks", "3 months of calculus", etc.
     """
     client = _get_client()
 
@@ -879,26 +874,11 @@ def classify_intent(
     Single Gemini call that classifies the user's intent and extracts all
     parameters needed to dispatch to the right service.
 
-    intent_hint  : set when user explicitly clicked a tile chip ("quiz",
-                   "flowchart", "mindmap", "study_plan", "image")
-    pending_intent: set in Cosmos when the previous turn ended with a
-                   clarification question — auto-inherited as intent.
-
-    Returns:
-    {
-        "intent": "chat|quiz|flowchart|mindmap|study_plan|image",
-        "topic":  str | "[from_document]" | None,
-        "topic_source": "message|filename|history|document|null",
-        "num_questions": 5,
-        "timeline_weeks": None,
-        "hours_per_week": None,
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
+    Returns 22 structured fields covering intent, retrieval strategy,
+    response format preferences, and context awareness signals.
     """
     client = _get_client()
 
-    # Build a readable history summary (skip rich-card JSON blobs)
     readable = [
         m for m in (conversation_history or [])[-6:]
         if m.get("role") in ("user", "assistant")
@@ -980,8 +960,41 @@ Return EXACTLY this JSON — all fields required:
   "hours_per_week": null,
   "timer_seconds": null,
   "needs_clarification": false,
-  "clarification_question": null
-}}"""
+  "clarification_question": null,
+
+  "page_numbers": [],
+  "keywords": [],
+  "query_type": "broad",
+  "top_k_hint": "medium",
+  "scope": "topic",
+
+  "response_format": "paragraph",
+  "detail_level": "detailed",
+  "language_style": "formal",
+
+  "is_comparison": false,
+  "entities": [],
+  "needs_document": true,
+
+  "is_followup": false,
+  "refers_to_previous": false
+}}
+
+FIELD RULES:
+- page_numbers: list of integers if user mentions "page 5", "3rd page" etc. Empty list if not mentioned.
+- keywords: exact technical terms from the message e.g. ["VSWR", "TE10", "Double Minima Method"]. Empty if none.
+- query_type: "specific" (single fact/formula) | "broad" (explain a topic) | "page" (about a specific page) | "formula" (asking for equations) | "definition" (what is X) | "comparison" (difference between X and Y) | "list" (list all X) | "summary" (summarise document/page)
+- top_k_hint: "low" (1-3 chunks, specific questions) | "medium" (4-7 chunks, explanations) | "high" (8-15 chunks, summaries/broad topics)
+- scope: "page" (search only mentioned pages) | "topic" (search by topic) | "document" (need whole document) | "general" (answerable from general knowledge, skip document search)
+- response_format: "paragraph" | "bullet" | "steps" | "table" | "formula" | "short_notes"
+- detail_level: "brief" (short notes, in short) | "detailed" (explain in detail) | "eli5" (explain simply, beginner)
+- language_style: "formal" (english) | "casual" (relaxed english) | "hinglish" (mixed hindi+english detected from user message)
+- is_comparison: true if asking difference between two or more things
+- entities: ALL technical terms and concepts mentioned, broader than keywords
+- needs_document: false if question can be answered from general knowledge without the uploaded document
+- is_followup: true if message is "explain that again", "more detail", "what about X", continuing previous topic
+- refers_to_previous: true if referencing something specific said earlier in conversation
+"""
 
     def _generate():
         return client.models.generate_content(
@@ -997,15 +1010,33 @@ Return EXACTLY this JSON — all fields required:
         response = _call_with_retry(_generate)
         result = _sanitize_and_parse_json(response.text.strip())
         return {
-            "intent":               result.get("intent", "chat"),
-            "topic":                result.get("topic"),
-            "topic_source":         result.get("topic_source"),
-            "num_questions":        int(result.get("num_questions") or 5),
-            "timeline_weeks":       result.get("timeline_weeks"),
-            "hours_per_week":       result.get("hours_per_week"),
+            # existing fields
+            "intent":                   result.get("intent", "chat"),
+            "topic":                    result.get("topic"),
+            "topic_source":             result.get("topic_source"),
+            "num_questions":            int(result.get("num_questions") or 5),
+            "timeline_weeks":           result.get("timeline_weeks"),
+            "hours_per_week":           result.get("hours_per_week"),
             "timer_seconds":        result.get("timer_seconds"),
-            "needs_clarification":  bool(result.get("needs_clarification", False)),
-            "clarification_question": result.get("clarification_question"),
+            "needs_clarification":      bool(result.get("needs_clarification", False)),
+            "clarification_question":   result.get("clarification_question"),
+            # group 1 — retrieval
+            "page_numbers":             result.get("page_numbers") or [],
+            "keywords":                 result.get("keywords") or [],
+            "query_type":               result.get("query_type") or "broad",
+            "top_k_hint":               result.get("top_k_hint") or "medium",
+            "scope":                    result.get("scope") or "topic",
+            # group 2 — response format
+            "response_format":          result.get("response_format") or "paragraph",
+            "detail_level":             result.get("detail_level") or "detailed",
+            "language_style":           result.get("language_style") or "formal",
+            # group 3 — query understanding
+            "is_comparison":            bool(result.get("is_comparison", False)),
+            "entities":                 result.get("entities") or [],
+            "needs_document":           bool(result.get("needs_document", True)),
+            # group 4 — context awareness
+            "is_followup":              bool(result.get("is_followup", False)),
+            "refers_to_previous":       bool(result.get("refers_to_previous", False)),
         }
     except Exception as e:
         print(f"[classify_intent] Failed ({e}), falling back to chat.")
@@ -1014,6 +1045,12 @@ Return EXACTLY this JSON — all fields required:
             "num_questions": 5, "timeline_weeks": None, "hours_per_week": None,
             "timer_seconds": None,
             "needs_clarification": False, "clarification_question": None,
+            "page_numbers": [], "keywords": [], "query_type": "broad",
+            "top_k_hint": "medium", "scope": "topic",
+            "response_format": "paragraph", "detail_level": "detailed",
+            "language_style": "formal", "is_comparison": False,
+            "entities": [], "needs_document": True,
+            "is_followup": False, "refers_to_previous": False,
         }
 
 

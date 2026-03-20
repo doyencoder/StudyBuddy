@@ -2,23 +2,28 @@
 upload.py
 POST /upload/file  — Full RAG ingestion pipeline:
   1. Upload file to Azure Blob Storage
-  2. Extract text via Azure Document Intelligence
-  3. Chunk the text (500 words, 50 overlap)
-  4. Embed each chunk with Gemini gemini-embedding-001
-  5. Store embeddings in Azure AI Search (scoped to conversation_id)
+  2. Extract text per page via Azure Document Intelligence (extract_pages_from_url)
+  3. Chunk by paragraph + page boundaries (chunk_by_paragraphs)
+  4. Embed each chunk with Gemini gemini-embedding-001 — PARALLEL via asyncio.gather
+  5. Store embeddings in Azure AI Search (scoped to conversation_id, with page_number)
 """
+
+import asyncio
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from app.models import UploadResponse
 from app.services.blob_service import upload_file_to_blob, generate_fresh_sas_url
-from app.services.doc_intelligence_service import extract_text_from_url
+from app.services.doc_intelligence_service import extract_pages_from_url
 from app.services.gemini_service import embed_text
 from app.services.search_service import store_chunks, create_index_if_not_exists
-from app.utils.chunking import chunk_text
+from app.utils.chunking import chunk_by_paragraphs
 from app.services.cosmos_service import ensure_conversation, save_message
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
+
+ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "webp", "tiff"}
+MAX_FILE_SIZE_MB = 20
 
 
 @router.get("/view-file")
@@ -71,9 +76,6 @@ async def upload_blob_only(
         "filename": filename,
     }
 
-ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "webp", "tiff"}
-MAX_FILE_SIZE_MB = 20
-
 
 @router.post("/file", response_model=UploadResponse)
 async def upload_file(
@@ -119,25 +121,35 @@ async def upload_file(
     blob_url = blob_info["blob_url"]
     file_id  = blob_info["file_id"]
 
-    # ── Step 2: Extract text via Document Intelligence ────────────────────────
+    # ── Step 2: Extract text per page via Document Intelligence ──────────────
+    # run_in_executor prevents blocking the async event loop during OCR
     try:
-        extracted_text = extract_text_from_url(blob_url)
+        loop = asyncio.get_event_loop()
+        pages = await loop.run_in_executor(None, lambda: extract_pages_from_url(blob_url))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
 
-    if not extracted_text.strip():
+    if not pages:
         raise HTTPException(
             status_code=422,
             detail="No text could be extracted from the uploaded file. "
                    "Please check the file is readable.",
         )
 
-    # ── Step 3: Chunk the text ────────────────────────────────────────────────
-    chunks = chunk_text(extracted_text)
+    # ── Step 3: Chunk by paragraphs (page-boundary aware) ────────────────────
+    chunk_dicts  = chunk_by_paragraphs(pages)
+    chunks       = [c["text"] for c in chunk_dicts]
+    page_numbers = [c["page_number"] for c in chunk_dicts]
 
-    # ── Step 4: Embed each chunk with Gemini ─────────────────────────────────
+    # ── Step 4: Embed each chunk with Gemini — PARALLEL ──────────────────────
+    # asyncio.gather() runs all embed calls concurrently on a thread pool.
+    # Semaphore(5) caps concurrent calls to avoid Gemini rate limits.
     try:
-        embeddings = [embed_text(chunk) for chunk in chunks]
+        semaphore = asyncio.Semaphore(5)
+        async def embed_one(c):
+            async with semaphore:
+                return await asyncio.get_event_loop().run_in_executor(None, lambda: embed_text(c))
+        embeddings = await asyncio.gather(*[embed_one(c) for c in chunks])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
 
@@ -151,34 +163,35 @@ async def upload_file(
             conversation_id=conversation_id,
             file_id=file_id,
             filename=filename,
+            page_numbers=page_numbers,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search indexing failed: {str(e)}")
 
-    # ── Persist upload confirmation to Cosmos so it survives page refresh ───
+    # ── Persist upload confirmation to Cosmos so it survives page refresh ────
     if conversation_id and conversation_id != "no-conversation":
         try:
             await ensure_conversation(
                 user_id=user_id,
                 conversation_id=conversation_id,
-                title="",  # let chat.py title logic use first user message naturally
+                title="",
             )
             await save_message(
                 conversation_id=conversation_id,
                 user_id=user_id,
                 role="assistant",
                 content=(
-                    f"📎 I\'ve processed **{filename}** ({len(chunks)} chunks indexed). "
+                    f"📎 I've processed **{filename}** ({len(chunks)} chunks indexed). "
                     f"You can now ask me questions about it, or generate a flowchart / diagram from it!"
                 ),
             )
         except Exception:
-            pass  # Non-critical — don\'t fail the upload over a Cosmos write
+            pass  # Non-critical — don't fail the upload over a Cosmos write
 
     return UploadResponse(
         file_id=file_id,
         filename=filename,
         blob_url=blob_url,
         chunks_stored=len(chunks),
-        message=f"Successfully processed \'{filename}\' — {len(chunks)} chunks indexed.",
+        message=f"Successfully processed '{filename}' — {len(chunks)} chunks indexed.",
     )
