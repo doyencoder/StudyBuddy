@@ -70,13 +70,18 @@ function StatCard({ label, value, suffix, change, trend, icon: Icon, index }: St
       <div
         className="relative overflow-hidden rounded-2xl border p-6 cursor-default"
         style={{
-          background: "linear-gradient(145deg, hsl(var(--card)) 0%, hsl(var(--muted)) 100%)",
-          borderColor: hovered ? "hsl(var(--primary) / 0.45)" : "hsl(var(--border))",
-          transform: hovered ? "translateY(-3px) scale(1.015)" : "translateY(0) scale(1)",
+          background: "linear-gradient(145deg, hsl(var(--card) / 0.7), hsl(var(--card) / 0.4))",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+
+          border: "1px solid hsl(var(--border) / 0.5)",
+
+          transform: hovered ? "translateY(-3px) scale(1.015)" : "translateY(0)",
           boxShadow: hovered
-            ? "0 8px 32px -8px hsl(var(--primary) / 0.25), 0 0 0 1px hsl(var(--primary) / 0.1)"
-            : "0 1px 8px -4px hsl(0 0% 0% / 0.4)",
-          transition: "transform 250ms cubic-bezier(0.34,1.56,0.64,1), box-shadow 250ms ease, border-color 200ms ease",
+            ? "0 10px 40px -10px hsl(var(--primary) / 0.25)"
+            : "0 4px 20px -8px hsl(0 0% 0% / 0.3)",
+
+          transition: "all 250ms ease",
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -100,7 +105,7 @@ function StatCard({ label, value, suffix, change, trend, icon: Icon, index }: St
           <div
             className="rounded-xl p-2.5"
             style={{
-              background: hovered ? "hsl(var(--primary) / 0.18)" : "hsl(var(--secondary))",
+              background: hovered ? "hsl(var(--primary) / 0.15)" : "hsl(var(--muted))",
               transition: "background 200ms ease",
             }}
           >
