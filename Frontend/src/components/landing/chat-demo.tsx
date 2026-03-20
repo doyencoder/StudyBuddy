@@ -11,8 +11,6 @@ type AnimationState =
   | "user-sent"
   | "thinking"
   | "ai-response"
-  | "action-buttons"
-  | "complete"
 
 export function ChatDemo() {
   const navigate = useNavigate()
@@ -73,8 +71,6 @@ export function ChatDemo() {
       { state: "user-sent",      delay: 4800  },
       { state: "thinking",       delay: 5200  },
       { state: "ai-response",    delay: 5800  },
-      { state: "action-buttons", delay: 11200 },
-      { state: "complete",       delay: 12000 },
     ]
     const timeouts: ReturnType<typeof setTimeout>[] = []
     sequence.forEach(({ state, delay }) => {
@@ -116,7 +112,6 @@ export function ChatDemo() {
   const showUserBubble    = demoActive && ["user-sent","thinking","ai-response","action-buttons","complete"].includes(state)
   const showThinking      = demoActive && state === "thinking"
   const showAiResponse    = demoActive && ["ai-response","action-buttons","complete"].includes(state)
-  const showActionButtons = demoActive && ["action-buttons","complete"].includes(state)
   const isDemoTyping      = demoActive && state === "user-typing"
 
   // What shows in the input box
@@ -127,7 +122,7 @@ export function ChatDemo() {
     <div ref={containerRef} className="w-full relative">
       {/* Glow */}
       <div
-        className="absolute -inset-4 rounded-3xl blur-3xl opacity-60 pointer-events-none"
+        className="absolute -inset-4 rounded-3xl blur-3xl opacity-60 pointer-events-none dark:block hidden"
         style={{ background: "radial-gradient(ellipse at 50% 80%, #4B6BF5 0%, #3b82f6 30%, #6366f1 55%, transparent 75%)" }}
       />
 
@@ -202,22 +197,6 @@ export function ChatDemo() {
               </p>
             </div>
           </div>
-
-          {/* Action buttons */}
-          <div className={cn(
-            "flex flex-wrap gap-2 pb-2 transition-all duration-500",
-            showActionButtons ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
-          )}>
-            <Button variant="outline" size="sm" className="text-xs h-7 px-3 border-border/50 hover:bg-card/70">
-              Generate Quiz
-            </Button>
-            <Button size="sm" className="text-xs h-7 px-3 bg-emerald-500 hover:bg-emerald-600 text-black font-medium">
-              Create Flashcards
-            </Button>
-            <Button variant="outline" size="sm" className="text-xs h-7 px-3 border-border/50 hover:bg-card/70">
-              Mind Map
-            </Button>
-          </div>
         </div>
 
         {/* Input box — real + functional */}
@@ -243,7 +222,7 @@ export function ChatDemo() {
               {!liveInput && (
                 <span className="absolute inset-0 flex items-center pointer-events-none text-sm select-none">
                   {displayText
-                    ? <span style={{ color: '#F0F4FF' }}>{displayText}</span>
+                    ? <span className="text-foreground">{displayText}</span>
                     : <span className="text-muted-foreground">Ask anything...</span>
                   }
                   {showCursor && (

@@ -70,7 +70,7 @@ function StatCard({ label, value, suffix, change, trend, icon: Icon, index }: St
       <div
         className="relative overflow-hidden rounded-2xl border p-6 cursor-default"
         style={{
-          background: "linear-gradient(145deg, hsl(230 15% 9%) 0%, hsl(217 30% 13%) 100%)",
+          background: "linear-gradient(145deg, hsl(var(--card)) 0%, hsl(var(--muted)) 100%)",
           borderColor: hovered ? "hsl(var(--primary) / 0.45)" : "hsl(var(--border))",
           transform: hovered ? "translateY(-3px) scale(1.015)" : "translateY(0) scale(1)",
           boxShadow: hovered
@@ -231,7 +231,7 @@ function ScoreDistribution({ data }: { data: { name: string; value: number; fill
 }
 
 // ─── HeatmapGrid ──────────────────────────────────────────────────────────────
-const WEEK_COUNT = 12;
+const WEEK_COUNT = 16;
 // Map intensity 0-1 to 4 discrete levels: 0=none, 1=low, 2=mid, 3=high, 4=max
 function intensityLevel(v: number): 0 | 1 | 2 | 3 | 4 {
   if (!v || v <= 0) return 0;
@@ -244,33 +244,57 @@ const LEVEL_OPACITY: Record<number, number> = { 0: 0.15, 1: 0.35, 2: 0.55, 3: 0.
 
 function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: number }[] }) {
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
   return (
     <AnimatedWrapper delay={600} className="h-full">
       <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+        
         <div className="mb-4">
           <h3 className="text-lg font-semibold text-foreground">Quiz Frequency</h3>
           <p className="text-sm text-muted-foreground">Last {WEEK_COUNT} weeks</p>
         </div>
+
         <div className="flex flex-1 items-start gap-3">
-          {/* Day labels — aligned to cell centres */}
-          <div className="flex flex-col gap-[6px] pt-0.5 shrink-0">
+          
+          {/* Day labels */}
+          <div className="flex flex-col gap-[10px] pt-1 shrink-0">
             {days.map((d, i) => (
-              <div key={i} className="h-[14px] flex items-center text-xs text-muted-foreground w-7">{d}</div>
+              <div
+                key={i}
+                className="h-[18px] flex items-center text-xs text-muted-foreground w-7"
+              >
+                {d}
+              </div>
             ))}
           </div>
-          {/* Grid */}
-          <div className="flex gap-[6px]">
+
+          {/* Heatmap grid */}
+          <div className="flex gap-[12px]">
             {Array.from({ length: WEEK_COUNT }).map((_, wi) => (
-              <div key={wi} className="flex flex-col gap-[6px]">
+              <div key={wi} className="flex flex-col gap-[10px]">
                 {Array.from({ length: 7 }).map((_, di) => {
                   const cell = data.find((c) => c.week === wi && c.day === di);
                   const level = intensityLevel(cell?.intensity ?? 0);
+
                   return (
-                    <div key={di}
-                      className="h-[14px] w-[14px] rounded-sm transition-all hover:ring-1 hover:ring-primary/50"
+                    <div
+                      key={di}
+                      className="h-[18px] w-[18px] rounded-[4px] transition-all hover:ring-1 hover:ring-primary/50"
                       style={{
-                        backgroundColor: level === 0 ? "hsl(var(--secondary))" : C1,
-                        opacity: LEVEL_OPACITY[level],
+                        backgroundColor:
+                          level === 0
+                            ? "hsl(var(--muted))"
+                            : C1,
+
+                        border:
+                          level === 0
+                            ? "1px solid hsl(var(--border))"
+                            : "none",
+
+                        opacity:
+                          level === 0
+                            ? 0.7
+                            : LEVEL_OPACITY[level],
                       }}
                     />
                   );
@@ -279,11 +303,19 @@ function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: n
             ))}
           </div>
         </div>
-        {/* Legend — 4 levels */}
+
+        {/* Legend */}
         <div className="mt-3 flex items-center justify-end gap-2">
           <span className="text-xs text-muted-foreground">Less</span>
-          {([1, 2, 3, 4] as const).map((l) => (
-            <div key={l} className="h-[14px] w-[14px] rounded-sm" style={{ backgroundColor: C1, opacity: LEVEL_OPACITY[l] }} />
+          {[1, 2, 3, 4].map((l) => (
+            <div
+              key={l}
+              className="h-[18px] w-[18px] rounded-[4px]"
+              style={{
+                backgroundColor: C1,
+                opacity: LEVEL_OPACITY[l],
+              }}
+            />
           ))}
           <span className="text-xs text-muted-foreground">More</span>
         </div>
@@ -570,17 +602,30 @@ const DashboardPage = () => {
   }, [submittedQuizzes]);
 
   const heatmapData = useMemo(() => {
-    const today = new Date();
-    const weeks = 12;
-    return Array.from({ length: weeks }, (_, week) =>
-      Array.from({ length: 7 }, (_, day) => {
-        const d = new Date(today); d.setDate(today.getDate() - ((weeks - week) * 7 + (6 - day)));
-        const key = d.toISOString().split("T")[0];
-        const count = quizzes.filter(q => new Date(q.created_at).toISOString().split("T")[0] === key).length;
-        return { week, day, intensity: count > 0 ? Math.min(1, count / 3) : 0 };
-      })
-    ).flat();
-  }, [quizzes]);
+  const today = new Date();
+  const weeks = WEEK_COUNT;
+
+  return Array.from({ length: weeks }, (_, week) =>
+    Array.from({ length: 7 }, (_, day) => {
+      // FIX: correct reverse indexing so latest week is rightmost
+      const d = new Date(today);
+      d.setDate(today.getDate() - ((weeks - 1 - week) * 7 + (6 - day)));
+
+      const key = d.toISOString().split("T")[0];
+
+      const count = quizzes.filter(
+        (q) =>
+          new Date(q.created_at).toISOString().split("T")[0] === key
+      ).length;
+
+      return {
+        week,
+        day,
+        intensity: count > 0 ? Math.min(1, count / 3) : 0,
+      };
+    })
+  ).flat();
+}, [quizzes]);
 
   const weakTopics = useMemo(() => {
     const map = new Map<string, number[]>();

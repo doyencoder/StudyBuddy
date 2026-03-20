@@ -24,7 +24,8 @@ function HeroSection() {
     <section className="relative min-h-screen flex items-center overflow-hidden">
       {/* Background — near pure black like reference */}
       <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute inset-0" style={{ backgroundColor: '#050508' }} />
+        <div className="absolute inset-0 bg-background" />
+
 
         {/* Blue glow right side */}
         <div
@@ -68,7 +69,7 @@ function HeroSection() {
             {/* Headline */}
             <h1
               className={cn("text-4xl sm:text-5xl lg:text-6xl xl:text-7xl font-bold tracking-tight leading-[1.1] transition-all duration-700", isLoaded ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6")}
-              style={{ transitionDelay: '200ms', color: '#F0F4FF' }}
+              style={{ transitionDelay: '200ms' }}
             >
               Your smart{' '}
               <span style={{ background: 'linear-gradient(90deg, #4B8FF0 0%, #3DD6C8 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
@@ -96,7 +97,7 @@ function HeroSection() {
                   <ArrowRight className="w-4 h-4 ml-2" />
                 </Link>
               </Button>
-              <Button asChild variant="outline" size="lg" className="text-base px-8" style={{ borderColor: 'rgba(240, 244, 255, 0.2)', color: '#F0F4FF', backgroundColor: 'transparent' }}>
+              <Button asChild variant="outline" size="lg" className="text-base px-8">
                 <a href="#how-it-works">See How It Works</a>
               </Button>
             </div>
@@ -120,7 +121,7 @@ function HeroSection() {
                 { icon: Route, label: 'Adaptive study plans' },
               ].map((item) => (
                 <div key={item.label} className="flex items-center gap-2 text-sm" style={{ color: '#8A95AA' }}>
-                  <item.icon className="w-4 h-4" style={{ color: '#4B8FF0' }} />
+                  <item.icon className="w-4 h-4 text-primary" />
                   <span>{item.label}</span>
                 </div>
               ))}
