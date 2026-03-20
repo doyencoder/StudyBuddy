@@ -3,14 +3,19 @@ study_plan_service.py
 Orchestrates study plan generation:
   - Checks for uploaded documents via search_service
   - Retrieves relevant chunks if available
-  - Calls gemini_service.generate_study_plan()
+  - Calls ai_service.generate_study_plan() (respects AI_PROVIDER toggle)
   - Returns structured plan response
+
+FIX: Changed import from gemini_service to ai_service so the AI_PROVIDER
+toggle works correctly for study plans.
 """
 
 import uuid
 from datetime import date, timedelta
 
-from app.services.gemini_service import embed_query, generate_study_plan
+# FIX: was "from app.services.gemini_service import ..." which bypassed the
+# AI_PROVIDER toggle entirely. Now correctly routes through ai_service.
+from app.services.ai_service import embed_query, generate_study_plan
 from app.services.search_service import retrieve_chunks, conversation_has_documents
 
 
@@ -23,7 +28,7 @@ async def create_study_plan(
     focus_days: list[str] | None = None,
 ) -> dict:
     """
-    Generates a structured study plan using Gemini.
+    Generates a structured study plan.
 
     If conversation_id points to a chat with uploaded docs:
       - Retrieves relevant chunks and grounds the plan in the material.
@@ -64,7 +69,7 @@ async def create_study_plan(
                 print(f"[StudyPlan] Chunk retrieval failed: {e}")
                 context_chunks = []
 
-    # ── Call Gemini to generate the plan ───────────────────────────────────────
+    # ── Generate the plan via the active AI provider ──────────────────────────
     plan = generate_study_plan(
         topic=topic or "",
         timeline_weeks=timeline_weeks,

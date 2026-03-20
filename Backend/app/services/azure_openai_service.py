@@ -1,15 +1,14 @@
 """
 azure_openai_service.py
-Wraps all Azure OpenAI API calls — a drop-in replacement for gemini_service.py.
+Drop-in replacement for gemini_service.py using Azure OpenAI.
 Every public function has an IDENTICAL signature and return type to its
 Gemini counterpart so that ai_service.py can swap between them transparently.
 
-Models used (configured via environment variables):
+Models:
   - Chat / generation : gpt-4o-mini  (deployment: AZURE_OPENAI_CHAT_DEPLOYMENT)
   - Embeddings        : text-embedding-3-large (deployment: AZURE_OPENAI_EMBEDDING_DEPLOYMENT)
 
-Image generation (generate_image) is NOT migrated — it stays on HuggingFace/FLUX
-regardless of which AI provider is active.
+Image generation (generate_image) stays on HuggingFace/FLUX — not migrated.
 """
 
 import os
@@ -19,14 +18,14 @@ import re
 from typing import List, Generator
 from openai import AzureOpenAI
 
-# ---------------------------------------------------------------------------
-# Configuration — read from environment variables
-# ---------------------------------------------------------------------------
+# ── Constants ─────────────────────────────────────────────────────────────────
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 4
 
-# These are the system prompts — copied verbatim from gemini_service.py so
-# both providers produce identical behaviour and formatting.
+# FIX: Use stable GA API version instead of preview
+AZURE_API_VERSION = "2024-10-21"
+
+# ── System prompts (copied verbatim from gemini_service.py) ───────────────────
 
 SYSTEM_PROMPT_RAG = """You are StudyBuddy, an educational AI assistant.
 The student has uploaded study material. Relevant excerpts from it are provided as CONTEXT in the user message.
@@ -92,55 +91,47 @@ Treat these as established facts — BUT only recall them when the student is DI
 NEVER proactively mention prior personal facts or prior topics when answering an unrelated question."""
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _get_client() -> AzureOpenAI:
-    """
-    Returns a configured AzureOpenAI client.
-    Reads credentials from environment variables at call time so that
-    .env changes during development are always picked up.
-    """
+    """Returns a configured AzureOpenAI client, reading credentials at call time."""
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     api_key  = os.getenv("AZURE_OPENAI_API_KEY")
-
     if not endpoint:
         raise ValueError("AZURE_OPENAI_ENDPOINT is not set in .env")
     if not api_key:
         raise ValueError("AZURE_OPENAI_API_KEY is not set in .env")
-
     return AzureOpenAI(
         azure_endpoint=endpoint,
         api_key=api_key,
-        api_version="2024-08-01-preview",  # stable version that supports all features
+        api_version=AZURE_API_VERSION,
     )
 
 
 def _chat_deployment() -> str:
-    name = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "studybuddy-chat")
-    return name
+    return os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "studybuddy-chat")
 
 
 def _embedding_deployment() -> str:
-    name = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "studybuddy-embeddings")
-    return name
+    return os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "studybuddy-embeddings")
 
 
 def _call_with_retry(fn, *args, **kwargs):
-    """
-    Retry up to MAX_RETRIES times on Azure OpenAI rate-limit errors (429)
-    or transient service errors (5xx).
-    Mirrors the retry logic from gemini_service.py.
-    """
+    """Retry up to MAX_RETRIES on rate-limit (429) or transient 5xx errors."""
     for attempt in range(MAX_RETRIES):
         try:
             return fn(*args, **kwargs)
         except Exception as e:
             error_msg = str(e).lower()
-            is_rate_limit = "429" in error_msg or "rate limit" in error_msg or "too many requests" in error_msg
-            is_transient  = "502" in error_msg or "503" in error_msg or "504" in error_msg
-            if (is_rate_limit or is_transient) and attempt < MAX_RETRIES - 1:
+            is_retryable = (
+                "429" in error_msg
+                or "rate limit" in error_msg
+                or "too many requests" in error_msg
+                or "502" in error_msg
+                or "503" in error_msg
+                or "504" in error_msg
+            )
+            if is_retryable and attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_DELAY_SECONDS)
                 continue
             raise
@@ -151,41 +142,32 @@ def _sanitize_and_parse_json(raw: str):
     """
     Robustly parses JSON that the model may have wrapped in markdown fences
     or polluted with invalid control characters.
-    Identical logic to gemini_service.py — both models can produce fence-wrapped JSON.
+    Identical logic to gemini_service.py.
     """
-    # Strip markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
-    text = re.sub(r"```\s*$", "", text.strip())
-    text = text.strip()
+    text = re.sub(r"```\s*$", "", text.strip()).strip()
 
-    # Fast path — plain parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Strip invalid control characters
     cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Aggressive fallback — escape unescaped newlines inside strings
     def _escape_inner(m):
         s = m.group(0)
-        s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-        return s
+        return s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
     escaped = re.sub(r'"(?:[^"\\]|\\.)*"', _escape_inner, cleaned)
     return json.loads(escaped)
 
 
 def _is_latin_script(text: str) -> bool:
-    """
-    Returns True if the message is predominantly written in Latin/Roman script.
-    Used to detect Hinglish vs true Devanagari — identical to gemini_service.py.
-    """
+    """Returns True if message is predominantly Latin/Roman script (Hinglish detection)."""
     alpha_chars = [c for c in text if c.isalpha()]
     if not alpha_chars:
         return True
@@ -193,25 +175,19 @@ def _is_latin_script(text: str) -> bool:
     return (latin_count / len(alpha_chars)) > 0.8
 
 
-# ---------------------------------------------------------------------------
-# Embeddings
-# ---------------------------------------------------------------------------
+# ── Embeddings ────────────────────────────────────────────────────────────────
 
 def embed_text(text: str) -> List[float]:
     """
     Embed a document chunk for storage in Azure AI Search.
-    Azure OpenAI text-embedding-3-large returns 3072-dim vectors —
-    the same dimension as gemini-embedding-001, so the Search index
-    schema requires NO changes.
+    text-embedding-3-large returns 3072-dim vectors — same as gemini-embedding-001.
+    Azure AI Search index schema requires NO changes.
     """
     client = _get_client()
     deployment = _embedding_deployment()
 
     def _embed():
-        response = client.embeddings.create(
-            model=deployment,
-            input=text,
-        )
+        response = client.embeddings.create(model=deployment, input=text)
         return response.data[0].embedding
 
     return _call_with_retry(_embed)
@@ -219,26 +195,20 @@ def embed_text(text: str) -> List[float]:
 
 def embed_query(query: str) -> List[float]:
     """
-    Embed a user's question for vector search against stored chunks.
-    Azure OpenAI does not distinguish RETRIEVAL_DOCUMENT vs RETRIEVAL_QUERY —
-    the same model and deployment handles both directions optimally.
+    Embed a user question for vector search.
+    Azure OpenAI uses the same model for both document and query embeddings.
     """
     client = _get_client()
     deployment = _embedding_deployment()
 
     def _embed():
-        response = client.embeddings.create(
-            model=deployment,
-            input=query,
-        )
+        response = client.embeddings.create(model=deployment, input=query)
         return response.data[0].embedding
 
     return _call_with_retry(_embed)
 
 
-# ---------------------------------------------------------------------------
-# Chat streaming
-# ---------------------------------------------------------------------------
+# ── Chat streaming ────────────────────────────────────────────────────────────
 
 def chat_stream(
     question: str,
@@ -250,15 +220,12 @@ def chat_stream(
 ) -> Generator[str, None, None]:
     """
     Streams a gpt-4o-mini reply with full multi-turn conversation memory.
-
     Identical signature to gemini_service.chat_stream().
-    context_chunks: list of pre-tagged strings like "[Page N]\\nchunk text..."
-    history:        list of prior messages [{"role": "user"|"assistant", "content": str}]
     """
     client = _get_client()
     deployment = _chat_deployment()
 
-    # ── Build system prompt (identical logic to gemini_service.py) ─────────
+    # ── Build system prompt ───────────────────────────────────────────────────
     if context_chunks:
         context_text = "\n\n---\n\n".join(context_chunks)
         current_user_text = (
@@ -271,18 +238,17 @@ def chat_stream(
         current_user_text = question
         system_instruction = SYSTEM_PROMPT_GENERAL
 
-    # Script mirroring — identical to gemini_service.py
+    # Script mirroring
     if _is_latin_script(question):
         system_instruction += (
             "\n\nIMPORTANT — Script rule: The user has written in Roman/Latin script. "
             "You MUST respond in Roman/Latin script as well. "
             "Do NOT use Devanagari, Tamil, Telugu, or any other non-Latin script. "
-            "If the user is mixing Hindi and English (Hinglish), reply in Hinglish too "
-            "(e.g. 'Photosynthesis ek process hai jisme plants sunlight use karte hain'). "
+            "If the user is mixing Hindi and English (Hinglish), reply in Hinglish too. "
             "Match the user's exact language style."
         )
 
-    # Response format injection — identical to gemini_service.py
+    # Response format injection
     format_map = {
         "bullet":      "Respond using bullet points.",
         "steps":       "Respond as numbered steps.",
@@ -309,9 +275,7 @@ def chat_stream(
     if extra:
         system_instruction += f"\n\nRESPONSE STYLE: {extra}"
 
-    # ── Build message list with anchor+recent windowing ────────────────────
-    # Same strategy as gemini_service.py — always include first 4 messages
-    # (where users establish personal context) + last 10 (current thread).
+    # ── Build messages with anchor+recent windowing ───────────────────────────
     ANCHOR_COUNT = 4
     RECENT_COUNT = 10
 
@@ -319,7 +283,6 @@ def chat_stream(
         c = str(msg.get("content", ""))
         return msg.get("role") == "assistant" and c.startswith('{"__type":')
 
-    # Azure OpenAI uses role "assistant" (not "model" like Gemini)
     messages = [{"role": "system", "content": system_instruction}]
 
     if history:
@@ -334,14 +297,12 @@ def chat_stream(
                 seen.add(i)
 
         for msg in windowed:
-            # Azure uses "assistant" where Gemini uses "model"
             role = "assistant" if msg["role"] == "assistant" else "user"
             messages.append({"role": role, "content": str(msg.get("content", ""))})
 
-    # Append the current user turn (always last)
     messages.append({"role": "user", "content": current_user_text})
 
-    # ── Stream response ────────────────────────────────────────────────────
+    # ── Stream ────────────────────────────────────────────────────────────────
     def _stream():
         return client.chat.completions.create(
             model=deployment,
@@ -353,14 +314,18 @@ def chat_stream(
     response = _call_with_retry(_stream)
 
     for chunk in response:
-        # Azure streams ChatCompletionChunk objects; extract token text safely
-        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+        # FIX: Guard against empty choices list — Azure sends these on role delta
+        # and on the final [DONE] chunk. All four conditions must be true.
+        if (
+            chunk.choices
+            and len(chunk.choices) > 0
+            and chunk.choices[0].delta is not None
+            and chunk.choices[0].delta.content is not None
+        ):
             yield chunk.choices[0].delta.content
 
 
-# ---------------------------------------------------------------------------
-# Quiz generation
-# ---------------------------------------------------------------------------
+# ── Quiz generation ───────────────────────────────────────────────────────────
 
 def generate_quiz_questions(
     context_chunks: List[str],
@@ -368,8 +333,7 @@ def generate_quiz_questions(
     num_questions: int = 5,
 ) -> dict:
     """
-    Uses gpt-4o-mini to generate MCQ quiz questions + one fun fact.
-    Identical signature and return shape to gemini_service.generate_quiz_questions().
+    Generates MCQ quiz questions + one fun fact using gpt-4o-mini.
     Returns: { "questions": [...], "fun_fact": "..." }
     """
     client = _get_client()
@@ -395,25 +359,23 @@ STRICT RULES:
 - Generate exactly {num_questions} questions
 - Each question must have exactly 4 options
 - Only one option is correct
-- Base every question strictly on the provided material — no outside knowledge
+- Base every question strictly on the provided material
 - The explanation must reference the material directly
-- NEVER mention chunk numbers in any explanation — explain the answer in plain language only
+- NEVER mention chunk numbers in any explanation
 
 Also generate exactly 1 fun_fact: a single interesting, surprising fact related to this topic.
-It should be engaging and educational — something a student would find genuinely interesting.
 
-Respond ONLY with a valid JSON object. No extra text. No markdown. No code fences.
-The object must have exactly these two fields:
+Respond ONLY with a valid JSON object. No markdown. No code fences.
 {{
   "questions": [
     {{
       "question": "the question text",
       "options": ["option A", "option B", "option C", "option D"],
       "correct_index": 0,
-      "explanation": "why this answer is correct based on the material"
+      "explanation": "why this answer is correct"
     }}
   ],
-  "fun_fact": "one interesting fact related to this topic"
+  "fun_fact": "one interesting fact"
 }}"""
     else:
         if not topic:
@@ -424,14 +386,11 @@ STRICT RULES:
 - Generate exactly {num_questions} questions
 - Each question must have exactly 4 options
 - Only one option is correct
-- Questions should be educational and appropriate for students
-- Vary the difficulty across questions
+- Questions should be educational and vary in difficulty
 
-Also generate exactly 1 fun_fact: a single interesting, surprising fact related to {topic}.
-It should be engaging and educational — something a student would find genuinely interesting.
+Also generate exactly 1 fun_fact about {topic}.
 
-Respond ONLY with a valid JSON object. No extra text. No markdown. No code fences.
-The object must have exactly these two fields:
+Respond ONLY with a valid JSON object. No markdown. No code fences.
 {{
   "questions": [
     {{
@@ -441,18 +400,20 @@ The object must have exactly these two fields:
       "explanation": "why this answer is correct"
     }}
   ],
-  "fun_fact": "one interesting fact related to {topic}"
+  "fun_fact": "one interesting fact"
 }}"""
 
     def _generate():
         return client.chat.completions.create(
             model=deployment,
             messages=[
-                {"role": "system", "content": "You are a quiz generator. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are a quiz generator. Always respond with valid JSON only. No markdown, no code fences."},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
             temperature=0.4,
+            # FIX: explicit max_tokens prevents JSON truncation on large quizzes
+            max_tokens=4096,
         )
 
     response = _call_with_retry(_generate)
@@ -482,15 +443,12 @@ The object must have exactly these two fields:
     return {"questions": sanitized, "fun_fact": fun_fact}
 
 
-# ---------------------------------------------------------------------------
-# Weak area classification
-# ---------------------------------------------------------------------------
+# ── Weak area classification ──────────────────────────────────────────────────
 
 def batch_classify_weak_areas(questions: list) -> list:
     """
     Sends ALL question texts in a SINGLE API call and returns a subtopic
     label for each question in order.
-    Identical signature to gemini_service.batch_classify_weak_areas().
     """
     client = _get_client()
     deployment = _chat_deployment()
@@ -499,57 +457,40 @@ def batch_classify_weak_areas(questions: list) -> list:
         f"{i + 1}. {q['question']}" for i, q in enumerate(questions)
     )
 
-    user_prompt = f"""You are classifying quiz questions into academic subtopic labels.
-
-For each question below, output a short label (2-5 words) describing the academic subtopic or concept it tests.
+    # FIX: json_object mode requires a JSON object (not a bare array).
+    # Wrap labels in {"labels": [...]} and unwrap after parsing.
+    user_prompt = f"""Classify each quiz question below into a short academic subtopic label (2-5 words).
 
 QUESTIONS:
 {numbered}
 
-Respond ONLY with a valid JSON array of strings, one label per question, in the same order.
-No extra text. No markdown. No code fences. Example:
-["Cell Division", "Electromagnetic Induction", "Photosynthesis", "General", "Newton's Laws"]"""
+Respond ONLY with a JSON object in this exact format:
+{{"labels": ["label for question 1", "label for question 2", ...]}}
+
+One label per question, in the same order. No extra text."""
 
     try:
         def _generate():
             return client.chat.completions.create(
                 model=deployment,
                 messages=[
-                    {"role": "system", "content": "You classify quiz questions. Always respond with a JSON array only."},
+                    {"role": "system", "content": "You classify quiz questions into academic subtopics. Respond with valid JSON only."},
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
+                max_tokens=512,
             )
 
-        # json_object mode requires a JSON object, not an array — wrap/unwrap
-        wrapped_prompt = user_prompt + '\n\nRespond as: {"labels": ["label1", "label2", ...]}'
-
-        def _generate_wrapped():
-            return client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {"role": "system", "content": "You classify quiz questions. Always respond with valid JSON only."},
-                    {"role": "user", "content": wrapped_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-            )
-
-        response = _call_with_retry(_generate_wrapped)
+        response = _call_with_retry(_generate)
         raw = response.choices[0].message.content.strip()
         parsed = _sanitize_and_parse_json(raw)
 
-        # Handle both {"labels": [...]} and bare array
-        if isinstance(parsed, dict):
-            labels = parsed.get("labels", [])
-        else:
-            labels = parsed
-
-        if isinstance(labels, list) and len(labels) == len(questions):
-            return [str(l).strip() or "General" for l in labels]
+        # Unwrap {"labels": [...]}
+        labels = parsed.get("labels", []) if isinstance(parsed, dict) else parsed
 
         result = [str(l).strip() or "General" for l in labels]
+        # Pad or trim to match question count exactly
         while len(result) < len(questions):
             result.append("General")
         return result[:len(questions)]
@@ -559,11 +500,7 @@ No extra text. No markdown. No code fences. Example:
 
 
 def classify_weak_area(question: str) -> str:
-    """
-    Uses gpt-4o-mini to classify a single wrong quiz question into a
-    short academic subtopic label.
-    Identical signature to gemini_service.classify_weak_area().
-    """
+    """Classify a single wrong quiz question into a short academic subtopic label."""
     client = _get_client()
     deployment = _chat_deployment()
 
@@ -571,7 +508,7 @@ def classify_weak_area(question: str) -> str:
 "{question}"
 
 What single academic subtopic or concept does this question test?
-Reply with ONLY 2-5 words. No explanation. No punctuation. Just the topic name."""
+Reply with ONLY 2-5 words. No explanation. No punctuation."""
 
     try:
         def _generate():
@@ -592,16 +529,10 @@ Reply with ONLY 2-5 words. No explanation. No punctuation. Just the topic name."
         return "General"
 
 
-# ---------------------------------------------------------------------------
-# Topic inference
-# ---------------------------------------------------------------------------
+# ── Topic inference ───────────────────────────────────────────────────────────
 
 def infer_topic_from_messages(messages: list) -> str:
-    """
-    Given recent chat messages, asks gpt-4o-mini to extract a clean
-    3-5 word topic. Falls back to "General Topic" if inference fails.
-    Identical signature to gemini_service.infer_topic_from_messages().
-    """
+    """Extract a clean 3-5 word study topic from recent conversation messages."""
     client = _get_client()
     deployment = _chat_deployment()
 
@@ -613,7 +544,7 @@ def infer_topic_from_messages(messages: list) -> str:
 
     user_prompt = f"""Read this study conversation and extract the main topic being studied.
 Return ONLY a short topic name (3-5 words max). No explanation, no punctuation, no quotes.
-Examples of good responses: "Photosynthesis", "Newton Laws of Motion", "Cell Division", "Water Cycle"
+Examples: Photosynthesis, Newton Laws of Motion, Cell Division, Water Cycle
 
 CONVERSATION:
 {conversation_text}
@@ -633,8 +564,7 @@ TOPIC:"""
             )
 
         response = _call_with_retry(_generate)
-        topic = response.choices[0].message.content.strip().strip('"\'.')
-
+        topic = response.choices[0].message.content.strip().strip("\"'.")
         if not topic or len(topic) > 60:
             return "General Topic"
         return topic
@@ -642,9 +572,7 @@ TOPIC:"""
         return "General Topic"
 
 
-# ---------------------------------------------------------------------------
-# Mermaid diagram generation
-# ---------------------------------------------------------------------------
+# ── Mermaid diagram generation ────────────────────────────────────────────────
 
 def generate_mermaid(
     topic: str,
@@ -653,11 +581,8 @@ def generate_mermaid(
     layout_hint: str = None,
 ) -> str:
     """
-    Generates valid Mermaid syntax for a flowchart or mind map using gpt-4o-mini.
-    Identical signature and behaviour to gemini_service.generate_mermaid().
-
-    diagram_type: "flowchart" | "diagram" (mindmap)
-    layout_hint:  "circular" | "horizontal" | "vertical" | None (auto-detect)
+    Generates valid Mermaid syntax for a flowchart or mind map.
+    Identical signature to gemini_service.generate_mermaid().
     """
     client = _get_client()
     deployment = _chat_deployment()
@@ -668,7 +593,6 @@ def generate_mermaid(
         else "No specific material uploaded. Use your general knowledge about this topic."
     )
 
-    # Auto-detect circular layouts — identical keyword set to gemini_service.py
     _CIRCULAR_KEYWORDS = {
         "cycle", "cycling", "circular", "krebs", "calvin", "citric acid",
         "water cycle", "carbon cycle", "nitrogen cycle", "rock cycle",
@@ -680,20 +604,19 @@ def generate_mermaid(
     auto_circular = any(kw in topic_lower for kw in _CIRCULAR_KEYWORDS)
     effective_hint = layout_hint or ("circular" if auto_circular else None)
 
-    # Format instructions — identical to gemini_service.py
     if diagram_type == "flowchart":
         if effective_hint == "circular":
             format_instructions = """Output ONLY a valid Mermaid flowchart that represents a CIRCULAR / CYCLIC process. Rules:
 - First line must be exactly: flowchart LR
-- Represent the cycle by connecting the LAST node back to the FIRST node with an arrow, forming a closed loop.
-- Use 4 to 8 nodes that represent the key stages of the cycle in order.
+- Connect the LAST node back to the FIRST node to form a closed loop.
+- Use 4 to 8 nodes representing key stages in order.
 - Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
 - Node shapes: rounded A(Label) for all cycle stages
-- Arrows: A --> B  and the last node must have an arrow pointing back to A to close the loop
+- Arrows: A --> B  and last node must loop back to A
 - CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
-- Keep labels short: 2-4 words maximum per node
-- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code.
-EXAMPLE STRUCTURE (Calvin Cycle):
+- Keep labels short: 2-4 words maximum
+- No markdown fences, no explanation. Output ONLY raw Mermaid code.
+EXAMPLE (Calvin Cycle):
 flowchart LR
     A(CO2 Fixation) --> B(3-PGA Produced)
     B --> C(ATP and NADPH Used)
@@ -704,51 +627,48 @@ flowchart LR
         elif effective_hint == "horizontal":
             format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
 - First line must be exactly: flowchart LR
-- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node IDs: single letters or short alphanumeric only
 - Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
 - Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
-- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
-- Maximum 10 nodes total — group related steps into one node to stay concise
-- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+- CRITICAL: node labels must NEVER contain parentheses or special chars
+- Maximum 10 nodes total
+- No markdown fences, no explanation. Output ONLY raw Mermaid code."""
 
         elif effective_hint == "vertical":
             format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
 - First line must be exactly: flowchart TD
-- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node IDs: single letters or short alphanumeric only
 - Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
 - Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
-- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
-- Maximum 8 nodes total to keep height manageable
-- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+- CRITICAL: node labels must NEVER contain parentheses or special chars
+- Maximum 8 nodes total
+- No markdown fences, no explanation. Output ONLY raw Mermaid code."""
 
         else:
             format_instructions = """Output ONLY a valid Mermaid flowchart. Rules:
-- DIRECTION: Intelligently pick the best layout for this specific topic:
-  * "flowchart LR" (left-to-right) — use for linear sequential processes with 5+ steps and few/no decision branches. DEFAULT choice for most topics.
-  * "flowchart TD" (top-down) — use ONLY when there are 2+ major Yes/No decision branches that fan out wide. Hard cap: 8 nodes max in TD mode.
-  * Do NOT default to TD just because it is familiar — LR is almost always more readable.
+- DIRECTION: Pick intelligently:
+  * "flowchart LR" for linear sequential processes with 5+ steps — DEFAULT
+  * "flowchart TD" ONLY when there are 2+ Yes/No decision branches. Hard cap: 8 nodes in TD mode.
 - First line must be exactly: flowchart LR   OR   flowchart TD
-- Node IDs: single letters or short alphanumeric only e.g. A B C1 D2
+- Node IDs: single letters or short alphanumeric only
 - Node shapes: rectangle A[Label]  decision A{Label}  rounded A(Label)
 - Arrows: A --> B   or   A -->|Yes| B   or   A -->|No| B
-- CRITICAL: node labels must NEVER contain parentheses or special chars like & % # quote marks
-- If you need parens, rephrase e.g. write -when applicable- instead of -if applicable-
-- Maximum 10 nodes total — group related steps into one node to keep it concise
-- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+- CRITICAL: node labels must NEVER contain parentheses or special chars
+- Maximum 10 nodes total
+- No markdown fences, no explanation. Output ONLY raw Mermaid code."""
 
     else:  # mindmap
         format_instructions = """Output ONLY a valid Mermaid mindmap. Rules:
 - First line must be exactly: mindmap
-- Second line must be indented 2 spaces: root((TopicName))
+- Second line indented 2 spaces: root((TopicName))
 - Children indented 4 spaces: plain word labels only
 - Grandchildren indented 6 spaces: plain word labels only
 - CRITICAL: labels must NEVER contain parentheses, brackets, braces, or special chars
-- Use plain simple words only in every label
 - Maximum 1 root, 5 branches, 3 leaves per branch
-- No markdown fences, no explanation, no comments. Output ONLY the raw Mermaid code."""
+- No markdown fences, no explanation. Output ONLY raw Mermaid code."""
 
     layout_desc = effective_hint or "auto"
-    user_prompt = f"""You are a visual learning assistant. Create a {diagram_type} for the topic: "{topic}".
+    user_prompt = f"""Create a {diagram_type} diagram for the topic: "{topic}".
 Layout mode: {layout_desc}
 
 STUDY MATERIAL CONTEXT:
@@ -771,23 +691,22 @@ STUDY MATERIAL CONTEXT:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
+            max_tokens=1024,
         )
 
-    raw = _call_with_retry(_generate)
-    cleaned = raw.choices[0].message.content.strip()
+    response = _call_with_retry(_generate)
+    cleaned = response.choices[0].message.content.strip()
 
-    # Strip any markdown fences the model added despite instructions
+    # Strip markdown fences the model may add despite instructions
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [ln for ln in lines if not ln.strip().startswith("```")]
         cleaned = "\n".join(lines).strip()
 
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# Study plan generation
-# ---------------------------------------------------------------------------
+# ── Study plan generation ─────────────────────────────────────────────────────
 
 def generate_study_plan(
     topic: str,
@@ -797,10 +716,7 @@ def generate_study_plan(
     hours_per_week: int = 8,
     focus_days: List[str] = None,
 ) -> dict:
-    """
-    Generates a structured study plan as JSON using gpt-4o-mini.
-    Identical signature and return shape to gemini_service.generate_study_plan().
-    """
+    """Generates a structured study plan as JSON using gpt-4o-mini."""
     client = _get_client()
     deployment = _chat_deployment()
 
@@ -813,43 +729,44 @@ def generate_study_plan(
             f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
         )
         topic_line = f'Topic: "{topic}"' if topic else "Cover all key topics from the material."
-        source_instruction = f"""The student has uploaded study material. Base the plan strictly on this material.
+        source_instruction = f"""Base the plan on this uploaded study material.
 
 STUDY MATERIAL:
 {context_text}
 
 {topic_line}"""
     else:
-        topic_line = f'Topic: "{topic}"' if topic else 'Topic: "General study skills and learning techniques"'
-        source_instruction = f"""Use your general knowledge to create the study plan.
-
-{topic_line}"""
+        topic_line = f'Topic: "{topic}"' if topic else 'Topic: "General study skills"'
+        source_instruction = f"Use your general knowledge.\n\n{topic_line}"
 
     user_prompt = f"""Create a detailed study plan with exactly {timeline_weeks} weeks.
 Start date: {start_date}
-Hours per week budget: {hours_per_week}{focus_str}
+Hours per week: {hours_per_week}{focus_str}
 
 {source_instruction}
 
-STRICT OUTPUT RULES:
-- Output a single JSON object with these exact fields:
-  "title": a short descriptive title for the plan - NO special characters like parentheses brackets or braces
-  "start_date": "{start_date}"
-  "end_date": the calculated end date in YYYY-MM-DD format
-  "weeks": an array of exactly {timeline_weeks} week objects each with:
-    "week_number": integer starting from 1
-    "start_date": YYYY-MM-DD
-    "end_date": YYYY-MM-DD
-    "tasks": array of 3-6 actionable task strings like Read chapter 2 or Solve 10 MCQs or Make flashcards for topic X
-    "estimate_hours": integer estimate of hours for this week
-  "summary": a 2-3 sentence summary of the overall plan
+Output a single JSON object with these exact fields:
+{{
+  "title": "short plan title under 60 chars, no special characters",
+  "start_date": "{start_date}",
+  "end_date": "YYYY-MM-DD",
+  "weeks": [
+    {{
+      "week_number": 1,
+      "start_date": "YYYY-MM-DD",
+      "end_date": "YYYY-MM-DD",
+      "tasks": ["task 1", "task 2", "task 3"],
+      "estimate_hours": 8
+    }}
+  ],
+  "summary": "2-3 sentence overview of the plan"
+}}
 
-- Tasks must be actionable and specific
-- Each week should build on the previous week
-- Distribute the hours_per_week budget across tasks
-- If grounded in material, reference specific topics from the material in task descriptions
-- Do NOT include raw chunk text - only paraphrased task descriptions
-- Keep the title under 60 characters with no special characters"""
+Rules:
+- Exactly {timeline_weeks} week objects in the array
+- 3-6 actionable tasks per week
+- Tasks must be specific and build week over week
+- No raw chunk text in tasks"""
 
     def _generate():
         return client.chat.completions.create(
@@ -860,6 +777,8 @@ STRICT OUTPUT RULES:
             ],
             response_format={"type": "json_object"},
             temperature=0.4,
+            # FIX: multi-week plans can be long — prevent truncation
+            max_tokens=4096,
         )
 
     response = _call_with_retry(_generate)
@@ -868,34 +787,25 @@ STRICT OUTPUT RULES:
 
 
 def parse_study_plan_intent(raw_input: str) -> dict:
-    """
-    Uses gpt-4o-mini to parse a free-form study plan request into structured fields.
-    Returns {"topic": str|null, "timeline_weeks": int|null, "hours_per_week": int|null}.
-    Identical signature to gemini_service.parse_study_plan_intent().
-    """
+    """Parse a free-form study plan request into structured fields."""
     client = _get_client()
     deployment = _chat_deployment()
 
-    user_prompt = f"""You are a parser assistant. Extract structured study plan parameters from the user's input.
+    user_prompt = f"""Extract structured study plan parameters from this input:
+"{raw_input}"
 
-User input: "{raw_input}"
+Return a JSON object with exactly these three fields:
+{{
+  "topic": "the subject to study, or null if not specified",
+  "timeline_weeks": integer number of weeks or null,
+  "hours_per_week": integer hours per week or null
+}}
 
-Extract the following fields:
-- "topic": the subject or topic to study. If the user only provides a number or duration, set to null.
-- "timeline_weeks": the number of weeks for the study plan. If the user says months, convert to weeks (1 month = 4 weeks). If the user provides just a number (like "7"), interpret it as weeks. If no duration is found, set to null.
-- "hours_per_week": if mentioned, the study hours per week. Otherwise null.
-
-STRICT RULES:
-- Output ONLY a JSON object with these three fields.
-- If a field cannot be determined, set it to null.
-- "timeline_weeks" must be a positive integer or null.
-- "hours_per_week" must be a positive integer or null.
-- "topic" must be a string or null. Do not include duration words in the topic.
-- A standalone number like "7" or "10" means timeline_weeks, not a topic.
-- Input like "7 weeks" means timeline_weeks=7, topic=null.
-- Input like "machine learning" means topic="machine learning", timeline_weeks=null.
-- Input like "machine learning for 6 weeks" means topic="machine learning", timeline_weeks=6.
-- Input like "3 months of calculus 5 hours per week" means topic="calculus", timeline_weeks=12, hours_per_week=5."""
+Rules:
+- Convert months to weeks (1 month = 4 weeks)
+- A standalone number like "7" means timeline_weeks=7
+- "machine learning for 6 weeks" means topic="machine learning", timeline_weeks=6
+- If a field cannot be determined, set it to null"""
 
     def _generate():
         return client.chat.completions.create(
@@ -906,6 +816,7 @@ STRICT RULES:
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
+            max_tokens=128,
         )
 
     response = _call_with_retry(_generate)
@@ -919,9 +830,7 @@ STRICT RULES:
     }
 
 
-# ---------------------------------------------------------------------------
-# Intent classification
-# ---------------------------------------------------------------------------
+# ── Intent classification ─────────────────────────────────────────────────────
 
 def classify_intent(
     message: str,
@@ -931,8 +840,7 @@ def classify_intent(
     pending_intent: str | None = None,
 ) -> dict:
     """
-    Single gpt-4o-mini call that classifies the user's intent and extracts
-    all 22 parameters needed to dispatch to the right service.
+    Single gpt-4o-mini call returning 22 structured classification fields.
     Identical signature and return shape to gemini_service.classify_intent().
     """
     client = _get_client()
@@ -948,21 +856,9 @@ def classify_intent(
         for m in readable
     ) or "(no prior messages)"
 
-    intent_hint_line = (
-        f'intent_hint (user clicked tile): "{intent_hint}"'
-        if intent_hint else
-        "intent_hint: null"
-    )
-    filename_line = (
-        f'Attached file in this message: "{attached_filename}"'
-        if attached_filename else
-        "Attached file: none"
-    )
-    pending_line = (
-        f'pending_intent from previous clarification turn: "{pending_intent}"'
-        if pending_intent else
-        "pending_intent: null"
-    )
+    intent_hint_line = f'intent_hint: "{intent_hint}"' if intent_hint else "intent_hint: null"
+    filename_line = f'Attached file: "{attached_filename}"' if attached_filename else "Attached file: none"
+    pending_line = f'pending_intent: "{pending_intent}"' if pending_intent else "pending_intent: null"
 
     user_prompt = f"""You are an intent classifier for a student study app. Return ONLY valid JSON — no markdown, no explanation.
 
@@ -977,42 +873,28 @@ CONTEXT:
 INTENT OPTIONS: chat | quiz | flowchart | mindmap | study_plan | image
 
 CLASSIFICATION RULES:
-1. If intent_hint is set → use it as the intent. NEVER override intent_hint.
-2. If pending_intent is set AND the current message looks like a direct reply to a clarification question (e.g. a topic name, a number of weeks) → inherit that as the intent.
-3. Otherwise classify from the message text using natural language.
-4. "image" = AI-generated concept picture (e.g. "show me an image of the heart", "generate a picture of mitosis").
-5. "flowchart" = step-by-step process diagram. "mindmap" = concept/topic overview diagram.
-6. "quiz" = test/MCQ request ("quiz me", "make a quiz", "10 questions on").
-7. Default to "chat" when no feature-specific intent is detectable.
+1. If intent_hint is set, use it as the intent. NEVER override intent_hint.
+2. If pending_intent is set AND message looks like a reply to a clarification, inherit that intent.
+3. Otherwise classify from message text.
+4. "image" = AI-generated concept picture.
+5. "flowchart" = step-by-step process diagram. "mindmap" = concept overview.
+6. "quiz" = test/MCQ request.
+7. Default to "chat" when no feature intent is detectable.
 
 TOPIC EXTRACTION (priority order):
-1. Explicit topic in the current message (highest priority).
-2. Filename of the attached file (if no explicit topic in message).
-3. Recent conversation history — what subject was being discussed.
-4. If docs are known to be uploaded but topic is unspecified → topic = "[from_document]".
-5. If none of the above → topic = null → needs_clarification = true.
+1. Explicit topic in current message.
+2. Attached filename.
+3. Recent conversation history.
+4. If docs uploaded but topic unspecified, topic = "[from_document]".
+5. If none, topic = null and needs_clarification = true.
 
-STUDY PLAN RULES:
-- Extract timeline_weeks if mentioned (e.g. "4 weeks", "2 months" = 8 weeks, "a month" = 4 weeks). If not mentioned, default to 4.
-- NEVER set needs_clarification = true because of a missing timeline_weeks. Always use 4 as the default.
-- Only set needs_clarification = true if the topic is missing.
-- Extract hours_per_week if mentioned (default null).
+STUDY PLAN: Default timeline_weeks to 4 if not mentioned. NEVER ask for clarification about missing weeks.
+QUIZ: Extract num_questions (default 5, cap 20). Extract timer_seconds if time limit mentioned (default null).
 
-QUIZ RULES:
-- Extract num_questions from message (e.g. "10 questions", "5 question quiz"). Default 5.
-- Cap at 20.
-- Extract timer_seconds if user mentions a time limit (e.g. "30 seconds" = 30, "1 minute" = 60, "2 mins" = 120). Default null (no timer).
-
-CLARIFICATION RULES:
-- needs_clarification = true when: intent is not "chat" but topic cannot be determined AND no docs in conversation AND no filename.
-- For study_plan: needs_clarification = true only if topic is missing. A missing timeline_weeks is NOT a reason to ask — default it to 4.
-- If message is vague (".", "ok", "yes", "sure") with no context → needs_clarification = true.
-- Write clarification_question as a friendly, specific question (e.g. "What topic would you like a quiz on?").
-
-Return EXACTLY this JSON — all fields required:
+Return EXACTLY this JSON with all fields present:
 {{
-  "intent": "...",
-  "topic": "...",
+  "intent": "chat",
+  "topic": null,
   "topic_source": "message|filename|history|document|null",
   "num_questions": 5,
   "timeline_weeks": null,
@@ -1020,39 +902,31 @@ Return EXACTLY this JSON — all fields required:
   "timer_seconds": null,
   "needs_clarification": false,
   "clarification_question": null,
-
   "page_numbers": [],
   "keywords": [],
   "query_type": "broad",
   "top_k_hint": "medium",
   "scope": "topic",
-
   "response_format": "paragraph",
   "detail_level": "detailed",
   "language_style": "formal",
-
   "is_comparison": false,
   "entities": [],
   "needs_document": true,
-
   "is_followup": false,
   "refers_to_previous": false
 }}
 
 FIELD RULES:
-- page_numbers: list of integers if user mentions "page 5", "3rd page" etc. Empty list if not mentioned.
-- keywords: exact technical terms from the message e.g. ["VSWR", "TE10", "Double Minima Method"]. Empty if none.
-- query_type: "specific" | "broad" | "page" | "formula" | "definition" | "comparison" | "list" | "summary"
-- top_k_hint: "low" (1-3 chunks) | "medium" (4-7 chunks) | "high" (8-15 chunks)
-- scope: "page" | "topic" | "document" | "general"
-- response_format: "paragraph" | "bullet" | "steps" | "table" | "formula" | "short_notes"
-- detail_level: "brief" | "detailed" | "eli5"
-- language_style: "formal" | "casual" | "hinglish"
-- is_comparison: true if asking difference between two or more things
-- entities: ALL technical terms and concepts mentioned
-- needs_document: false if question can be answered from general knowledge
-- is_followup: true if message continues previous topic
-- refers_to_previous: true if referencing something specific said earlier"""
+- page_numbers: integers if user mentions page numbers, else []
+- keywords: exact technical terms from message, else []
+- query_type: specific|broad|page|formula|definition|comparison|list|summary
+- top_k_hint: low (1-3 chunks)|medium (4-7)|high (8-15)
+- scope: page|topic|document|general
+- response_format: paragraph|bullet|steps|table|formula|short_notes
+- detail_level: brief|detailed|eli5
+- language_style: formal|casual|hinglish
+- needs_document: false if answerable from general knowledge without the document"""
 
     try:
         def _generate():
@@ -1064,6 +938,7 @@ FIELD RULES:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.0,
+                max_tokens=512,
             )
 
         response = _call_with_retry(_generate)
@@ -1095,14 +970,13 @@ FIELD RULES:
         }
 
     except Exception as e:
-        print(f"[classify_intent] Azure OpenAI call failed ({e}), falling back to chat.")
+        print(f"[classify_intent] Azure OpenAI failed ({e}), falling back to chat.")
         return {
             "intent": "chat", "topic": None, "topic_source": None,
             "num_questions": 5, "timeline_weeks": None, "hours_per_week": None,
-            "timer_seconds": None,
-            "needs_clarification": False, "clarification_question": None,
-            "page_numbers": [], "keywords": [], "query_type": "broad",
-            "top_k_hint": "medium", "scope": "topic",
+            "timer_seconds": None, "needs_clarification": False,
+            "clarification_question": None, "page_numbers": [], "keywords": [],
+            "query_type": "broad", "top_k_hint": "medium", "scope": "topic",
             "response_format": "paragraph", "detail_level": "detailed",
             "language_style": "formal", "is_comparison": False,
             "entities": [], "needs_document": True,
@@ -1110,17 +984,12 @@ FIELD RULES:
         }
 
 
-# ---------------------------------------------------------------------------
-# Image generation — stays on HuggingFace regardless of AI provider
-# ---------------------------------------------------------------------------
+# ── Image generation — stays on HuggingFace ──────────────────────────────────
 
 def generate_image(topic: str, context_chunks: List[str]) -> bytes:
     """
-    Generates a real AI image for a study topic using FLUX.1-schnell
-    via the Hugging Face Inference API.
-    This function is IDENTICAL to gemini_service.generate_image() —
-    image generation is NOT migrated to Azure OpenAI (cost/availability reasons).
-    Returns raw PNG bytes ready to be uploaded to Azure Blob Storage.
+    Generates AI image via HuggingFace FLUX.1-schnell.
+    IDENTICAL to gemini_service.generate_image() — not migrated to Azure OpenAI.
     """
     import requests
 
@@ -1133,22 +1002,19 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
         prompt = (
             f"Detailed anatomical and scientific illustration of: {topic}. "
             f"Based on these study notes: {context_summary}. "
-            "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
+            "Style: clean artistic illustration, white background, no text, no labels, visually accurate, educational artwork."
         )
     else:
         prompt = (
             f"Detailed anatomical and scientific illustration of: {topic}. "
-            "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
+            "Style: clean artistic illustration, white background, no text, no labels, visually accurate, educational artwork."
         )
 
     api_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
 
     response = requests.post(
         api_url,
-        headers={
-            "Authorization": f"Bearer {hf_token}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
         json={"inputs": prompt},
         timeout=120,
     )
@@ -1157,17 +1023,12 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
         time.sleep(30)
         response = requests.post(
             api_url,
-            headers={
-                "Authorization": f"Bearer {hf_token}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
             json={"inputs": prompt},
             timeout=120,
         )
 
     if response.status_code != 200:
-        raise RuntimeError(
-            f"Hugging Face API error {response.status_code}: {response.text[:300]}"
-        )
+        raise RuntimeError(f"HuggingFace API error {response.status_code}: {response.text[:300]}")
 
     return response.content
