@@ -370,27 +370,32 @@ def chat_stream(
     # Prepend safety block to all system prompts (including overrides)
     system_instruction = SAFETY_BLOCK + "\n\n" + system_instruction
 
-    # ── Strict language-mirroring rule ────────────────────────────────────────
+    # ── Script-mirroring rule — matches Gemini's original behaviour exactly ───
+    # The previous Azure version added a hard "CRITICAL/MUST/ONLY English"
+    # prohibition on every English message, putting gpt-4o-mini in hyper-literal
+    # compliance mode and making responses stiffer than Gemini ever was.
+    # We restore Gemini's positive "match the user's style" framing here.
+    # _detect_language() is kept for the Hinglish branch (genuinely better than
+    # Gemini's plain latin-ratio check) but the instruction text now mirrors
+    # Gemini's wording for all other paths instead of issuing a hard prohibition.
     if not system_prompt_override:
         _lang = _detect_language(question)
-        if _lang == "english":
+        if _lang == "hinglish":
             system_instruction += (
-                "\n\nCRITICAL — Language rule: The user's message is in English. "
-                "You MUST respond ONLY in English. "
-                "Do NOT use any Hindi, Hinglish, or any other language. "
-                "Every word of your response must be English."
-            )
-        elif _lang == "hinglish":
-            system_instruction += (
-                "\n\nIMPORTANT — Language rule: The user is writing in Hinglish "
+                "\n\nIMPORTANT — Script rule: The user is writing in Hinglish "
                 "(a mix of Hindi and English in Roman script). "
                 "Reply in Hinglish too — match their exact mix of Hindi and English words. "
-                "Do NOT switch to pure Hindi or Devanagari script."
+                "Do NOT use Devanagari, Tamil, Telugu, or any other non-Latin script."
             )
-        else:
+        elif _is_latin_script(question):
+            # Verbatim from Gemini — positive framing, no hard prohibition
             system_instruction += (
-                "\n\nIMPORTANT — Language rule: Respond in the same language and script "
-                "as the user's message. Do NOT switch to English or any other language."
+                "\n\nIMPORTANT — Script rule: The user has written in Roman/Latin script. "
+                "You MUST respond in Roman/Latin script as well. "
+                "Do NOT use Devanagari, Tamil, Telugu, or any other non-Latin script. "
+                "If the user is mixing Hindi and English (Hinglish), reply in Hinglish too "
+                "(e.g. 'Photosynthesis ek process hai jisme plants sunlight use karte hain'). "
+                "Match the user's exact language style."
             )
 
     if not system_prompt_override:
@@ -477,15 +482,18 @@ def chat_stream(
                     sentinel_detected = True
                     break
 
-                yield token
 
+        # Mirrors Gemini's exact pattern: accumulate the entire response first,
+        # check for __REFUSED__, then yield character-by-character.
+        # This guarantees the frontend never receives partial tokens followed by a
+        # refusal bolted on at the end — either the student sees a clean answer or
+        # the clean refusal message, never both mixed together.
         if sentinel_detected:
-            # Clear anything already yielded by yielding a special marker — but since
-            # we can't un-yield, instead we yield the refusal message appended.
-            # In practice, __REFUSED__ should appear as the FIRST and ONLY content
-            # (as instructed in the safety block), so accumulated will just be __REFUSED__.
-            # Yield the refusal message fresh.
             yield REFUSAL_MESSAGE
+            return
+
+        for char in accumulated:
+            yield char
 
     except openai.BadRequestError as e:
         # ── Azure content filter triggered (HTTP 400) ─────────────────────────
@@ -1079,9 +1087,21 @@ def classify_intent(
         for m in readable
     ) or "(no prior messages)"
 
-    intent_hint_line = f'intent_hint: "{intent_hint}"' if intent_hint else "intent_hint: null"
-    filename_line = f'Attached file: "{attached_filename}"' if attached_filename else "Attached file: none"
-    pending_line = f'pending_intent: "{pending_intent}"' if pending_intent else "pending_intent: null"
+    intent_hint_line = (
+        f'intent_hint (user clicked tile): "{intent_hint}"'
+        if intent_hint else
+        "intent_hint: null"
+    )
+    filename_line = (
+        f'Attached file in this message: "{attached_filename}"'
+        if attached_filename else
+        "Attached file: none"
+    )
+    pending_line = (
+        f'pending_intent from previous clarification turn: "{pending_intent}"'
+        if pending_intent else
+        "pending_intent: null"
+    )
 
     user_prompt = f"""You are an intent classifier for a student study app. Return ONLY valid JSON — no markdown, no explanation.
 
@@ -1096,29 +1116,43 @@ CONTEXT:
 INTENT OPTIONS: chat | quiz | flowchart | mindmap | study_plan | image | web_search
 
 CLASSIFICATION RULES:
-1. If intent_hint is set, use it as the intent. NEVER override intent_hint.
-2. If pending_intent is set AND message looks like a reply to a clarification, inherit that intent.
-3. Otherwise classify from message text.
-4. "image" = AI-generated concept picture.
-5. "flowchart" = step-by-step process diagram. "mindmap" = concept overview.
-6. "quiz" = test/MCQ request.
-7. "web_search" = user wants to search the web or get current info.
-8. Default to "chat" when no feature intent is detectable.
+1. If intent_hint is set → use it as the intent. NEVER override intent_hint.
+2. If pending_intent is set AND the current message looks like a direct reply to a clarification question (e.g. a topic name, a number of weeks) → inherit that as the intent.
+3. Otherwise classify from the message text using natural language.
+4. "image" = AI-generated concept picture (e.g. "show me an image of the heart", "generate a picture of mitosis").
+5. "flowchart" = step-by-step process diagram. "mindmap" = concept/topic overview diagram.
+6. "quiz" = test/MCQ request ("quiz me", "make a quiz", "10 questions on").
+7. "web_search" = user explicitly asks to search the web, browse the internet, look something up online, or get current/latest news.
+8. Default to "chat" when no feature-specific intent is detectable.
 
 TOPIC EXTRACTION (priority order):
-1. Explicit topic in current message.
-2. Attached filename.
-3. Recent conversation history.
-4. If docs uploaded but topic unspecified, topic = "[from_document]".
-5. If none, topic = null and needs_clarification = true.
+1. Explicit topic in the current message (highest priority).
+2. Filename of the attached file (if no explicit topic in message).
+3. Recent conversation history — what subject was being discussed.
+4. If docs are known to be uploaded but topic is unspecified → topic = "[from_document]".
+5. If none of the above → topic = null → needs_clarification = true.
 
 CRITICAL — Image files as study material:
 - If the attached filename ends in .jpg, .jpeg, .png, .webp, .tiff — treat it as uploaded study material (handwritten notes, diagrams, question papers), NOT as a request for AI image generation.
 - When an image file is attached with no message text: intent = "chat", needs_document = true, topic = "[from_document]", needs_clarification = false.
 - NEVER set intent = "image" just because an image file is attached — "image" intent means the user explicitly asked to GENERATE an AI illustration.
 
-STUDY PLAN: Default timeline_weeks to 4 if not mentioned. NEVER ask for clarification about missing weeks.
-QUIZ: Extract num_questions (default 5, cap 20). Extract timer_seconds if time limit mentioned (default null).
+STUDY PLAN RULES:
+- Extract timeline_weeks if mentioned (e.g. "4 weeks", "2 months" = 8 weeks, "a month" = 4 weeks). If not mentioned, default to 4.
+- NEVER set needs_clarification = true because of a missing timeline_weeks. Always use 4 as the default.
+- Only set needs_clarification = true if the topic is missing.
+- Extract hours_per_week if mentioned (default null).
+
+QUIZ RULES:
+- Extract num_questions from message (e.g. "10 questions", "5 question quiz"). Default 5.
+- Cap at 20.
+- Extract timer_seconds if user mentions a time limit (e.g. "30 seconds" = 30, "1 minute" = 60, "2 mins" = 120, "timed quiz of 45 seconds" = 45). Default null (no timer).
+
+CLARIFICATION RULES:
+- needs_clarification = true when: intent is not "chat" but topic cannot be determined AND no docs in conversation AND no filename.
+- For study_plan: needs_clarification = true only if topic is missing. A missing timeline_weeks is NOT a reason to ask — default it to 4.
+- If message is vague (".", "ok", "yes", "sure") with no context → needs_clarification = true.
+- Write clarification_question as a friendly, specific question (e.g. "What topic would you like a quiz on?").
 
 SAFETY CLASSIFICATION:
 Evaluate whether the message/topic is harmful or inappropriate for a student educational app.
@@ -1180,20 +1214,23 @@ FIELD RULES:
 - keywords: exact technical terms from message, else []
 - query_type: specific|broad|page|formula|definition|comparison|list|summary
 - top_k_hint: low (1-3 chunks)|medium (4-7)|high (8-15)
-- scope: page|topic|document|general
-  * document: user wants FULL coverage of the document(s) with NO specific topic.
+- scope: "page" (search only mentioned pages) | "topic" (search by topic) | "document" (need whole document) | "general" (answerable from general knowledge, skip document search)
+  * document: user wants FULL coverage of the document(s) with NO specific topic mentioned.
     Use when:
     - query is about the document itself, not a concept within it
     - "explain/summarize/overview/walk me through + (the document/both/all/everything)"
     - "page by page / page wise / all pages / entire document / whole document"
-    - "what does this document cover / contain / say"
+    - "what does this document cover / contain / say / include"
     - "what is this document about"
-    - "explain both documents / all documents"
-    - no specific topic is mentioned — user wants the full picture
-    CRITICAL: If user mentions a specific topic/concept → scope=topic NOT document
+    - "explain both documents / all documents / all pages"
+    - "give me a complete summary / full overview / complete breakdown"
+    - "walk me through everything / take me through the document"
+    - no specific topic/concept is mentioned — user wants the full picture
+    CRITICAL: If user mentions a specific topic or concept → scope=topic NOT document
+    CRITICAL: If user mentions specific page numbers → scope=page NOT document
   * topic: user asks about a specific concept, formula, or subject within the document
-  * page: user mentions specific page numbers ("page 3", "pages 4-6")
-  * general: question is answerable from general knowledge without any document
+  * page: user mentions specific page numbers ("page 3", "pages 4-6", "3rd page")
+  * general: question is answerable from general knowledge without any uploaded document
 - response_format: paragraph|bullet|steps|table|formula|short_notes
 - detail_level: brief|detailed|eli5
 - language_style: formal|casual|hinglish
@@ -1279,48 +1316,51 @@ def extract_document_context(message: str) -> dict:
     client = _get_client()
     deployment = _chat_deployment()
 
-    response = client.chat.completions.create(
-        model=deployment,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Extract the following from the user message and respond with JSON only. No explanation.\n"
-                    "1. clean_topic: the actual study topic, stripped of page/document references. "
-                    "   Empty string if user wants full document coverage with no specific topic.\n"
-                    "2. page_numbers: list of page numbers mentioned, empty list if none\n"
-                    "3. document_reference: any document/file reference mentioned, empty string if none\n"
-                    "4. scope: one of 'document'|'topic'|'page'|'general'\n"
-                    "   - 'document': user wants FULL coverage, no specific topic mentioned.\n"
-                    "     Use for: 'page by page', 'explain all', 'both documents', 'entire document',\n"
-                    "     'all pages', 'page wise', 'what does this document cover',\n"
-                    "     'walk me through', 'give me an overview', 'summarize the document'\n"
-                    "   - 'topic': user asks about a specific concept or subject\n"
-                    "   - 'page': user mentions specific page numbers\n"
-                    "   - 'general': no document needed, general knowledge question\n\n"
-                    "Examples:\n"
-                    "'explain both documents page by page' → "
-                    "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
-                    "'summarize the entire document' → "
-                    "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
-                    "'what is this document about' → "
-                    "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
-                    "'quiz on photosynthesis in document 1' → "
-                    "{\"clean_topic\": \"photosynthesis\", \"page_numbers\": [], \"document_reference\": \"document 1\", \"scope\": \"topic\"}\n"
-                    "'explain page 5 of EC342' → "
-                    "{\"clean_topic\": \"\", \"page_numbers\": [5], \"document_reference\": \"EC342\", \"scope\": \"page\"}\n"
-                    "'what is machine learning' → "
-                    "{\"clean_topic\": \"machine learning\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"general\"}\n"
-                    "'summarize document 2' → "
-                    "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"document 2\", \"scope\": \"document\"}\n"
-                ),
-            },
-            {"role": "user", "content": message},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.0,
-        max_tokens=100,
-    )
+    def _extract():
+        return client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract the following from the user message and respond with JSON only. No explanation.\n"
+                        "1. clean_topic: the actual study topic, stripped of page/document references. "
+                        "   Empty string if user wants full document coverage with no specific topic.\n"
+                        "2. page_numbers: list of page numbers mentioned, empty list if none\n"
+                        "3. document_reference: any document/file reference mentioned, empty string if none\n"
+                        "4. scope: one of 'document'|'topic'|'page'|'general'\n"
+                        "   - 'document': user wants FULL coverage, no specific topic mentioned.\n"
+                        "     Use for: 'page by page', 'explain all', 'both documents', 'entire document',\n"
+                        "     'all pages', 'page wise', 'what does this document cover',\n"
+                        "     'walk me through', 'give me an overview', 'summarize the document'\n"
+                        "   - 'topic': user asks about a specific concept or subject\n"
+                        "   - 'page': user mentions specific page numbers\n"
+                        "   - 'general': no document needed, general knowledge question\n\n"
+                        "Examples:\n"
+                        "'explain both documents page by page' → "
+                        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
+                        "'summarize the entire document' → "
+                        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
+                        "'what is this document about' → "
+                        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
+                        "'quiz on photosynthesis in document 1' → "
+                        "{\"clean_topic\": \"photosynthesis\", \"page_numbers\": [], \"document_reference\": \"document 1\", \"scope\": \"topic\"}\n"
+                        "'explain page 5 of EC342' → "
+                        "{\"clean_topic\": \"\", \"page_numbers\": [5], \"document_reference\": \"EC342\", \"scope\": \"page\"}\n"
+                        "'what is machine learning' → "
+                        "{\"clean_topic\": \"machine learning\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"general\"}\n"
+                        "'summarize document 2' → "
+                        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"document 2\", \"scope\": \"document\"}\n"
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=100,
+        )
+
+    response = _call_with_retry(_extract)
     raw = response.choices[0].message.content.strip()
     try:
         return json.loads(raw)
