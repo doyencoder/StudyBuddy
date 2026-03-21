@@ -48,6 +48,33 @@ from app.utils.document_resolver import resolve_document_filter
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
+# ── Safety constants ──────────────────────────────────────────────────────────
+# Matches REFUSAL_SENTINEL in both service files. chat.py checks generation
+# function return values against this string to detect a model refusal.
+_REFUSAL_SENTINEL = "__REFUSED__"
+
+# The polite message shown to the user in the chat bubble when content is refused.
+_REFUSAL_MESSAGE = (
+    "I'm StudyBuddy, an educational assistant. "
+    "I can't help with that topic. Please ask me something related to your studies!"
+)
+
+
+async def _yield_refusal(conversation_id: str, user_id: str):
+    """
+    Async generator that yields a polite refusal as a plain text SSE event,
+    saves it to Cosmos, and closes the stream.
+    Used by all dispatch functions and the classify_intent is_harmful check.
+    """
+    await save_message(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        role="assistant",
+        content=_REFUSAL_MESSAGE,
+    )
+    yield f"data: {json.dumps({'type': 'text', 'content': _REFUSAL_MESSAGE})}\n\n"
+    yield "data: [DONE]\n\n"
+
 
 # ── Request models ────────────────────────────────────────────────────────────
 
@@ -402,6 +429,32 @@ async def chat_message(request: ChatRequest):
             )),
         )
 
+    # ── Safety gate (NLP path only) ───────────────────────────────────────────
+    # The chip path skips classify_intent entirely, so is_harmful is only
+    # available here. The chip path is protected downstream by SAFETY_BLOCK
+    # sentinel checks in each dispatch function.
+    if classification.get("is_harmful"):
+        harm_reason = classification.get("harm_reason") or "inappropriate content"
+        print(f"[SAFETY] Blocked harmful request. Reason: {harm_reason}. Message: {request.message[:80]}")
+        await save_message(
+            conversation_id=conversation_id,
+            user_id=request.user_id,
+            role="user",
+            content=request.message,   # user_content not built yet at this point — use raw message
+            pending_intent_update=None,
+        )
+
+        async def safety_refusal_stream():
+            yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id})}\n\n"
+            async for evt in _yield_refusal(conversation_id, request.user_id):
+                yield evt
+
+        return StreamingResponse(
+            safety_refusal_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     intent              = classification["intent"]
     topic_raw           = classification.get("topic") or ""
     num_questions       = classification["num_questions"]
@@ -738,6 +791,15 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
             topic=topic or "",
             num_questions=num_questions,
         )
+
+        # ── Safety sentinel check ─────────────────────────────────────────────
+        # generate_quiz_questions() returns {"__refused__": True} when the model
+        # detects the topic is harmful (covers chip path where classify_intent was skipped)
+        if result.get("__refused__"):
+            async for evt in _yield_refusal(conversation_id, user_id):
+                yield evt
+            return
+
         raw_questions = result["questions"]
         fun_fact = result["fun_fact"]
 
@@ -811,6 +873,15 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
             pass
 
         mermaid_code = generate_mermaid(topic=effective, diagram_type=diagram_type, context_chunks=chunks, layout_hint=layout_hint)
+
+        # ── Safety sentinel check ─────────────────────────────────────────────
+        # generate_mermaid() returns _REFUSAL_SENTINEL when it detects a harmful topic.
+        # This is the PRIMARY guard for the chip path.
+        if mermaid_code.strip() == _REFUSAL_SENTINEL:
+            async for evt in _yield_refusal(conversation_id, user_id):
+                yield evt
+            return
+
         saved = await save_diagram(
             user_id=user_id, conversation_id=conversation_id,
             diagram_type=diagram_type, topic=effective, mermaid_code=mermaid_code,
@@ -844,7 +915,16 @@ async def _dispatch_image(user_id, conversation_id, topic, prior_messages):
         except Exception:
             pass
 
-        image_bytes = generate_image_bytes(topic=effective, context_chunks=chunks)
+        try:
+            image_bytes = generate_image_bytes(topic=effective, context_chunks=chunks)
+        except ValueError as ve:
+            # generate_image() raises ValueError("__REFUSED__") for harmful topics
+            if _REFUSAL_SENTINEL in str(ve):
+                async for evt in _yield_refusal(conversation_id, user_id):
+                    yield evt
+                return
+            raise
+
         blob_result = upload_generated_image_to_blob(image_bytes=image_bytes, topic=effective, user_id=user_id)
         saved = await save_image_diagram(
             user_id=user_id, conversation_id=conversation_id,
@@ -873,6 +953,15 @@ async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, 
             topic=topic or None, timeline_weeks=timeline_weeks,
             hours_per_week=hours_per_week, focus_days=None,
         )
+
+        # ── Safety sentinel check ─────────────────────────────────────────────
+        # create_study_plan delegates to generate_study_plan() which returns
+        # {"__refused__": True} for harmful topics (covers chip path)
+        if isinstance(plan, dict) and plan.get("__refused__"):
+            async for evt in _yield_refusal(conversation_id, user_id):
+                yield evt
+            return
+
         weeks_data = [
             {
                 "week_number": w.get("week_number", 0),
