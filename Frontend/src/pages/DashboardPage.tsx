@@ -199,11 +199,11 @@ function ScoreDistribution({ data }: { data: { name: string; value: number; fill
           <p className="text-sm text-muted-foreground">Performance breakdown</p>
         </div>
         {data.length > 0 ? (
-          <div className="flex flex-1 items-center justify-center gap-6">
-            <div className="h-[160px] w-[160px]">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-6">
+            <div className="h-[180px] w-[180px] shrink-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={data} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={2} dataKey="value" strokeWidth={0}>
+                  <Pie data={data} cx="50%" cy="50%" innerRadius={55} outerRadius={82} paddingAngle={2} dataKey="value" strokeWidth={0}>
                     {data.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
                   </Pie>
                   <Tooltip
@@ -218,7 +218,7 @@ function ScoreDistribution({ data }: { data: { name: string; value: number; fill
             <div className="flex flex-col gap-3">
               {data.map((item, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.fill }} />
+                  <div className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: item.fill }} />
                   <span className="text-sm text-muted-foreground">{item.name}</span>
                 </div>
               ))}

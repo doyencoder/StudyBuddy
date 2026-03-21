@@ -667,12 +667,12 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
           {/* Color Mode */}
           <div>
             <Label className="text-sm text-muted-foreground mb-3 block">Color mode</Label>
-            <div className="flex gap-3">
+            <div className="grid grid-cols-3 gap-3">
               {colorModes.map((mode) => (
                 <button
                   key={mode.id}
                   onClick={() => updateAppearance("color_mode", mode.id)}
-                  className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all min-w-[90px] ${
+                  className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
                     settings.appearance.color_mode === mode.id
                       ? "border-primary bg-primary/5"
                       : "border-border hover:border-muted-foreground/40 bg-card"
@@ -698,12 +698,12 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
           {/* Chat Font */}
           <div>
             <Label className="text-sm text-muted-foreground mb-3 block">Chat font</Label>
-            <div className="flex gap-3 flex-wrap">
+            <div className="grid grid-cols-2 gap-3">
               {chatFonts.map((font) => (
                 <button
                   key={font.id}
                   onClick={() => updateAppearance("chat_font", font.id)}
-                  className={`flex flex-col items-center gap-2 px-5 py-3 rounded-xl border-2 transition-all min-w-[90px] ${
+                  className={`flex flex-col items-center gap-2 px-5 py-4 rounded-xl border-2 transition-all ${
                     settings.appearance.chat_font === font.id
                       ? "border-primary bg-primary/5"
                       : "border-border hover:border-muted-foreground/40 bg-card"
@@ -730,7 +730,7 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
           <div>
             <Label className="text-sm text-muted-foreground mb-3 block">Voice</Label>
             <p className="text-xs text-muted-foreground mb-3">Click a voice to preview it</p>
-            <div className="flex gap-3 flex-wrap">
+            <div className="grid grid-cols-2 gap-3">
               {voices.map((voice) => (
                 <button
                   key={voice}
@@ -738,7 +738,7 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
                     updateAppearance("voice", voice);
                     playVoicePreview(voice);
                   }}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 transition-all ${
+                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 transition-all ${
                     settings.appearance.voice === voice
                       ? "border-primary bg-primary/5"
                       : "border-border hover:border-muted-foreground/40 bg-card"
