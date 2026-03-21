@@ -43,7 +43,7 @@ from app.services.blob_service import upload_generated_image_to_blob
 from app.services.study_plan_service import create_study_plan
 from app.services.translator_service import translate_text
 from app.services.tts_service import synthesize_speech
-from app.services.web_search_service import web_search, build_search_context, image_search, is_image_query, youtube_search, is_video_query
+from app.services.web_search_service import web_search, build_search_context, image_search, is_image_query, youtube_search, is_video_query, youtube_search_api
 from app.utils.document_resolver import resolve_document_filter
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -136,6 +136,29 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
             pass
 
     prev_response = all_messages[target_idx].get("content", "")
+
+    # ── Check if the message being regenerated was a web search answer ─────────
+    # If so, re-dispatch to _dispatch_web_search so we get fresh results,
+    # fresh images, and fresh source citations instead of a plain text reply.
+    is_web_search_regen = prev_response.strip().startswith('{"__type": "web_search_answer"')
+
+    if is_web_search_regen:
+        async def regen_stream():
+            yield f"data: {json.dumps({'type': 'meta', 'conversation_id': request.conversation_id})}\n\n"
+            async for evt in _dispatch_web_search(
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                query=user_text,
+                prior_messages=prior_messages,
+                update_message_id=request.message_id,
+            ):
+                yield evt
+
+        return StreamingResponse(
+            regen_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     q_text = user_text or "key concepts"
     context_chunks: list = []
@@ -879,7 +902,7 @@ async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, 
 
 # ── _dispatch_web_search ──────────────────────────────────────────────────────
 
-async def _dispatch_web_search(user_id, conversation_id, query, prior_messages):
+async def _dispatch_web_search(user_id, conversation_id, query, prior_messages, update_message_id=None):
     """
     Routes to either image search or text search based on the query:
 
@@ -903,16 +926,90 @@ async def _dispatch_web_search(user_id, conversation_id, query, prior_messages):
         # ── Route: video / image / text query ────────────────────────────────
         if is_video_query(query):
             # ── VIDEO PATH ────────────────────────────────────────────────────
-            # SerpAPI youtube engine requires a paid plan → try it, fall back to
-            # regular web search if it returns an error or empty results.
+            # Detect whether the user also wants an explanation alongside videos
+            # e.g. "explain machine learning and recommend videos"
+            import re as _re2
+            _explain_vid_pattern = _re2.compile(
+                r'\b(explain|describe|tell|what is|what are|how does|how do|'
+                r'summarize|summary|detail|overview|teach|define|elaborate)\b',
+                _re2.IGNORECASE,
+            )
+            wants_explanation = bool(_explain_vid_pattern.search(query))
+
+            # ── Fetch videos: try YouTube Data API → SerpAPI → skip ───────────
             videos = []
             try:
-                videos = await loop.run_in_executor(None, lambda: youtube_search(query, num_results=6))
+                videos = await loop.run_in_executor(None, lambda: youtube_search_api(query, num_results=5))
             except Exception:
-                pass  # fall through to web-search fallback
+                # YouTube Data API unavailable — try SerpAPI YouTube engine
+                try:
+                    videos = await loop.run_in_executor(None, lambda: youtube_search(query, num_results=5))
+                except Exception:
+                    pass  # fall through — no videos, but we can still answer
+
+            if wants_explanation:
+                # ── EXPLAIN + VIDEOS PATH ─────────────────────────────────────
+                # Run a web search for context, stream a full explanation,
+                # then append video cards (if any) or source chips.
+                try:
+                    search_results = await loop.run_in_executor(None, lambda: web_search(query, num_results=6))
+                except Exception:
+                    search_results = []
+
+                yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
+                await asyncio.sleep(0)
+
+                search_context = build_search_context(search_results) if search_results else ""
+                if search_context:
+                    src_instr = "Use the following web search results as your primary source:\n\n" + search_context
+                else:
+                    src_instr = "Use your knowledge to answer."
+                explain_vid_prompt = f"""You are StudyBuddy, a helpful study assistant.
+The user asked: "{query}"
+Give a thorough explanation of the topic. Use markdown (headings, bullet points) where helpful.
+{src_instr}
+At the very end of your response, add ONE short sentence like "Here are some recommended videos for [topic]:".
+Do NOT add citation numbers like [1], [2].
+CRITICAL: Do NOT include any URLs, hyperlinks, or markdown links (like [text](url)) anywhere in your response. Video links are displayed separately as clickable cards below."""
+
+                from app.services.ai_service import chat_stream as _ai_stream
+                full_reply = ""
+                try:
+                    for chunk in _ai_stream(question=query, context_chunks=[], history=[], system_prompt_override=explain_vid_prompt):
+                        full_reply += chunk
+                        yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+                if videos:
+                    yield f"data: {json.dumps({'type': 'web_search_videos', 'data': videos})}\n\n"
+                    await asyncio.sleep(0)
+                elif search_results:
+                    yield f"data: {json.dumps({'type': 'web_search_sources', 'data': search_results})}\n\n"
+                    await asyncio.sleep(0)
+
+                new_content = json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query, "answer": full_reply,
+                    "sources": search_results if not videos else [],
+                    "images": [], "videos": videos,
+                })
+                if update_message_id:
+                    await update_message_content(conversation_id=conversation_id, user_id=user_id,
+                                                 message_id=update_message_id, new_content=new_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+                else:
+                    saved_msg = await save_message(conversation_id=conversation_id, user_id=user_id,
+                                                   role="assistant", content=new_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
             if not videos:
-                # ── FALLBACK: regular web search for video/resource queries ──
+                # ── FALLBACK: no videos available — regular web search ─────────
                 try:
                     fallback_results = await loop.run_in_executor(None, lambda: web_search(query, num_results=6))
                 except Exception as e:
@@ -946,15 +1043,19 @@ Do NOT add citation numbers like [1], [2] — sources are shown separately.
                 yield f"data: {json.dumps({'type': 'web_search_sources', 'data': fallback_results})}\n\n"
                 await asyncio.sleep(0)
 
-                # NOTE: user message already saved by the outer endpoint — do NOT save again
-                await save_message(
-                    conversation_id=conversation_id, user_id=user_id, role="assistant",
-                    content=json.dumps({
-                        "__type": "web_search_answer",
-                        "query": query, "answer": full_reply,
-                        "sources": fallback_results, "images": [], "videos": [],
-                    }),
-                )
+                new_content = json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query, "answer": full_reply,
+                    "sources": fallback_results, "images": [], "videos": [],
+                })
+                if update_message_id:
+                    await update_message_content(conversation_id=conversation_id, user_id=user_id,
+                                                 message_id=update_message_id, new_content=new_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+                else:
+                    saved_msg = await save_message(conversation_id=conversation_id, user_id=user_id,
+                                                   role="assistant", content=new_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
@@ -982,15 +1083,19 @@ Do NOT list or describe the videos. Just one short intro sentence."""
             yield f"data: {json.dumps({'type': 'web_search_videos', 'data': videos})}\n\n"
             await asyncio.sleep(0)
 
-            # NOTE: user message already saved by the outer endpoint — do NOT save again
-            await save_message(
-                conversation_id=conversation_id, user_id=user_id, role="assistant",
-                content=json.dumps({
-                    "__type": "web_search_answer",
-                    "query": query, "answer": full_reply,
-                    "sources": [], "images": [], "videos": videos,
-                }),
-            )
+            new_content = json.dumps({
+                "__type": "web_search_answer",
+                "query": query, "answer": full_reply,
+                "sources": [], "images": [], "videos": videos,
+            })
+            if update_message_id:
+                await update_message_content(conversation_id=conversation_id, user_id=user_id,
+                                             message_id=update_message_id, new_content=new_content)
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+            else:
+                saved_msg = await save_message(conversation_id=conversation_id, user_id=user_id,
+                                               role="assistant", content=new_content)
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
             yield "data: [DONE]\n\n"
 
         elif is_image_query(query):
@@ -1062,18 +1167,22 @@ Do NOT add citation numbers like [1], [2]."""
                 yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
                 await asyncio.sleep(0)
 
-                # NOTE: user message already saved by the outer endpoint — do NOT save again
-                await save_message(
-                    conversation_id=conversation_id, user_id=user_id, role="assistant",
-                    content=json.dumps({
-                        "__type": "web_search_answer",
-                        "query": query,
-                        "answer": full_reply,
-                        "sources": search_results,
-                        "images": images,
-                        "videos": [],
-                    }),
-                )
+                new_img_explain_content = json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query,
+                    "answer": full_reply,
+                    "sources": search_results,
+                    "images": images,
+                    "videos": [],
+                })
+                if update_message_id:
+                    await update_message_content(conversation_id=conversation_id, user_id=user_id,
+                                                 message_id=update_message_id, new_content=new_img_explain_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+                else:
+                    saved_msg = await save_message(conversation_id=conversation_id, user_id=user_id,
+                                                   role="assistant", content=new_img_explain_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
                 yield "data: [DONE]\n\n"
 
             else:
@@ -1103,18 +1212,22 @@ Do NOT describe the images. Do NOT list anything. Just one short intro sentence.
                 yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
                 await asyncio.sleep(0)
 
-                # NOTE: user message already saved by the outer endpoint — do NOT save again
-                await save_message(
-                    conversation_id=conversation_id, user_id=user_id, role="assistant",
-                    content=json.dumps({
-                        "__type": "web_search_answer",
-                        "query": query,
-                        "answer": full_reply,
-                        "sources": [],
-                        "images": images,
-                        "videos": [],
-                    }),
-                )
+                new_img_pure_content = json.dumps({
+                    "__type": "web_search_answer",
+                    "query": query,
+                    "answer": full_reply,
+                    "sources": [],
+                    "images": images,
+                    "videos": [],
+                })
+                if update_message_id:
+                    await update_message_content(conversation_id=conversation_id, user_id=user_id,
+                                                 message_id=update_message_id, new_content=new_img_pure_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+                else:
+                    saved_msg = await save_message(conversation_id=conversation_id, user_id=user_id,
+                                                   role="assistant", content=new_img_pure_content)
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
                 yield "data: [DONE]\n\n"
 
         else:
@@ -1164,18 +1277,22 @@ STRICT RULES:
             yield f"data: {json.dumps({'type': 'web_search_sources', 'data': results})}\n\n"
             await asyncio.sleep(0)
 
-            # NOTE: user message already saved by the outer endpoint — do NOT save again
-            await save_message(
-                conversation_id=conversation_id, user_id=user_id, role="assistant",
-                content=json.dumps({
-                    "__type": "web_search_answer",
-                    "query": query,
-                    "answer": full_reply,
-                    "sources": results,
-                    "images": [],
-                    "videos": [],
-                }),
-            )
+            new_text_content = json.dumps({
+                "__type": "web_search_answer",
+                "query": query,
+                "answer": full_reply,
+                "sources": results,
+                "images": [],
+                "videos": [],
+            })
+            if update_message_id:
+                await update_message_content(conversation_id=conversation_id, user_id=user_id,
+                                             message_id=update_message_id, new_content=new_text_content)
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+            else:
+                saved_msg = await save_message(conversation_id=conversation_id, user_id=user_id,
+                                               role="assistant", content=new_text_content)
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
             yield "data: [DONE]\n\n"
 
     except Exception as e:

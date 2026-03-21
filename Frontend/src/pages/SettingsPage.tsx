@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
-  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2,
+  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -93,11 +93,50 @@ interface ConnectorItem {
 
 // ── Connector Icons ──────────────────────────────────────────────────────────
 
-const connectorIcons: Record<string, string> = {
-  "google-drive": "https://upload.wikimedia.org/wikipedia/commons/1/12/Google_Drive_icon_%282020%29.svg",
-  "gmail": "https://upload.wikimedia.org/wikipedia/commons/7/7e/Gmail_icon_%282020%29.svg",
-  "google-calendar": "https://upload.wikimedia.org/wikipedia/commons/a/a5/Google_Calendar_icon_%282020%29.svg",
-  "github": "",
+// ── Inline Microsoft SVG icons — no external URLs needed ─────────────────────
+const MicrosoftOneDriveIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M14.5 10.5C14.5 10.5 13.5 8 10.5 8C7.5 8 6 10.5 6 10.5C4 10.5 2.5 12 2.5 14C2.5 16 4 17.5 6 17.5H18C19.7 17.5 21 16.2 21 14.5C21 12.8 19.7 11.5 18 11.5C18 11.5 17.5 10.5 16.5 10.5H14.5Z" fill="#0078D4"/>
+    <path d="M9 10C9 10 8 8 6 8C4 8 2.5 9.5 2.5 11.5C2.5 12 2.6 12.5 2.8 12.9C3.6 12.3 4.7 12 6 12H9V10Z" fill="#1490DF"/>
+  </svg>
+);
+
+const MicrosoftOutlookIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="2" y="4" width="14" height="16" rx="2" fill="#0078D4"/>
+    <rect x="8" y="2" width="14" height="16" rx="2" fill="#1490DF"/>
+    <ellipse cx="15" cy="10" rx="3.5" ry="3.5" fill="white"/>
+    <rect x="9" y="13" width="12" height="1.5" rx="0.75" fill="white" opacity="0.7"/>
+    <rect x="9" y="15.5" width="9" height="1.5" rx="0.75" fill="white" opacity="0.5"/>
+  </svg>
+);
+
+const MicrosoftTeamsIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M13.5 8C13.5 9.1 12.6 10 11.5 10C10.4 10 9.5 9.1 9.5 8C9.5 6.9 10.4 6 11.5 6C12.6 6 13.5 6.9 13.5 8Z" fill="#5059C9"/>
+    <path d="M16 10H21C21.6 10 22 10.4 22 11V15.5C22 17.4 20.4 19 18.5 19H18.4C17.9 20.2 16.8 21 15.5 21C13.6 21 12 19.4 12 17.5V13C12 11.3 13.3 10 15 10H16Z" fill="#5059C9"/>
+    <circle cx="18.5" cy="7.5" r="2.5" fill="#5059C9"/>
+    <path d="M9 12H13C14.1 12 15 12.9 15 14V18C15 19.7 13.7 21 12 21H5C3.3 21 2 19.7 2 18V14C2 12.9 2.9 12 4 12H9Z" fill="#7B83EB"/>
+    <circle cx="8.5" cy="8.5" r="2.5" fill="#7B83EB"/>
+  </svg>
+);
+
+const MicrosoftOneNoteIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="2" y="3" width="13" height="18" rx="2" fill="#7719AA"/>
+    <rect x="9" y="3" width="13" height="18" rx="2" fill="#9332BF"/>
+    <text x="10.5" y="15.5" fontSize="9" fontWeight="bold" fill="white" fontFamily="Arial">N</text>
+    <rect x="3" y="7" width="6" height="1.5" rx="0.75" fill="white" opacity="0.6"/>
+    <rect x="3" y="10" width="6" height="1.5" rx="0.75" fill="white" opacity="0.6"/>
+    <rect x="3" y="13" width="6" height="1.5" rx="0.75" fill="white" opacity="0.6"/>
+  </svg>
+);
+
+const CONNECTOR_ICON_MAP: Record<string, React.ReactNode> = {
+  "onedrive":  <MicrosoftOneDriveIcon />,
+  "outlook":   <MicrosoftOutlookIcon />,
+  "teams":     <MicrosoftTeamsIcon />,
+  "onenote":   <MicrosoftOneNoteIcon />,
 };
 
 // ── Main Component ───────────────────────────────────────────────────────────
@@ -258,110 +297,124 @@ const SettingsPage = () => {
 
   if (loading) {
     return (
-      <div className="p-4 md:p-6 overflow-y-auto h-full space-y-6">
-        {/* Header skeleton */}
-        <div className="space-y-2">
-          <div className="h-8 w-32 bg-secondary/60 rounded-xl animate-pulse" />
-          <div className="h-4 w-56 bg-secondary/40 rounded-lg animate-pulse" />
-        </div>
-        <div className="flex gap-6">
-          {/* Sidebar skeleton */}
-          <div className="w-48 shrink-0 space-y-2">
+      <div className="overflow-y-auto h-full">
+        {/* Hero skeleton */}
+        <div className="bg-gradient-to-b from-primary/5 to-transparent px-6 pt-10 pb-0">
+          <div className="max-w-3xl mx-auto text-center space-y-3 pb-6">
+            <div className="w-14 h-14 rounded-2xl bg-secondary/60 animate-pulse mx-auto" />
+            <div className="h-8 w-32 bg-secondary/60 rounded-xl animate-pulse mx-auto" />
+            <div className="h-4 w-56 bg-secondary/40 rounded-lg animate-pulse mx-auto" />
+          </div>
+          {/* Tab bar skeleton */}
+          <div className="max-w-3xl mx-auto flex gap-6 border-b border-border">
             {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-10 w-full bg-secondary/40 rounded-xl animate-pulse" />
+              <div key={i} className="h-9 w-20 bg-secondary/40 rounded-t-lg animate-pulse" />
             ))}
           </div>
-          {/* Content skeleton */}
-          <div className="flex-1 space-y-4">
-            {[...Array(3)].map((_, i) => (
-              <div key={i} className="bg-card border border-border rounded-2xl p-6 space-y-4 animate-pulse">
-                <div className="h-5 w-24 bg-secondary/60 rounded-lg" />
-                <div className="h-px w-full bg-border" />
-                {[...Array(2)].map((_, j) => (
-                  <div key={j} className="flex items-center justify-between">
-                    <div className="space-y-1.5">
-                      <div className="h-4 w-32 bg-secondary/60 rounded" />
-                      <div className="h-3 w-48 bg-secondary/40 rounded" />
-                    </div>
-                    <div className="h-8 w-24 bg-secondary/40 rounded-lg" />
+        </div>
+        <div className="px-6 py-8 max-w-3xl mx-auto space-y-4">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="bg-card border border-border rounded-2xl p-6 space-y-4 animate-pulse">
+              <div className="h-5 w-24 bg-secondary/60 rounded-lg" />
+              <div className="h-px w-full bg-border" />
+              {[...Array(2)].map((_, j) => (
+                <div key={j} className="flex items-center justify-between">
+                  <div className="space-y-1.5">
+                    <div className="h-4 w-32 bg-secondary/60 rounded" />
+                    <div className="h-3 w-48 bg-secondary/40 rounded" />
                   </div>
-                ))}
-              </div>
-            ))}
-          </div>
+                  <div className="h-8 w-24 bg-secondary/40 rounded-lg" />
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 md:p-6 overflow-y-auto h-full">
-      <div className="max-w-4xl">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-foreground">Settings</h1>
-          <p className="text-muted-foreground mt-1">Customize your Study Buddy experience.</p>
-        </div>
-
-        <div className="flex flex-col md:flex-row gap-6">
-          {/* Sidebar Tabs */}
-          <nav className="md:w-48 flex-shrink-0">
-            <div className="flex md:flex-col gap-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors w-full text-left ${
-                    activeTab === tab.id
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                  }`}
-                >
-                  {tab.icon}
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          </nav>
-
-          {/* Content Area */}
-          <div className="flex-1 min-w-0 space-y-6">
-            {activeTab === "general" && (
-              <GeneralTab
-                settings={settings}
-                setSettings={setSettings}
-                saveSettings={saveSettings}
-                saving={saving}
-              />
-            )}
-            {activeTab === "account" && (
-              <AccountTab
-                account={account}
-                copiedOrgId={copiedOrgId}
-                copyOrgId={copyOrgId}
-                showLogoutDialog={showLogoutDialog}
-                setShowLogoutDialog={setShowLogoutDialog}
-                showDeleteDialog={showDeleteDialog}
-                setShowDeleteDialog={setShowDeleteDialog}
-              />
-            )}
-            {activeTab === "billing" && (
-              <BillingTab
-                billingPlans={billingPlans}
-                currentPlan={currentPlan}
-                showPlansDialog={showPlansDialog}
-                setShowPlansDialog={setShowPlansDialog}
-                handleUpgrade={handleUpgrade}
-              />
-            )}
-            {activeTab === "connectors" && (
-              <ConnectorsTab
-                connectors={connectors}
-                handleConnectorToggle={handleConnectorToggle}
-              />
-            )}
+    <div className="overflow-y-auto h-full">
+      {/* ── Hero header — gradient band, icon, title, subtitle ── */}
+      <div className="bg-gradient-to-b from-primary/8 via-primary/3 to-transparent">
+        <div className="max-w-3xl mx-auto px-6 pt-10 pb-0 text-center">
+          {/* Icon badge */}
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/15 border border-primary/20 mb-4 shadow-sm">
+            <Settings2Icon className="w-7 h-7 text-primary" />
           </div>
+          <h1 className="text-3xl font-bold text-foreground tracking-tight">Settings</h1>
+          <p className="text-muted-foreground mt-2 text-sm">
+            Manage your profile, appearance, and preferences.
+          </p>
+          {saving && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-primary/70 mt-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-pulse" />
+              Saving…
+            </span>
+          )}
         </div>
+
+        {/* ── Underline tab bar ── */}
+        <div className="max-w-3xl mx-auto px-6 mt-6">
+          <nav className="flex gap-0 overflow-x-auto scrollbar-none border-b border-border">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative flex items-center gap-2 px-5 py-3 text-sm font-medium whitespace-nowrap transition-colors shrink-0 ${
+                  activeTab === tab.id
+                    ? "text-primary"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.icon}
+                {tab.label}
+                {/* Active underline indicator */}
+                {activeTab === tab.id && (
+                  <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t-full" />
+                )}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </div>
+
+      {/* ── Tab content — full-width cards, centered ── */}
+      <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
+        {activeTab === "general" && (
+          <GeneralTab
+            settings={settings}
+            setSettings={setSettings}
+            saveSettings={saveSettings}
+            saving={saving}
+          />
+        )}
+        {activeTab === "account" && (
+          <AccountTab
+            account={account}
+            copiedOrgId={copiedOrgId}
+            copyOrgId={copyOrgId}
+            showLogoutDialog={showLogoutDialog}
+            setShowLogoutDialog={setShowLogoutDialog}
+            showDeleteDialog={showDeleteDialog}
+            setShowDeleteDialog={setShowDeleteDialog}
+          />
+        )}
+        {activeTab === "billing" && (
+          <BillingTab
+            billingPlans={billingPlans}
+            currentPlan={currentPlan}
+            showPlansDialog={showPlansDialog}
+            setShowPlansDialog={setShowPlansDialog}
+            handleUpgrade={handleUpgrade}
+          />
+        )}
+        {activeTab === "connectors" && (
+          <ConnectorsTab
+            connectors={connectors}
+            handleConnectorToggle={handleConnectorToggle}
+          />
+        )}
       </div>
     </div>
   );
@@ -989,19 +1042,10 @@ const ConnectorsTab = ({ connectors, handleConnectorToggle }: ConnectorsTabProps
               <div className="flex items-center justify-between py-3">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-lg bg-muted/50 flex items-center justify-center overflow-hidden">
-                    {connector.icon === "github" ? (
-                      <svg viewBox="0 0 24 24" className="w-5 h-5 text-foreground fill-current">
-                        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                      </svg>
-                    ) : (
-                      <img
-                        src={connectorIcons[connector.icon]}
-                        alt={connector.name}
-                        className="w-5 h-5"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = "none";
-                        }}
-                      />
+                    {CONNECTOR_ICON_MAP[connector.icon] ?? (
+                      <span className="text-xs font-bold text-muted-foreground">
+                        {connector.name.charAt(0)}
+                      </span>
                     )}
                   </div>
                   <div>

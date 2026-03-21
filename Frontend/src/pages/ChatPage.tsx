@@ -173,6 +173,14 @@ interface Message {
   webSearchSources?: WebSearchSource[]; // populated by web_search_sources SSE event
   webSearchImages?: WebSearchImage[];   // populated by web_search_images SSE event
   webSearchVideos?: WebSearchVideo[];   // populated by web_search_videos SSE event
+  // Regeneration version history (like quiz retake versions)
+  regenVersions?: Array<{
+    content: string;
+    webSearchSources?: WebSearchSource[];
+    webSearchImages?: WebSearchImage[];
+    webSearchVideos?: WebSearchVideo[];
+  }>;
+  activeRegenVersionIdx?: number; // which version is currently displayed
   timestamp: Date;
 }
 
@@ -306,8 +314,22 @@ function renderMath(latex: string, displayMode: boolean): React.ReactNode {
 }
 
 function applyInline(text: string): React.ReactNode[] {
-  // Split on $$...$$, $...$, **...**, *...*, `...` — $$ must come before $
-  return text.split(/(\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([^)]+\\\)|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
+  // Split on markdown links, math, bold, italic, code — links and $$ must come first
+  return text.split(/(\[[^\]]+\]\(https?:\/\/[^)]+\)|\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([^)]+\\\)|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
+    // Markdown link: [label](url)
+    const linkMatch = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
+    if (linkMatch)
+      return (
+        <a
+          key={i}
+          href={linkMatch[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline underline-offset-2 hover:opacity-80 transition-opacity break-all"
+        >
+          {linkMatch[1]}
+        </a>
+      );
     if (/^\$\$[^$]+\$\$$/.test(part))
       return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
     if (/^\$[^$\r\n]+\$$/.test(part))
@@ -2956,6 +2978,27 @@ const ChatPage = () => {
     }));
   };
 
+  // Switch which regenerated response version is shown
+  const handleRegenVersionSwitch = (msgId: string, newIdx: number) => {
+    if (!activeConvId) return;
+    updateConv(activeConvId, (s) => ({
+      ...s,
+      messages: s.messages.map((m) => {
+        if (m.id !== msgId || !m.regenVersions) return m;
+        if (newIdx < 0 || newIdx >= m.regenVersions.length) return m;
+        const version = m.regenVersions[newIdx];
+        return {
+          ...m,
+          content: version.content,
+          webSearchSources: version.webSearchSources,
+          webSearchImages: version.webSearchImages,
+          webSearchVideos: version.webSearchVideos,
+          activeRegenVersionIdx: newIdx,
+        };
+      }),
+    }));
+  };
+
   // ── Shared SSE stream helper ────────────────────────────────────────────────
   const streamIntoMessage = async (
     userText: string,
@@ -3065,11 +3108,37 @@ const ChatPage = () => {
       return n;
     });
 
-    // Clear the message content and mark as regenerating — scoped to convId
+    // Capture the current version BEFORE clearing, for the version history
+    const currentConvState = convStates[convId];
+    const currentMsg = currentConvState?.messages.find(m => m.id === assistantMsgId);
+    const existingRegenVersions = currentMsg?.regenVersions ?? [];
+
+    // Build the "previous versions" list — on first regen, seed it with the original response.
+    // On subsequent regens, existingRegenVersions already contains all previous versions.
+    const versionsBeforeRegen = existingRegenVersions.length > 0
+      ? existingRegenVersions
+      : currentMsg
+        ? [{
+            content: currentMsg.content,
+            webSearchSources: currentMsg.webSearchSources,
+            webSearchImages: currentMsg.webSearchImages,
+            webSearchVideos: currentMsg.webSearchVideos,
+          }]
+        : [];
+
+    // Clear the message content AND all web-search metadata, mark as regenerating
     updateConv(convId, (s) => ({
       ...s,
       messages: s.messages.map((m) =>
-        m.id === assistantMsgId ? { ...m, content: "" } : m
+        m.id === assistantMsgId
+          ? {
+              ...m,
+              content: "",
+              webSearchSources: undefined,
+              webSearchImages: undefined,
+              webSearchVideos: undefined,
+            }
+          : m
       ),
       regeneratingMsgId: assistantMsgId,
       isTyping: true,
@@ -3096,6 +3165,13 @@ const ChatPage = () => {
       const decoder = new TextDecoder();
       let firstChunk = true;
 
+      // Track the full new content and new web search metadata for version history
+      let fullNewContent = "";
+      let newSources: WebSearchSource[] | undefined;
+      let newImages: WebSearchImage[] | undefined;
+      let newVideos: WebSearchVideo[] | undefined;
+      let regenDone = false;
+
       // RAF batching — same pattern as sendMessage for smooth 60fps streaming
       let pendingContent = "";
       let rafScheduled = false;
@@ -3104,6 +3180,7 @@ const ChatPage = () => {
         const toFlush = pendingContent;
         pendingContent = "";
         rafScheduled = false;
+        fullNewContent = firstChunk ? toFlush : fullNewContent + toFlush;
         updateConv(convId, (s) => ({
           ...s,
           messages: s.messages.map((m) =>
@@ -3125,6 +3202,7 @@ const ChatPage = () => {
           const dataStr = line.slice(6).trim();
           if (dataStr === "[DONE]") {
             flushPending();
+            regenDone = true;
             updateConv(convId, (s) => ({ ...s, isTyping: false }));
             break;
           }
@@ -3140,12 +3218,91 @@ const ChatPage = () => {
             }
           }
 
+          // Handle web search metadata events so sources/images/videos are
+          // refreshed rather than lost or stale after regeneration.
+          if (parsed.type === "web_search_sources" && parsed.data) {
+            flushPending();
+            newSources = parsed.data as WebSearchSource[];
+            updateConv(convId, (s) => ({
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, webSearchSources: newSources }
+                  : m
+              ),
+            }));
+          }
+
+          if (parsed.type === "web_search_images" && parsed.data) {
+            flushPending();
+            newImages = parsed.data as WebSearchImage[];
+            updateConv(convId, (s) => ({
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, webSearchImages: newImages }
+                  : m
+              ),
+            }));
+          }
+
+          if (parsed.type === "web_search_videos" && parsed.data) {
+            flushPending();
+            newVideos = parsed.data as WebSearchVideo[];
+            updateConv(convId, (s) => ({
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, webSearchVideos: newVideos }
+                  : m
+              ),
+            }));
+          }
+
+          // Fix 2: sync the real Cosmos message ID from the backend
+          if (parsed.type === "message_saved" && parsed.message_id) {
+            const realId: string = parsed.message_id;
+            if (realId !== assistantMsgId) {
+              updateConv(convId, (s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantMsgId ? { ...m, id: realId } : m
+                ),
+              }));
+              // Update assistantMsgId reference in regenVersions push below
+              // (we reference it by closure, so we mutate the outer variable)
+              assistantMsgId = realId;
+            }
+          }
+
           if (parsed.type === "error") {
             toast.error(`Regeneration failed: ${parsed.content}`);
             updateConv(convId, (s) => ({ ...s, isTyping: false }));
             break;
           }
         }
+      }
+
+      // Fix 3: Push the new version to regenVersions so user can navigate back
+      if (regenDone && fullNewContent) {
+        const newVersion = {
+          content: fullNewContent,
+          webSearchSources: newSources,
+          webSearchImages: newImages,
+          webSearchVideos: newVideos,
+        };
+        const allVersions = [...versionsBeforeRegen, newVersion];
+        updateConv(convId, (s) => ({
+          ...s,
+          messages: s.messages.map((m) => {
+            if (m.id !== assistantMsgId) return m;
+            return {
+              ...m,
+              regenVersions: allVersions,
+              activeRegenVersionIdx: allVersions.length - 1,
+            };
+          }),
+        }));
       }
     } catch {
       toast.error("Could not reach the server. Is the backend running?");
@@ -3962,6 +4119,31 @@ const ChatPage = () => {
                         </>
                       );
                     })()}
+
+                    {/* Regeneration version navigator — shown above content for assistant messages with history */}
+                    {msg.role === "assistant" && (msg.regenVersions?.length ?? 0) > 1 && (
+                      <div className="flex items-center justify-end gap-1 mb-1.5 pr-1">
+                        <button
+                          onClick={() => handleRegenVersionSwitch(msg.id, (msg.activeRegenVersionIdx ?? 0) - 1)}
+                          disabled={(msg.activeRegenVersionIdx ?? 0) === 0}
+                          className="w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          title="Previous response"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          Response {(msg.activeRegenVersionIdx ?? 0) + 1} / {msg.regenVersions!.length}
+                        </span>
+                        <button
+                          onClick={() => handleRegenVersionSwitch(msg.id, (msg.activeRegenVersionIdx ?? 0) + 1)}
+                          disabled={(msg.activeRegenVersionIdx ?? 0) >= (msg.regenVersions!.length - 1)}
+                          className="w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          title="Next response"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
 
                     {(msg.content || msg.intentHint) && (
                       <div

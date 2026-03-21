@@ -66,10 +66,13 @@ interface Conversation {
 }
 
 const AppSidebar = () => {
-  const { state, toggleSidebar } = useSidebar();
+  const { state, toggleSidebar, isMobile, setOpenMobile } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Close the sidebar sheet on mobile after any navigation action
+  const closeOnMobile = () => { if (isMobile) setOpenMobile(false); };
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isAnyTyping, setIsAnyTyping] = useState(false);
@@ -106,6 +109,24 @@ const AppSidebar = () => {
 
   // Fetch once on first mount
   useEffect(() => { fetchConversations(); }, []);
+
+  // Refresh sidebar whenever the user navigates to any page.
+  // This ensures chats that appeared in other tabs / sessions show up
+  // without a full page reload. fetchConversations is a lightweight GET
+  // so there is no meaningful latency impact.
+  useEffect(() => {
+    fetchConversations();
+  }, [location.pathname]);
+
+  // Also refresh when the browser tab becomes visible again (user switches
+  // back from another tab) — catches changes made in other tabs.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") fetchConversations();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   // Listen for new conversation events from ChatPage.
   // Fetch immediately (the conversation already exists when meta fires) then
@@ -257,6 +278,7 @@ const AppSidebar = () => {
                       <SidebarMenuButton asChild>
                         <NavLink
                           to={item.url} end
+                          onClick={closeOnMobile}
                           className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
                             isActive
                               ? "bg-primary/15 text-primary glow-blue-sm"
@@ -296,6 +318,7 @@ const AppSidebar = () => {
                     onClick={() => {
                       window.dispatchEvent(new CustomEvent("new-chat-clicked"));
                       navigate("/chat"); // also syncs URL when coming from another page
+                      closeOnMobile();
                     }}
                     title="New chat"
                     className="w-full justify-start gap-2 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 h-8"
@@ -349,7 +372,10 @@ const AppSidebar = () => {
                               // Only clear hover if this row's dropdown isn't open
                               if (openMenuId !== chat.conversation_id) setHoveredId(null);
                             }}
-                            onClick={() => navigate(`/chat?conversationId=${chat.conversation_id}`)}
+                            onClick={() => {
+                              navigate(`/chat?conversationId=${chat.conversation_id}`);
+                              closeOnMobile();
+                            }}
                           >
                             <Clock className="w-3.5 h-3.5 shrink-0 text-muted-foreground mr-1.5" />
 

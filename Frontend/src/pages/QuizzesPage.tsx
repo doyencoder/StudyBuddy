@@ -198,13 +198,51 @@ const QuizzesPage = () => {
   if (selectedQuiz) {
     return (
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4">
-        <Button
-          variant="ghost"
-          onClick={() => { setSelectedQuiz(null); setDetailError(null); }}
-          className="gap-2 text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back to Quizzes
-        </Button>
+        {/* Delete confirmation dialog — also shown in detail view */}
+        <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+          <AlertDialogContent className="bg-card border-border">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-foreground">Delete Quiz?</AlertDialogTitle>
+              <AlertDialogDescription className="text-muted-foreground">
+                This will permanently delete <span className="font-semibold text-foreground">"{deleteTarget?.topic}"</span> and all its results. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="border-border text-muted-foreground hover:text-foreground">
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={async () => {
+                  await handleDeleteConfirm();
+                  setSelectedQuiz(null);
+                  setDetailError(null);
+                }}
+                disabled={isDeleting}
+                className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              >
+                {isDeleting ? "Deleting…" : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <div className="flex items-center justify-between">
+          <Button
+            variant="ghost"
+            onClick={() => { setSelectedQuiz(null); setDetailError(null); }}
+            className="gap-2 text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back to Quizzes
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setDeleteTarget(selectedQuiz)}
+            className="gap-2 text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10"
+          >
+            <Trash2 className="w-4 h-4" /> Delete Quiz
+          </Button>
+        </div>
 
         <div>
           <h2 className="text-xl font-bold text-foreground">{selectedQuiz.topic}</h2>
@@ -388,10 +426,10 @@ const QuizzesPage = () => {
                     <Badge variant="outline" className={difficultyColor(quiz.difficulty)}>
                       {quiz.difficulty}
                     </Badge>
-                    {/* Delete button — stopPropagation prevents card click from firing */}
+                    {/* Delete button — always visible, stopPropagation prevents card click */}
                     <button
                       onClick={(e) => { e.stopPropagation(); setDeleteTarget(quiz); }}
-                      className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors opacity-0 group-hover:opacity-100"
+                      className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
                       title="Delete quiz"
                     >
                       <Trash2 className="w-3.5 h-3.5" />

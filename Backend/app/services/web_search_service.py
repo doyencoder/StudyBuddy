@@ -26,6 +26,8 @@ load_dotenv()
 
 SERP_API_KEY = os.getenv("SERP_API_KEY", "")
 SERP_API_URL = "https://serpapi.com/search.json"
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 
 # Keywords that indicate the user wants to see images rather than text answers
 _IMAGE_QUERY_PATTERN = re.compile(
@@ -261,6 +263,84 @@ def youtube_search(query: str, num_results: int = 6) -> list:
             "views":     r.get("views", ""),
             "published": r.get("published_date", ""),
             "url":       link,
+        })
+
+    return results
+
+def youtube_search_api(query: str, num_results: int = 6) -> list:
+    """
+    Searches YouTube using the official YouTube Data API v3.
+    Returns real YouTube video URLs with thumbnails, titles, and channel names.
+
+    Requires YOUTUBE_API_KEY in .env.
+    Get a free key: console.cloud.google.com → Enable YouTube Data API v3 → Create credentials.
+
+    Returns:
+        List of dicts: [{thumbnail, title, channel, duration, views, url, published}, ...]
+
+    Raises:
+        ValueError  : if YOUTUBE_API_KEY is not configured
+        RuntimeError: if the YouTube API request fails
+    """
+    if not YOUTUBE_API_KEY:
+        raise ValueError(
+            "YOUTUBE_API_KEY is not set. Add it to Backend/.env — "
+            "get a free key at console.cloud.google.com (YouTube Data API v3)."
+        )
+
+    # Strip "youtube" and "video/videos" from query for cleaner search
+    clean_query = re.sub(r'\b(youtube|videos?|watch|tutorials?|recommend|recommendation)\b', '', query, flags=re.IGNORECASE).strip()
+    clean_query = clean_query or query
+
+    params = {
+        "part": "snippet",
+        "q": clean_query,
+        "type": "video",
+        "maxResults": min(num_results, 10),
+        "key": YOUTUBE_API_KEY,
+        "relevanceLanguage": "en",
+        "safeSearch": "moderate",
+        "order": "relevance",
+    }
+
+    try:
+        resp = requests.get(YOUTUBE_SEARCH_URL, params=params, timeout=12)
+        resp.raise_for_status()
+    except requests.exceptions.Timeout:
+        raise RuntimeError("YouTube API search timed out. Please try again.")
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"YouTube API error: {e}")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"YouTube API request failed: {e}")
+
+    data = resp.json()
+
+    if "error" in data:
+        raise RuntimeError(f"YouTube API error: {data['error'].get('message', 'Unknown error')}")
+
+    results = []
+    for item in data.get("items", []):
+        video_id = item.get("id", {}).get("videoId", "")
+        if not video_id:
+            continue
+        snippet = item.get("snippet", {})
+        thumbnails = snippet.get("thumbnails", {})
+        # Prefer medium > high > default thumbnail
+        thumb_url = (
+            thumbnails.get("medium", {}).get("url") or
+            thumbnails.get("high", {}).get("url") or
+            thumbnails.get("default", {}).get("url") or
+            ""
+        )
+        published = snippet.get("publishedAt", "")[:10]  # "2024-03-15T..." → "2024-03-15"
+        results.append({
+            "thumbnail": thumb_url,
+            "title":     snippet.get("title", ""),
+            "channel":   snippet.get("channelTitle", ""),
+            "duration":  "",          # Not available in search endpoint (needs videos endpoint)
+            "views":     "",
+            "published": published,
+            "url":       f"https://www.youtube.com/watch?v={video_id}",
         })
 
     return results
