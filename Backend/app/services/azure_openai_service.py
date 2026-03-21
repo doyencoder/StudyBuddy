@@ -1240,87 +1240,13 @@ FIELD RULES:
         }
 
 
-# ── Image generation — stays on HuggingFace ──────────────────────────────────
-
-def generate_image(topic: str, context_chunks: List[str]) -> bytes:
-    """
-    Generates AI image via HuggingFace FLUX.1-schnell.
-    Raises ValueError("__REFUSED__") if the topic is detected as harmful.
-    IDENTICAL to gemini_service.generate_image() — not migrated to Azure OpenAI.
-    """
-    import requests
-
-    # ── Safety check: quick Azure call to verify topic is safe ───────────────
-    client = _get_client()
-    deployment = _chat_deployment()
-
-    def _safety_check():
-        return client.chat.completions.create(
-            model=deployment,
-            messages=[
-                {"role": "system", "content": "You are a content safety checker. Reply with only one word: SAFE or UNSAFE."},
-                {"role": "user", "content": (
-                    f'Is this topic safe and appropriate for generating an educational illustration '
-                    f'for students? Topic: "{topic}"\n\nReply with ONLY: SAFE or UNSAFE'
-                )},
-            ],
-            temperature=0.0,
-            max_tokens=10,
-        )
-
-    try:
-        safety_resp = _call_with_retry(_safety_check)
-        verdict = safety_resp.choices[0].message.content.strip().upper()
-        if "UNSAFE" in verdict:
-            raise ValueError(REFUSAL_SENTINEL)
-    except openai.BadRequestError as e:
-        if _is_content_filter_error(e):
-            raise ValueError(REFUSAL_SENTINEL)
-        raise
-    except ValueError:
-        raise  # re-raise REFUSAL_SENTINEL
-    except Exception:
-        pass  # if safety check fails for other reasons, proceed cautiously
-
-    hf_token = os.getenv("HF_API_TOKEN")
-    if not hf_token:
-        raise ValueError("HF_API_TOKEN is not set in .env")
-
-    if context_chunks:
-        context_summary = " ".join(context_chunks[:3])[:400]
-        prompt = (
-            f"Detailed anatomical and scientific illustration of: {topic}. "
-            f"Based on these study notes: {context_summary}. "
-            "Style: clean artistic illustration, white background, no text, no labels, visually accurate, educational artwork."
-        )
-    else:
-        prompt = (
-            f"Detailed anatomical and scientific illustration of: {topic}. "
-            "Style: clean artistic illustration, white background, no text, no labels, visually accurate, educational artwork."
-        )
-
-    api_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
-
-    response = requests.post(
-        api_url,
-        headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-        json={"inputs": prompt},
-        timeout=120,
-    )
-
-    if response.status_code == 503:
-        time.sleep(30)
-        response = requests.post(
-            api_url,
-            headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-            json={"inputs": prompt},
-            timeout=120,
-        )
-
-    if response.status_code != 200:
-        raise RuntimeError(f"HuggingFace API error {response.status_code}: {response.text[:300]}")
-
-    return response.content
+# ── Image generation — delegated to image_service.py ─────────────────────────
+# The generate_image implementation now lives in image_service.py which routes
+# to either huggingface_image_service.py or azure_image_service.py based on
+# the IMAGE_GENERATION_PROVIDER environment variable.
+# This file re-exports generate_image so that ai_service.py's import surface
+# remains unchanged — no other file needs to be updated.
+from app.services.image_service import generate_image  # noqa: F401, E402
 
 def extract_document_context(message: str) -> dict:
     """

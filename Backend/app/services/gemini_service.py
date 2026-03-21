@@ -629,89 +629,13 @@ TOPIC:"""
     return topic
 
 
-def generate_image(topic: str, context_chunks: List[str]) -> bytes:
-    """
-    Generates a real AI image for a study topic using FLUX.1-schnell
-    via the Hugging Face Inference API.
-    Returns raw PNG bytes ready to be uploaded to Azure Blob Storage.
-    Raises ValueError("__REFUSED__") if the topic is harmful.
-    """
-    import requests
-
-    # ── Safety check: ask Gemini if this topic is safe for image generation ───
-    # This is a fast single-call check with temperature=0 — adds ~200ms but
-    # prevents FLUX from generating harmful imagery.
-    client = _get_client()
-
-    def _safety_check():
-        return client.models.generate_content(
-            model=CHAT_MODEL,
-            contents=(
-                f'Is the following topic safe and appropriate for generating an educational '
-                f'illustration for students? Topic: "{topic}"\n\n'
-                f'Reply with ONLY one word: SAFE or UNSAFE'
-            ),
-            config=types.GenerateContentConfig(temperature=0.0),
-        )
-
-    try:
-        safety_resp = _call_with_retry(_safety_check)
-        safety_verdict = safety_resp.text.strip().upper()
-        if "UNSAFE" in safety_verdict:
-            raise ValueError(REFUSAL_SENTINEL)
-    except ValueError:
-        raise  # re-raise REFUSAL_SENTINEL
-    except Exception:
-        pass  # if safety check itself fails, proceed cautiously
-
-    hf_token = os.getenv("HF_API_TOKEN")
-    if not hf_token:
-        raise ValueError("HF_API_TOKEN is not set in .env")
-
-    if context_chunks:
-        context_summary = " ".join(context_chunks[:3])[:400]
-        prompt = (
-            f"Detailed anatomical and scientific illustration of: {topic}. "
-            f"Based on these study notes: {context_summary}. "
-            "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
-        )
-    else:
-        prompt = (
-            f"Detailed anatomical and scientific illustration of: {topic}. "
-            "Style: clean artistic illustration, white background, no text, no labels, no words, visually accurate, educational artwork."
-        )
-
-    api_url = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
-
-    response = requests.post(
-        api_url,
-        headers={
-            "Authorization": f"Bearer {hf_token}",
-            "Content-Type": "application/json",
-        },
-        json={"inputs": prompt},
-        timeout=120,
-    )
-
-    if response.status_code == 503:
-        import time
-        time.sleep(30)
-        response = requests.post(
-            api_url,
-            headers={
-                "Authorization": f"Bearer {hf_token}",
-                "Content-Type": "application/json",
-            },
-            json={"inputs": prompt},
-            timeout=120,
-        )
-
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Hugging Face API error {response.status_code}: {response.text[:300]}"
-        )
-
-    return response.content
+# ── Image generation — delegated to image_service.py ─────────────────────────
+# The generate_image implementation now lives in image_service.py which routes
+# to either huggingface_image_service.py or azure_image_service.py based on
+# the IMAGE_GENERATION_PROVIDER environment variable.
+# This file re-exports generate_image so that ai_service.py's import surface
+# remains unchanged — no other file needs to be updated.
+from app.services.image_service import generate_image  # noqa: F401, E402
 
 
 def generate_mermaid(
