@@ -378,8 +378,8 @@ function GoalsProgress({ goals }: { goals: GoalItem[] }) {
 // ─── ImprovementAreas ─────────────────────────────────────────────────────────
 function ImprovementAreas({ areas, onImprove }: { areas: { topic: string; accuracy: number }[]; onImprove: (t: string) => void }) {
   return (
-    <AnimatedWrapper delay={800} className="h-full">
-      <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+    <AnimatedWrapper delay={800}>
+      <div className="flex flex-col rounded-2xl border border-border bg-card p-6">
         <div className="mb-6">
           <h3 className="text-lg font-semibold text-foreground">Improvement Areas</h3>
           <p className="text-sm text-muted-foreground">Topics below 70%</p>
@@ -419,8 +419,8 @@ function ImprovementAreas({ areas, onImprove }: { areas: { topic: string; accura
 function RecentQuizzes({ quizzes }: { quizzes: { quiz_id: string; topic: string; score: number; date: string }[] }) {
   const navigate = useNavigate();
   return (
-    <AnimatedWrapper delay={900} className="h-full">
-      <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
+    <AnimatedWrapper delay={900}>
+      <div className="flex flex-col rounded-2xl border border-border bg-card p-6">
         <div className="mb-6 flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold text-foreground">Recent Quizzes</h3>
@@ -825,7 +825,7 @@ if (loading) {
 
         {/* Header */}
         <AnimatedWrapper delay={0}>
-          <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <div className="mb-2 flex items-center gap-2">
                 <Zap className="h-5 w-5 text-primary" />
@@ -837,19 +837,19 @@ if (loading) {
               <p className="mt-1 text-muted-foreground">Track your learning journey and improve every day.</p>
             </div>
             {weeklyMinutes !== null && (
-              <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-2 mt-1 md:flex-col md:items-end md:gap-1">
                 <div className="flex items-center gap-2">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 24 24" fill="none"
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 md:h-6 md:w-6" viewBox="0 0 24 24" fill="none"
                     stroke="hsl(var(--primary))" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
                   </svg>
-                  <span className="text-3xl font-bold tracking-tight md:text-4xl" style={{ color: "hsl(var(--primary))" }}>
+                  <span className="text-2xl font-bold tracking-tight md:text-4xl" style={{ color: "hsl(var(--primary))" }}>
                     {weeklyMinutes < 60
                       ? `${weeklyMinutes}m`
                       : `${Math.floor(weeklyMinutes / 60)}h ${weeklyMinutes % 60}m`}
                   </span>
                 </div>
-                <p className="text-muted-foreground">studied this week</p>
+                <p className="text-muted-foreground text-sm">studied this week</p>
               </div>
             )}
           </header>
@@ -873,7 +873,7 @@ if (loading) {
         </section>
 
         {/* Bottom row */}
-        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 auto-rows-fr">
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 items-start">
           <ImprovementAreas areas={weakTopics} onImprove={openImproveDialog} />
           <RecentQuizzes quizzes={recentQuizzesList} />
         </section>

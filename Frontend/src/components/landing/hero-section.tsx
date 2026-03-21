@@ -128,9 +128,14 @@ function HeroSection() {
             </div>
           </div>
 
-          {/* Right column - Chat Demo */}
+          {/* Right column - Chat Demo — stacks below text on mobile, side-by-side on desktop */}
           <div
-            className={cn("relative transition-all duration-1000", isLoaded ? "opacity-100 translate-x-0" : "opacity-0 translate-x-12")}
+            className={cn(
+              "relative transition-all duration-1000 mt-8 lg:mt-0",
+              isLoaded
+                ? "opacity-100 lg:translate-x-0"
+                : "opacity-0 lg:translate-x-12"
+            )}
             style={{ transitionDelay: '400ms' }}
           >
             <ChatDemo />

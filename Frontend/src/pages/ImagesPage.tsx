@@ -411,6 +411,12 @@ const ImagesPage = () => {
   const swipeStartX = useRef<number | null>(null);
   const tabBarRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const pageRef = useRef<HTMLDivElement>(null);
+  const activeTabRef = useRef<TabType>("image");
+  const TABS_ORDER_IMAGES: TabType[] = ["image", "diagram", "flowchart"];
+
+  // Keep activeTabRef in sync
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
 
   // Auto-scroll the active tab into centre of the tab bar
   useEffect(() => {
@@ -418,25 +424,24 @@ const ImagesPage = () => {
     if (btn) btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [activeTab]);
 
-  // Swipe left/right to change tabs
+  // Swipe left/right — attached once, reads activeTabRef
   useEffect(() => {
-    const el = document.getElementById("images-page-root");
+    const el = pageRef.current;
     if (!el) return;
-    const TABS_ORDER: TabType[] = ["image", "diagram", "flowchart"];
     const onTouchStart = (e: TouchEvent) => { swipeStartX.current = e.touches[0].clientX; };
     const onTouchEnd = (e: TouchEvent) => {
       if (swipeStartX.current === null) return;
       const dx = e.changedTouches[0].clientX - swipeStartX.current;
       swipeStartX.current = null;
-      if (Math.abs(dx) < 50) return; // too small
-      const idx = TABS_ORDER.indexOf(activeTab);
-      if (dx < 0 && idx < TABS_ORDER.length - 1) setActiveTab(TABS_ORDER[idx + 1]);
-      if (dx > 0 && idx > 0) setActiveTab(TABS_ORDER[idx - 1]);
+      if (Math.abs(dx) < 50) return;
+      const idx = TABS_ORDER_IMAGES.indexOf(activeTabRef.current);
+      if (dx < 0 && idx < TABS_ORDER_IMAGES.length - 1) setActiveTab(TABS_ORDER_IMAGES[idx + 1]);
+      if (dx > 0 && idx > 0) setActiveTab(TABS_ORDER_IMAGES[idx - 1]);
     };
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchend", onTouchEnd, { passive: true });
     return () => { el.removeEventListener("touchstart", onTouchStart); el.removeEventListener("touchend", onTouchEnd); };
-  }, [activeTab]);
+  }, []); // runs once on mount
 
   const fetchDiagrams = async () => {
     setLoading(true);
@@ -503,7 +508,7 @@ const ImagesPage = () => {
 
   return (
     <>
-      <div id="images-page-root" className="p-4 md:p-6 overflow-y-auto overflow-x-hidden h-full space-y-6">
+      <div ref={pageRef} className="p-4 md:p-6 overflow-y-auto overflow-x-hidden h-full space-y-6">
 
         {/* Header */}
         <div className="flex items-center justify-between">

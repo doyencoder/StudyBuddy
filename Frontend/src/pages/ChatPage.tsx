@@ -3938,7 +3938,7 @@ const ChatPage = () => {
           if (msg.role === "quiz" && msg.quizData)
             return (
               <div key={msg.id} className="flex justify-start animate-fade-in">
-                <div className="w-full max-w-[90%] md:max-w-[75%]">
+                <div className="w-full max-w-[90%] md:max-w-[75%] min-w-0">
                   <div className="flex items-center gap-2 mb-1.5">
                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
                       <Bot className="w-3.5 h-3.5 text-primary" />
@@ -3994,7 +3994,7 @@ const ChatPage = () => {
           if (msg.role === "diagram" && msg.diagramData)
             return (
               <div key={msg.id} className="flex justify-start animate-fade-in">
-                <div className="w-full max-w-[90%] md:max-w-[80%]">
+                <div className="w-full max-w-[90%] md:max-w-[80%] min-w-0">
                   <div className="flex items-center gap-2 mb-1.5">
                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
                       <Bot className="w-3.5 h-3.5 text-primary" />
@@ -4029,7 +4029,7 @@ const ChatPage = () => {
           if (msg.role === "study_plan" && msg.studyPlanData) {
             return (
               <div key={msg.id} className="flex justify-start animate-fade-in">
-                <div className="w-full max-w-[90%] md:max-w-[80%]">
+                <div className="w-full max-w-[90%] md:max-w-[80%] min-w-0">
                   <div className="flex items-center gap-2 mb-1.5">
                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
                       <Bot className="w-3.5 h-3.5 text-primary" />
@@ -4055,7 +4055,7 @@ const ChatPage = () => {
               key={msg.id}
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}
             >
-              <div className="max-w-[85%] md:max-w-[70%]">
+              <div className="max-w-[85%] md:max-w-[70%] min-w-0">
                 {msg.role === "assistant" && (
                   <div className="flex items-center gap-2 mb-1.5">
                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
@@ -4147,11 +4147,12 @@ const ChatPage = () => {
 
                     {(msg.content || msg.intentHint) && (
                       <div
-                        className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                        className={`rounded-2xl px-4 py-3 text-sm leading-relaxed break-words ${
                           msg.role === "user"
                             ? "bg-primary text-primary-foreground rounded-br-md w-fit ml-auto"
                             : "bg-card border border-glow text-card-foreground rounded-bl-md"
                         }`}
+                        style={{ overflowWrap: "anywhere" }}
                       >
                         {msg.role === "user" ? (
                           <>

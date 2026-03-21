@@ -8,7 +8,7 @@ import { ScrollProgress } from '@/components/ui/scroll-progress'
 
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background overflow-x-hidden">
       <ScrollProgress />
       <NavBar />
       <main>

@@ -144,7 +144,12 @@ const SettingsPage = () => {
   // Swipe gesture refs
   const swipeStartX = useRef<number | null>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const pageRef = useRef<HTMLDivElement>(null);           // stable ref — works from first render
+  const activeTabRef = useRef<SettingsTab>("general");    // mirror of activeTab for the closure below
   const TABS_ORDER: SettingsTab[] = ["general", "account", "billing", "connectors"];
+
+  // Keep activeTabRef in sync with state
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
 
   // Auto-scroll active tab into center of the tab bar
   useEffect(() => {
@@ -152,9 +157,9 @@ const SettingsPage = () => {
     if (btn) btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [activeTab]);
 
-  // Swipe left/right on the page to switch tabs
+  // Swipe left/right — attach once, reads activeTabRef so it never needs remounting
   useEffect(() => {
-    const el = document.getElementById("settings-page-root");
+    const el = pageRef.current;
     if (!el) return;
     const onTouchStart = (e: TouchEvent) => { swipeStartX.current = e.touches[0].clientX; };
     const onTouchEnd = (e: TouchEvent) => {
@@ -162,14 +167,14 @@ const SettingsPage = () => {
       const dx = e.changedTouches[0].clientX - swipeStartX.current;
       swipeStartX.current = null;
       if (Math.abs(dx) < 50) return;
-      const idx = TABS_ORDER.indexOf(activeTab);
+      const idx = TABS_ORDER.indexOf(activeTabRef.current);
       if (dx < 0 && idx < TABS_ORDER.length - 1) setActiveTab(TABS_ORDER[idx + 1]);
       if (dx > 0 && idx > 0) setActiveTab(TABS_ORDER[idx - 1]);
     };
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchend", onTouchEnd, { passive: true });
     return () => { el.removeEventListener("touchstart", onTouchStart); el.removeEventListener("touchend", onTouchEnd); };
-  }, [activeTab]);
+  }, []); // ← runs once on mount, never needs to re-register
 
   const [settings, setSettings] = useState<UserSettings>({
     profile: { full_name: "", display_name: "" },
@@ -324,7 +329,7 @@ const SettingsPage = () => {
 
   if (loading) {
     return (
-      <div className="overflow-y-auto h-full">
+      <div ref={pageRef} className="overflow-y-auto h-full">
         {/* Hero skeleton */}
         <div className="bg-gradient-to-b from-primary/5 to-transparent px-6 pt-10 pb-0">
           <div className="max-w-3xl mx-auto text-center space-y-3 pb-6">
@@ -361,7 +366,7 @@ const SettingsPage = () => {
   }
 
   return (
-    <div id="settings-page-root" className="overflow-y-auto h-full">
+    <div ref={pageRef} className="overflow-y-auto h-full">
       {/* ── Hero header — gradient band, icon, title, subtitle ── */}
       <div className="bg-gradient-to-b from-primary/8 via-primary/3 to-transparent">
         <div className="max-w-3xl mx-auto px-6 pt-10 pb-0 text-center">
