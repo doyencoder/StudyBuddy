@@ -4360,7 +4360,7 @@ const ChatPage = () => {
       </div>
 
       {/* Input bar */}
-      <div className="flex-none w-full sticky bottom-0 z-20 pb-4 pt-2 px-4 bg-background/95 backdrop-blur-md">
+      <div className="flex-none w-full sticky bottom-0 z-20 pt-2 px-4 bg-background/95 backdrop-blur-md" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom, 1rem))" }}>
         <div className="w-full max-w-4xl mx-auto">
           <div
             className={`flex flex-col bg-secondary/95 backdrop-blur-md border rounded-2xl shadow-2xl px-1 py-1 transition-all duration-200 ${

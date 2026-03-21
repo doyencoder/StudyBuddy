@@ -259,7 +259,7 @@ function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: n
           <p className="text-sm text-muted-foreground">Last {WEEK_COUNT} weeks</p>
         </div>
 
-        <div className="flex flex-1 items-start gap-3">
+        <div className="flex flex-1 items-start gap-3 min-w-0">
           
           {/* Day labels */}
           <div className="flex flex-col gap-[10px] pt-1 shrink-0">
@@ -273,8 +273,9 @@ function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: n
             ))}
           </div>
 
-          {/* Heatmap grid */}
-          <div className="flex gap-[12px]">
+          {/* Heatmap grid — scrolls horizontally on mobile */}
+          <div className="overflow-x-auto flex-1" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
+          <div className="flex gap-[12px]" style={{ minWidth: "max-content" }}>
             {Array.from({ length: WEEK_COUNT }).map((_, wi) => (
               <div key={wi} className="flex flex-col gap-[10px]">
                 {Array.from({ length: 7 }).map((_, di) => {
@@ -306,6 +307,7 @@ function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: n
                 })}
               </div>
             ))}
+          </div>
           </div>
         </div>
 

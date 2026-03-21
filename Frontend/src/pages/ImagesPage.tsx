@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ImageIcon, GitBranch, Network, RefreshCw, X, Download, Code, ZoomIn, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -407,6 +407,37 @@ const ImagesPage = () => {
   const [selectedDiagram, setSelectedDiagram] = useState<DiagramItem | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>("image");
 
+  // Swipe gesture refs
+  const swipeStartX = useRef<number | null>(null);
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // Auto-scroll the active tab into centre of the tab bar
+  useEffect(() => {
+    const btn = tabRefs.current[activeTab];
+    if (btn) btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [activeTab]);
+
+  // Swipe left/right to change tabs
+  useEffect(() => {
+    const el = document.getElementById("images-page-root");
+    if (!el) return;
+    const TABS_ORDER: TabType[] = ["image", "diagram", "flowchart"];
+    const onTouchStart = (e: TouchEvent) => { swipeStartX.current = e.touches[0].clientX; };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (swipeStartX.current === null) return;
+      const dx = e.changedTouches[0].clientX - swipeStartX.current;
+      swipeStartX.current = null;
+      if (Math.abs(dx) < 50) return; // too small
+      const idx = TABS_ORDER.indexOf(activeTab);
+      if (dx < 0 && idx < TABS_ORDER.length - 1) setActiveTab(TABS_ORDER[idx + 1]);
+      if (dx > 0 && idx > 0) setActiveTab(TABS_ORDER[idx - 1]);
+    };
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => { el.removeEventListener("touchstart", onTouchStart); el.removeEventListener("touchend", onTouchEnd); };
+  }, [activeTab]);
+
   const fetchDiagrams = async () => {
     setLoading(true);
     setError(null);
@@ -472,7 +503,7 @@ const ImagesPage = () => {
 
   return (
     <>
-      <div className="p-4 md:p-6 overflow-y-auto overflow-x-hidden h-full space-y-6">
+      <div id="images-page-root" className="p-4 md:p-6 overflow-y-auto overflow-x-hidden h-full space-y-6">
 
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -494,13 +525,14 @@ const ImagesPage = () => {
         </div>
 
         {/* Tab bar */}
-        <div className="border-b border-border"><div className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
+        <div className="border-b border-border"><div ref={tabBarRef} className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
           {TABS.map((tab) => {
             const count = diagrams.filter((d) => d.type === tab.key).length;
             const isActive = activeTab === tab.key;
             return (
               <button
                 key={tab.key}
+                ref={(el) => { tabRefs.current[tab.key] = el; }}
                 onClick={() => setActiveTab(tab.key)}
                 className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-all duration-200 -mb-px whitespace-nowrap shrink-0 ${
                   isActive

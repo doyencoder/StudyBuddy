@@ -15,10 +15,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
-
 import { toast } from "sonner";
 import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from "@/contexts/AppearanceContext";
 
@@ -144,6 +140,37 @@ const CONNECTOR_ICON_MAP: Record<string, React.ReactNode> = {
 const SettingsPage = () => {
   const { setColorMode, setChatFont, setVoice } = useAppearance();
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+
+  // Swipe gesture refs
+  const swipeStartX = useRef<number | null>(null);
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const TABS_ORDER: SettingsTab[] = ["general", "account", "billing", "connectors"];
+
+  // Auto-scroll active tab into center of the tab bar
+  useEffect(() => {
+    const btn = tabRefs.current[activeTab];
+    if (btn) btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [activeTab]);
+
+  // Swipe left/right on the page to switch tabs
+  useEffect(() => {
+    const el = document.getElementById("settings-page-root");
+    if (!el) return;
+    const onTouchStart = (e: TouchEvent) => { swipeStartX.current = e.touches[0].clientX; };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (swipeStartX.current === null) return;
+      const dx = e.changedTouches[0].clientX - swipeStartX.current;
+      swipeStartX.current = null;
+      if (Math.abs(dx) < 50) return;
+      const idx = TABS_ORDER.indexOf(activeTab);
+      if (dx < 0 && idx < TABS_ORDER.length - 1) setActiveTab(TABS_ORDER[idx + 1]);
+      if (dx > 0 && idx > 0) setActiveTab(TABS_ORDER[idx - 1]);
+    };
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    return () => { el.removeEventListener("touchstart", onTouchStart); el.removeEventListener("touchend", onTouchEnd); };
+  }, [activeTab]);
+
   const [settings, setSettings] = useState<UserSettings>({
     profile: { full_name: "", display_name: "" },
     notifications: { goal_reminders: false, quiz_reminders: false, study_streak_alerts: false },
@@ -334,7 +361,7 @@ const SettingsPage = () => {
   }
 
   return (
-    <div className="overflow-y-auto h-full">
+    <div id="settings-page-root" className="overflow-y-auto h-full">
       {/* ── Hero header — gradient band, icon, title, subtitle ── */}
       <div className="bg-gradient-to-b from-primary/8 via-primary/3 to-transparent">
         <div className="max-w-3xl mx-auto px-6 pt-10 pb-0 text-center">
@@ -360,6 +387,7 @@ const SettingsPage = () => {
             {tabs.map((tab) => (
               <button
                 key={tab.id}
+                ref={(el) => { tabRefs.current[tab.id] = el; }}
                 onClick={() => setActiveTab(tab.id)}
                 className={`relative flex items-center gap-2 px-5 py-3 text-sm font-medium whitespace-nowrap transition-colors shrink-0 ${
                   activeTab === tab.id
@@ -760,17 +788,15 @@ const AccountTab = ({
         <CardHeader>
           <CardTitle className="text-base text-foreground">Account</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-5">
+        <CardContent className="space-y-4">
           {/* Logout */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-foreground font-medium">Log out of all devices</p>
-            </div>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-foreground font-medium">Log out of all devices</p>
             <Button
               variant="outline"
               size="sm"
               onClick={() => setShowLogoutDialog(true)}
-              className="border-border"
+              className="border-border shrink-0"
             >
               Log out
             </Button>
@@ -779,15 +805,13 @@ const AccountTab = ({
           <Separator className="bg-border" />
 
           {/* Delete Account */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-foreground font-medium">Delete your account</p>
-            </div>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-foreground font-medium">Delete your account</p>
             <Button
               variant="outline"
               size="sm"
               onClick={() => setShowDeleteDialog(true)}
-              className="border-destructive text-destructive hover:bg-destructive/10"
+              className="border-destructive text-destructive hover:bg-destructive/10 shrink-0"
             >
               Delete account
             </Button>
@@ -796,16 +820,16 @@ const AccountTab = ({
           <Separator className="bg-border" />
 
           {/* Organization ID */}
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-primary font-medium">Organization ID</p>
-            <div className="flex items-center gap-2">
-              <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded font-mono max-w-[200px] truncate">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm text-primary font-medium shrink-0">Organization ID</p>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded font-mono truncate max-w-[140px] sm:max-w-[200px]">
                 {account?.organization_id || "—"}
               </code>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 shrink-0"
                 onClick={copyOrgId}
               >
                 {copiedOrgId ? (
@@ -819,47 +843,34 @@ const AccountTab = ({
         </CardContent>
       </Card>
 
-      {/* Active Sessions */}
+      {/* Active Sessions — compact, no horizontal scroll needed */}
       <Card className="bg-card border-border">
-        <CardHeader>
+        <CardHeader className="pb-3">
           <CardTitle className="text-base text-primary">Active sessions</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="rounded-lg border border-border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border hover:bg-transparent">
-                  <TableHead className="text-primary text-xs font-semibold">Device</TableHead>
-                  <TableHead className="text-primary text-xs font-semibold">Location</TableHead>
-                  <TableHead className="text-primary text-xs font-semibold">Created</TableHead>
-                  <TableHead className="text-primary text-xs font-semibold">Updated</TableHead>
-                  <TableHead className="text-xs font-semibold w-10"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {account?.sessions.map((session, i) => (
-                  <TableRow key={i} className="border-border">
-                    <TableCell className="text-sm text-foreground">
-                      <div className="flex items-center gap-2">
-                        {session.device}
-                        {session.is_current && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                            Current
-                          </Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{session.location}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{session.created}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{session.updated}</TableCell>
-                    <TableCell>
-                      <span className="text-muted-foreground cursor-pointer hover:text-foreground">•••</span>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+        <CardContent className="p-0 pb-2">
+          {account?.sessions && account.sessions.length > 0 ? (
+            <div className="divide-y divide-border">
+              {account.sessions.map((session, i) => (
+                <div key={i} className="flex items-center justify-between px-6 py-3 gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium text-foreground truncate">{session.device}</span>
+                      {session.is_current && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                          Current
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">{session.location}</p>
+                  </div>
+                  <span className="text-muted-foreground cursor-pointer hover:text-foreground text-sm shrink-0">•••</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground px-6 py-4">No active sessions.</p>
+          )}
         </CardContent>
       </Card>
 

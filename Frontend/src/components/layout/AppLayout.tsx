@@ -44,9 +44,9 @@ const AppLayout = () => {
   useStudyHeartbeat();
   return (
     <SidebarProvider>
-      <div className="h-screen flex w-full overflow-hidden">
+      <div className="flex w-full overflow-hidden" style={{ height: "100dvh" }}>
         <AppSidebar />
-        <div className="flex-1 flex flex-col min-w-0 h-screen">
+        <div className="flex-1 flex flex-col min-w-0" style={{ height: "100dvh" }}>
           <AppHeader />
           <main className="flex-1 flex flex-col overflow-hidden">
             <Outlet />

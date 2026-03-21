@@ -30,22 +30,42 @@ function NavBar({
 }: NavBarProps) {
   const [isOpen, setIsOpen] = React.useState(false)
   const [isScrolled, setIsScrolled] = React.useState(false)
+  const navRef = React.useRef<HTMLElement>(null)
 
   React.useEffect(() => {
     const handleScroll = () => {
       setIsScrolled(window.scrollY > 10)
+      // Close menu when user scrolls
+      if (window.scrollY > 10) setIsOpen(false)
     }
     window.addEventListener('scroll', handleScroll, { passive: true })
     return () => window.removeEventListener('scroll', handleScroll)
   }, [])
 
+  // Close menu when tapping anywhere outside the nav
+  React.useEffect(() => {
+    if (!isOpen) return
+    const handleOutside = (e: MouseEvent | TouchEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutside)
+    document.addEventListener('touchstart', handleOutside, { passive: true })
+    return () => {
+      document.removeEventListener('mousedown', handleOutside)
+      document.removeEventListener('touchstart', handleOutside)
+    }
+  }, [isOpen])
+
   return (
     <nav
+      ref={navRef}
       className={cn(
         'fixed top-0 left-0 right-0 z-50',
         'transition-all duration-300',
         isScrolled
-          ? 'bg-background/80 backdrop-blur-xl border-b border-border/50'
+          ? 'bg-background/90 backdrop-blur-xl border-b border-border/50 shadow-sm'
           : 'bg-transparent',
         className
       )}
@@ -69,7 +89,7 @@ function NavBar({
             <span className="text-lg font-semibold text-foreground">{brandName}</span>
           </Link>
 
-          {/* Desktop Navigation — anchor links use <a> for same-page scrolling */}
+          {/* Desktop Navigation */}
           <div className="hidden md:flex md:items-center md:gap-1">
             {items.map((item) => (
               item.href.startsWith('#') ? (
@@ -117,7 +137,7 @@ function NavBar({
           <button
             type="button"
             className="md:hidden p-2 text-muted-foreground hover:text-foreground"
-            onClick={() => setIsOpen(!isOpen)}
+            onClick={() => setIsOpen((v) => !v)}
             aria-label="Toggle menu"
           >
             {isOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -125,47 +145,51 @@ function NavBar({
         </div>
       </div>
 
-      {/* Mobile Navigation */}
-      {isOpen && (
-        <div className="md:hidden bg-background/95 backdrop-blur-xl border-b border-border/50">
-          <div className="px-4 py-4 space-y-3">
-            {items.map((item) => (
-              item.href.startsWith('#') ? (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    'block py-2 text-sm font-medium',
-                    'text-muted-foreground hover:text-foreground',
-                    'transition-colors duration-200'
-                  )}
-                  onClick={() => setIsOpen(false)}
-                >
-                  {item.label}
-                </a>
-              ) : (
-                <Link
-                  key={item.href}
-                  to={item.href}
-                  className={cn(
-                    'block py-2 text-sm font-medium',
-                    'text-muted-foreground hover:text-foreground',
-                    'transition-colors duration-200'
-                  )}
-                  onClick={() => setIsOpen(false)}
-                >
-                  {item.label}
-                </Link>
-              )
-            ))}
-            <div className="pt-3 border-t border-border/50">
-              <Button asChild className="w-full" size="sm">
-                <Link to={ctaHref}>{ctaText}</Link>
-              </Button>
-            </div>
+      {/* Mobile Navigation — animated slide-down */}
+      <div
+        className={cn(
+          'md:hidden overflow-hidden transition-all duration-300 ease-in-out',
+          isOpen ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0 pointer-events-none'
+        )}
+        style={{ background: 'hsl(var(--background) / 0.97)', backdropFilter: 'blur(20px)' }}
+      >
+        <div className="border-b border-border/50 px-4 py-4 space-y-1">
+          {items.map((item) => (
+            item.href.startsWith('#') ? (
+              <a
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'block px-3 py-2.5 text-sm font-medium rounded-lg',
+                  'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+                  'transition-colors duration-200'
+                )}
+                onClick={() => setIsOpen(false)}
+              >
+                {item.label}
+              </a>
+            ) : (
+              <Link
+                key={item.href}
+                to={item.href}
+                className={cn(
+                  'block px-3 py-2.5 text-sm font-medium rounded-lg',
+                  'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+                  'transition-colors duration-200'
+                )}
+                onClick={() => setIsOpen(false)}
+              >
+                {item.label}
+              </Link>
+            )
+          ))}
+          <div className="pt-2 pb-1">
+            <Button asChild className="w-full" size="sm" onClick={() => setIsOpen(false)}>
+              <Link to={ctaHref}>{ctaText}</Link>
+            </Button>
           </div>
         </div>
-      )}
+      </div>
     </nav>
   )
 }
