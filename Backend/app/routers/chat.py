@@ -1467,6 +1467,7 @@ async def get_conversations(user_id: str = Query(...)):
             "conversation_id": conv.get("conversation_id"),
             "title": title,
             "created_at": conv.get("created_at", ""),
+            "updated_at": conv.get("updated_at", conv.get("created_at", "")),
             "starred": conv.get("starred", False),
         })
 

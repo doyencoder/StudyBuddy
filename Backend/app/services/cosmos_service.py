@@ -45,6 +45,7 @@ async def create_conversation(user_id: str) -> str:
         "conversation_id": conversation_id,
         "user_id": user_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
         "messages": [],
     }
 
@@ -62,6 +63,7 @@ async def ensure_conversation(user_id: str, conversation_id: str, title: str = "
         "conversation_id": conversation_id,
         "user_id": user_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
         "messages": [],
         "title": title,
     }
@@ -96,6 +98,7 @@ async def save_message(
         "content": content,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
@@ -107,6 +110,7 @@ async def save_message(
                 partition_key=user_id,
             )
             item["messages"].append(message)
+            item["updated_at"] = now_iso
             # Update pending_intent only when explicitly requested
             if pending_intent_update is not _PENDING_UNSET:
                 if pending_intent_update is None:
@@ -120,7 +124,8 @@ async def save_message(
                 "id": conversation_id,
                 "conversation_id": conversation_id,
                 "user_id": user_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": now_iso,
+                "updated_at": now_iso,
                 "messages": [message],
             }
             if pending_intent_update is not _PENDING_UNSET and pending_intent_update is not None:
@@ -273,12 +278,16 @@ async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     """
     Returns all conversations for a given user (lightweight — no messages).
     Includes starred field so the frontend can sort starred chats to the top.
+    Ordered by latest activity so an old chat bumps to the top after new prompts.
     """
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(CONVERSATIONS_CONTAINER)
 
-        query = "SELECT c.conversation_id, c.created_at, c.messages, c.title, c.starred FROM c WHERE c.user_id = @user_id ORDER BY c.created_at DESC"
+        query = (
+            "SELECT c.conversation_id, c.created_at, c.updated_at, c.messages, c.title, c.starred "
+            "FROM c WHERE c.user_id = @user_id"
+        )
         parameters = [{"name": "@user_id", "value": user_id}]
 
         results = []
@@ -287,6 +296,12 @@ async def list_conversations(user_id: str) -> List[Dict[str, Any]]:
             parameters=parameters,
         ):
             results.append(item)
+
+        # Keep newest activity first, while handling legacy docs with no updated_at.
+        results.sort(
+            key=lambda c: c.get("updated_at") or c.get("created_at") or "",
+            reverse=True,
+        )
 
         return results
 

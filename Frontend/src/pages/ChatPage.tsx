@@ -497,6 +497,14 @@ function renderMarkdown(text: string) {
   const lines = text.split("\n");
   const elements: React.ReactNode[] = [];
   let i = 0;
+  const headingClasses: Record<number, string> = {
+    1: "text-lg font-bold text-foreground mt-3 mb-1",
+    2: "text-base font-bold text-foreground mt-3 mb-1",
+    3: "text-sm font-bold text-foreground mt-3 mb-1",
+    4: "text-sm font-semibold text-foreground mt-2.5 mb-1",
+    5: "text-sm font-semibold text-foreground/90 mt-2 mb-1",
+    6: "text-xs font-semibold text-foreground/80 mt-2 mb-1 uppercase tracking-wide",
+  };
 
   while (i < lines.length) {
     const line = lines[i];
@@ -572,34 +580,23 @@ function renderMarkdown(text: string) {
       continue;
     }
 
-    const h3 = line.match(/^###\s+(.+)/);
-    const h2 = line.match(/^##\s+(.+)/);
-    const h1 = line.match(/^#\s+(.+)/);
+    const heading = line.match(/^(#{1,6})\s+(.+)/);
+    if (heading) {
+      const level = Math.min(6, heading[1].length);
+      const tag = `h${level}` as keyof JSX.IntrinsicElements;
+      const HeadingTag = tag;
+      elements.push(
+        <HeadingTag key={`h-${level}-${i}`} className={headingClasses[level]}>
+          {applyInline(heading[2])}
+        </HeadingTag>
+      );
+      i++;
+      continue;
+    }
 
-    if (h3) {
-      elements.push(
-        <h3 key={`h3-${i}`} className="text-sm font-bold text-foreground mt-3 mb-1">
-          {applyInline(h3[1])}
-        </h3>
-      );
-      i++;
-      continue;
-    }
-    if (h2) {
-      elements.push(
-        <h2 key={`h2-${i}`} className="text-base font-bold text-foreground mt-3 mb-1">
-          {applyInline(h2[1])}
-        </h2>
-      );
-      i++;
-      continue;
-    }
-    if (h1) {
-      elements.push(
-        <h1 key={`h1-${i}`} className="text-lg font-bold text-foreground mt-3 mb-1">
-          {applyInline(h1[1])}
-        </h1>
-      );
+    // ── Horizontal rule: ---, ***, ___ (with optional spaces) ───────────────
+    if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,}|(?:-\s){3,}|(?:\*\s){3,}|(?:_\s){3,})\s*$/.test(line)) {
+      elements.push(<hr key={`hr-${i}`} className="my-3 border-0 border-t border-border/85" />);
       i++;
       continue;
     }
@@ -3468,6 +3465,9 @@ const ChatPage = () => {
           if (dataStr === "[DONE]") {
             flushPending(); // flush any remaining buffered text before stopping
             updateConv(convKey, (s) => ({ ...s, isTyping: false }));
+            // Fallback refresh signal so sidebar reorders even if message_saved
+            // event arrives before listeners process state changes.
+            window.dispatchEvent(new CustomEvent("conversation-updated"));
             break;
           }
 
@@ -3692,6 +3692,8 @@ const ChatPage = () => {
                 m.id === aiMsgId ? { ...m, id: realMsgId } : m
               ),
             }));
+            // Primary refresh signal: backend has persisted the assistant reply.
+            window.dispatchEvent(new CustomEvent("conversation-updated"));
           }
         }
       }

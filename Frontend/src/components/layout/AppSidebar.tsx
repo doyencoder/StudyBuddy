@@ -62,6 +62,7 @@ interface Conversation {
   conversation_id: string;
   title: string;
   created_at: string;
+  updated_at?: string;
   starred: boolean;
 }
 
@@ -140,6 +141,23 @@ const AppSidebar = () => {
     window.addEventListener("conversation-created", handler);
     return () => window.removeEventListener("conversation-created", handler);
   }, []);
+
+  // Refresh when an existing conversation is updated (new prompt in old chat).
+  // Immediate + short retry keeps ordering stable even if DB write and fetch race.
+  useEffect(() => {
+    const handler = () => {
+      fetchConversations();
+      setTimeout(() => fetchConversations(), 300);
+    };
+    window.addEventListener("conversation-updated", handler);
+    return () => window.removeEventListener("conversation-updated", handler);
+  }, []);
+
+  // If any stream just finished, pull fresh ordering so active old chats rise to top
+  // without requiring manual reload.
+  useEffect(() => {
+    if (!isAnyTyping) fetchConversations();
+  }, [isAnyTyping]);
 
   // Auto-focus and select rename input whenever it appears
   useEffect(() => {
@@ -224,7 +242,9 @@ const AppSidebar = () => {
   const sortedConversations = [...conversations].sort((a, b) => {
     if (a.starred && !b.starred) return -1;
     if (!a.starred && b.starred) return 1;
-    return 0;
+    const aTs = a.updated_at || a.created_at || "";
+    const bTs = b.updated_at || b.created_at || "";
+    return bTs.localeCompare(aTs);
   });
 
   return (
