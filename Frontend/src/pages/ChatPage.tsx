@@ -2787,7 +2787,7 @@ const ChatPage = () => {
       setLoadingAudioMsgId(null);
       audioRef.current = null;
       abortRef.current = null;
-      toast.error(`Text-to-speech failed: ${err.message}`);
+      toast.error("Whoops, that message is a bit too long for our free plan! Upgrade to a Pro plan to listen to longer texts.");
     }
   };
 
@@ -3713,7 +3713,7 @@ const ChatPage = () => {
     const toAdd = files.slice(0, availableSlots);
     if (files.length > availableSlots) {
       toast.error(
-        `Only ${availableSlots} more file(s) can be added. ${files.length - availableSlots} file(s) were ignored.`
+        `Looks like you have a lot to upload! We skipped ${files.length - availableSlots} file(s) since you only have room for ${availableSlots} more. Go Premium to unlock larger batch uploads!`
       );
     }
     const newEntries = toAdd.map((file) => ({

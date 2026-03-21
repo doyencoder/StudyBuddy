@@ -80,6 +80,10 @@ If the question is ambiguous, ask ONE clarifying question before answering.
 Never fabricate facts, formulas, dates, or citations.
 Keep answers clear, structured, and student-friendly.
 
+- If the student's message is empty but study material has been uploaded, respond with:
+  "I've received your uploaded material. What would you like to know? You can ask me to explain it, quiz you on it, create a flowchart, or summarize it page by page."
+- NEVER respond with "I can't help" when study material has been uploaded.
+
 FORMATTING RULES — follow these exactly:
 - When the question asks to compare, contrast, or show differences/similarities between TWO OR MORE things, ALWAYS respond with a properly formatted markdown table. Use this exact format:
   | Feature | Item A | Item B |
@@ -1002,6 +1006,11 @@ TOPIC EXTRACTION (priority order):
 4. If docs are known to be uploaded but topic is unspecified → topic = "[from_document]".
 5. If none of the above → topic = null → needs_clarification = true.
 
+CRITICAL — Image files as study material:
+- If the attached filename ends in .jpg, .jpeg, .png, .webp, .tiff — treat it as uploaded study material (handwritten notes, diagrams, question papers), NOT as a request for AI image generation.
+- When an image file is attached with no message text: intent = "chat", needs_document = true, topic = "[from_document]", needs_clarification = false.
+- NEVER set intent = "image" just because an image file is attached — "image" intent means the user explicitly asked to GENERATE an AI illustration.
+
 STUDY PLAN RULES:
 - Extract timeline_weeks if mentioned (e.g. "4 weeks", "2 months" = 8 weeks, "a month" = 4 weeks). If not mentioned, default to 4.
 - NEVER set needs_clarification = true because of a missing timeline_weeks. Always use 4 as the default.
@@ -1078,6 +1087,22 @@ FIELD RULES:
 - query_type: "specific" (single fact/formula) | "broad" (explain a topic) | "page" (about a specific page) | "formula" (asking for equations) | "definition" (what is X) | "comparison" (difference between X and Y) | "list" (list all X) | "summary" (summarise document/page)
 - top_k_hint: "low" (1-3 chunks, specific questions) | "medium" (4-7 chunks, explanations) | "high" (8-15 chunks, summaries/broad topics)
 - scope: "page" (search only mentioned pages) | "topic" (search by topic) | "document" (need whole document) | "general" (answerable from general knowledge, skip document search)
+  * document: user wants FULL coverage of the document(s) with NO specific topic mentioned.
+    Use when:
+    - query is about the document itself, not a concept within it
+    - "explain/summarize/overview/walk me through + (the document/both/all/everything)"
+    - "page by page / page wise / all pages / entire document / whole document"
+    - "what does this document cover / contain / say / include"
+    - "what is this document about"
+    - "explain both documents / all documents / all pages"
+    - "give me a complete summary / full overview / complete breakdown"
+    - "walk me through everything / take me through the document"
+    - no specific topic/concept is mentioned — user wants the full picture
+    CRITICAL: If user mentions a specific topic or concept → scope=topic NOT document
+    CRITICAL: If user mentions specific page numbers → scope=page NOT document
+  * topic: user asks about a specific concept, formula, or subject within the document
+  * page: user mentions specific page numbers ("page 3", "pages 4-6", "3rd page")
+  * general: question is answerable from general knowledge without any uploaded document
 - response_format: "paragraph" | "bullet" | "steps" | "table" | "formula" | "short_notes"
 - detail_level: "brief" (short notes, in short) | "detailed" (explain in detail) | "eli5" (explain simply, beginner)
 - language_style: "formal" (english) | "casual" (relaxed english) | "hinglish" (mixed hindi+english detected from user message)
@@ -1193,19 +1218,33 @@ def extract_document_context(message: str) -> dict:
 
     prompt = (
         "Extract the following from the user message and respond with JSON only. No explanation.\n"
-        "1. clean_topic: the actual study topic, stripped of any page or document references\n"
+        "1. clean_topic: the actual study topic, stripped of page/document references. "
+        "   Empty string if user wants full document coverage with no specific topic.\n"
         "2. page_numbers: list of page numbers mentioned, empty list if none\n"
-        "3. document_reference: any document/file reference mentioned, empty string if none\n\n"
+        "3. document_reference: any document/file reference mentioned, empty string if none\n"
+        "4. scope: one of 'document'|'topic'|'page'|'general'\n"
+        "   - 'document': user wants FULL coverage, no specific topic mentioned.\n"
+        "     Use for: 'page by page', 'explain all', 'both documents', 'entire document',\n"
+        "     'all pages', 'page wise', 'what does this document cover',\n"
+        "     'walk me through', 'give me an overview', 'summarize the document'\n"
+        "   - 'topic': user asks about a specific concept or subject\n"
+        "   - 'page': user mentions specific page numbers\n"
+        "   - 'general': no document needed, general knowledge question\n\n"
         "Examples:\n"
+        "'explain both documents page by page' → "
+        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
+        "'summarize the entire document' → "
+        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
+        "'what is this document about' → "
+        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"document\"}\n"
         "'quiz on photosynthesis in document 1' → "
-        "{\"clean_topic\": \"photosynthesis\", \"page_numbers\": [], \"document_reference\": \"document 1\"}\n"
-        "'flowchart of page 5 of EC342' → "
-        "{\"clean_topic\": \"EC342 content\", \"page_numbers\": [5], \"document_reference\": \"EC342\"}\n"
-        "'study plan for pages 3 to 7 from mse1' → "
-        "{\"clean_topic\": \"mse1 content\", \"page_numbers\": [3,4,5,6,7], \"document_reference\": \"mse1\"}\n"
-        "'quiz on newton laws' → "
-        "{\"clean_topic\": \"newton laws\", \"page_numbers\": [], \"document_reference\": \"\"}\n\n"
-        f"Message: {message}"
+        "{\"clean_topic\": \"photosynthesis\", \"page_numbers\": [], \"document_reference\": \"document 1\", \"scope\": \"topic\"}\n"
+        "'explain page 5 of EC342' → "
+        "{\"clean_topic\": \"\", \"page_numbers\": [5], \"document_reference\": \"EC342\", \"scope\": \"page\"}\n"
+        "'what is machine learning' → "
+        "{\"clean_topic\": \"machine learning\", \"page_numbers\": [], \"document_reference\": \"\", \"scope\": \"general\"}\n"
+        "'summarize document 2' → "
+        "{\"clean_topic\": \"\", \"page_numbers\": [], \"document_reference\": \"document 2\", \"scope\": \"document\"}\n"
     )
 
     response = model.generate_content(

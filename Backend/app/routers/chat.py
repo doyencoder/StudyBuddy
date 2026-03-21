@@ -23,6 +23,7 @@ from app.services.search_service import (
     retrieve_chunks, retrieve_chunks_hybrid, store_chunks,
     create_index_if_not_exists, conversation_has_documents,
     retrieve_chunks_smart,get_conversation_filenames,
+    retrieve_all_chunks_ordered,
 )
 from app.services.cosmos_service import (
     create_conversation,
@@ -199,14 +200,36 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
             ),
         )
         if has_docs:
-            query_embedding = await loop.run_in_executor(None, lambda: embed_query(q_text))
-            raw_chunks = retrieve_chunks_smart(
-            query_embedding=query_embedding,
-            user_id=request.user_id,
-            conversation_id=request.conversation_id,
-            top_k=5,
-        )
-        context_chunks = [text for text, *_ in raw_chunks]
+            # Detect if original query wanted full document coverage
+            regen_doc_context = {}
+            try:
+                regen_doc_context = await loop.run_in_executor(
+                    None, lambda: extract_document_context(user_text)
+                )
+            except Exception:
+                pass
+
+            regen_scope = regen_doc_context.get("scope") or "topic"
+
+            if regen_scope == "document":
+                # Full coverage — fetch ALL chunks ordered by file+page
+                raw_chunks = retrieve_all_chunks_ordered(
+                    user_id=request.user_id,
+                    conversation_id=request.conversation_id,
+                )
+            else:
+                query_embedding = await loop.run_in_executor(
+                    None, lambda: embed_query(q_text)
+                )
+                raw_chunks = retrieve_chunks_smart(
+                    query_embedding=query_embedding,
+                    user_id=request.user_id,
+                    conversation_id=request.conversation_id,
+                    top_k=10,
+                )
+
+            # Tag with file+page labels so AI knows which file/page each chunk is from
+            context_chunks = _tag_chunks_with_pages(raw_chunks)
     except Exception:
         pass  # RAG failure is non-fatal — fall back to general knowledge
 
@@ -368,6 +391,7 @@ async def chat_message(request: ChatRequest):
         # Only fires when chip is selected and user has typed a message.
         # Gives chip path the same page/document awareness as natural language path.
         page_numbers_chip = []
+        chip_scope = "topic"
         if request.message.strip():
             try:
                 loop = asyncio.get_event_loop()
@@ -378,6 +402,7 @@ async def chat_message(request: ChatRequest):
                 page_numbers_chip = doc_context.get("page_numbers") or []
                 doc_ref           = doc_context.get("document_reference") or ""
                 clean_topic       = doc_context.get("clean_topic") or ""
+                chip_scope        = doc_context.get("scope") or "topic"
 
                 # Use clean topic (strips "in document 1", "on page 3" etc.)
                 if clean_topic:
@@ -407,7 +432,7 @@ async def chat_message(request: ChatRequest):
             ),
             # default values for new fields when chip path is used
             "page_numbers": page_numbers_chip, "keywords": [], "query_type": "broad",
-            "top_k_hint": "medium", "scope": "topic",
+            "top_k_hint": "medium", "scope": chip_scope,
             "response_format": "paragraph", "detail_level": "detailed",
             "language_style": "formal", "is_comparison": False,
             "entities": [], "needs_document": True,
@@ -573,28 +598,30 @@ async def chat_message(request: ChatRequest):
                 conversation_id=conversation_id,
             )
             if has_docs:
-                top_k_map = {"low": 3, "medium": 7, "high": 20}
-                top_k = top_k_map.get(top_k_hint, 7)
-
                 if scope == "document":
-                    top_k = 50  # fetch all chunks for full-document queries
-
-                query_embedding = pre_embedding if pre_embedding is not None else embed_query(q_text)
-
-                use_hybrid = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
-                context_chunks = retrieve_chunks_smart(
-                    query_embedding=query_embedding,
-                    user_id=request.user_id,
-                    conversation_id=conversation_id,
-                    keywords=keywords if use_hybrid else None,
-                    page_numbers=page_numbers if page_numbers else None,
-                    top_k=top_k,
-                    use_hybrid=use_hybrid,
-                )
-                print(f"[DEBUG-RETRIEVAL] pre-stream chunks retrieved: {len(context_chunks)}")
-
-                # Sort by page number and tag each chunk with [Page N]
-                context_chunks = _tag_chunks_with_pages(context_chunks)
+                    # Full coverage — bypass vector search entirely
+                    context_chunks = retrieve_all_chunks_ordered(
+                        user_id=request.user_id,
+                        conversation_id=conversation_id,
+                    )
+                    context_chunks = _tag_chunks_with_pages(context_chunks)
+                else:
+                    # Specific topic — vector search as normal
+                    top_k_map = {"low": 3, "medium": 7, "high": 20}
+                    top_k = top_k_map.get(top_k_hint, 7)
+                    query_embedding = pre_embedding if pre_embedding is not None else embed_query(q_text)
+                    use_hybrid = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
+                    context_chunks = retrieve_chunks_smart(
+                        query_embedding=query_embedding,
+                        user_id=request.user_id,
+                        conversation_id=conversation_id,
+                        keywords=keywords if use_hybrid else None,
+                        page_numbers=page_numbers if page_numbers else None,
+                        top_k=top_k,
+                        use_hybrid=use_hybrid,
+                    )
+                    print(f"[DEBUG-RETRIEVAL] pre-stream chunks retrieved: {len(context_chunks)}")
+                    context_chunks = _tag_chunks_with_pages(context_chunks)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"RAG retrieval failed: {str(e)}")
@@ -656,38 +683,32 @@ async def chat_message(request: ChatRequest):
 
                 if all_ingested_chunks:
                     # ── Retrieval AFTER all files stored so every file's chunks are findable ──
-                    total = len(all_ingested_chunks)
-                    tk = total if scope == "document" else min(total, 20)
-                    q_emb = embed_query(q_text)
-                    use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
-                    active_chunks = retrieve_chunks_smart(
-                        query_embedding=q_emb,
-                        user_id=request.user_id,
-                        conversation_id=conversation_id,
-                        keywords=keywords if use_hybrid_post else None,
-                        page_numbers=page_numbers if page_numbers else None,
-                        top_k=tk,
-                        use_hybrid=use_hybrid_post,
-                    )
+                    if scope == "document":
+                        # Full coverage — bypass vector search, fetch all chunks ordered
+                        active_chunks = retrieve_all_chunks_ordered(
+                            user_id=request.user_id,
+                            conversation_id=conversation_id,
+                        )
+                    else:
+                        total = len(all_ingested_chunks)
+                        tk = min(total, 20)
+                        q_emb = embed_query(q_text)
+                        use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
+                        active_chunks = retrieve_chunks_smart(
+                            query_embedding=q_emb,
+                            user_id=request.user_id,
+                            conversation_id=conversation_id,
+                            keywords=keywords if use_hybrid_post else None,
+                            page_numbers=page_numbers if page_numbers else None,
+                            top_k=tk,
+                            use_hybrid=use_hybrid_post,
+                        )
                     print(f"[DEBUG-RETRIEVAL] post-ingestion chunks retrieved: {len(active_chunks)}")
 
                     # Sort by page and tag each chunk with [Page N]
                     active_chunks = _tag_chunks_with_pages(active_chunks)
 
                 # Save a confirmation message listing ALL ingested files
-                all_names = ", ".join(f"**{fname}**" for _, fname in files_to_ingest)
-                try:
-                    await save_message(
-                        conversation_id=conversation_id,
-                        user_id=request.user_id,
-                        role="assistant",
-                        content=(
-                            f"📎 I've processed {all_names} ({len(all_ingested_chunks)} chunks indexed). "
-                            f"You can now ask me questions about them, or generate a flowchart / diagram!"
-                        ),
-                    )
-                except Exception:
-                    pass  # Non-critical — don't fail over a Cosmos write
 
                 yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
             except Exception as e:

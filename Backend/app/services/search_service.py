@@ -87,8 +87,8 @@ def create_index_if_not_exists():
         SimpleField(name="user_id",         type=SearchFieldDataType.String,            filterable=True),
         SimpleField(name="conversation_id", type=SearchFieldDataType.String,            filterable=True),
         SimpleField(name="file_id",         type=SearchFieldDataType.String,            filterable=True),
-        SimpleField(name="filename",        type=SearchFieldDataType.String,            filterable=True),
-        SimpleField(name="page_number",     type=SearchFieldDataType.Int32,             filterable=True),
+        SimpleField(name="filename",        type=SearchFieldDataType.String,            filterable=True,sortable=True),
+        SimpleField(name="page_number",     type=SearchFieldDataType.Int32,             filterable=True,sortable=True),
         SearchableField(name="chunk_text",  type=SearchFieldDataType.String),
         SearchField(
             name="embedding",
@@ -354,3 +354,40 @@ def get_conversation_filenames(user_id: str, conversation_id: str) -> list:
         if fname and fname not in seen:
             seen.append(fname)
     return seen
+
+def retrieve_all_chunks_ordered(
+    user_id: str,
+    conversation_id: str,
+    filename_filter: str = None,
+) -> list:
+    """
+    Fetches ALL chunks for a conversation sorted by filename then page_number.
+    Used when scope=document — no vector search, no embedding, no top_k cap.
+    Returns list of (chunk_text, page_number, filename) tuples — same shape
+    as retrieve_chunks_smart() so callers don't need to change anything.
+    """
+    search_client = SearchClient(
+        endpoint=_get_endpoint(),
+        index_name=_get_index_name(),
+        credential=_get_credential(),
+    )
+
+    base_filter = f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'"
+    if filename_filter:
+        base_filter += f" and filename eq '{filename_filter}'"
+
+    results = search_client.search(
+        search_text="*",
+        filter=base_filter,
+        select=["chunk_text", "page_number", "filename"],
+        top=1000,
+    )
+
+    chunks = [
+        (r["chunk_text"], r.get("page_number", 0), r.get("filename", ""))
+        for r in results
+    ]
+
+    # Sort by filename then page_number in Python — no Azure sortable field needed
+    chunks.sort(key=lambda x: (x[2], x[1]))
+    return chunks
