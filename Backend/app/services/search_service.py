@@ -87,7 +87,7 @@ def create_index_if_not_exists():
         SimpleField(name="user_id",         type=SearchFieldDataType.String,            filterable=True),
         SimpleField(name="conversation_id", type=SearchFieldDataType.String,            filterable=True),
         SimpleField(name="file_id",         type=SearchFieldDataType.String,            filterable=True),
-        SimpleField(name="filename",        type=SearchFieldDataType.String,            filterable=False),
+        SimpleField(name="filename",        type=SearchFieldDataType.String,            filterable=True),
         SimpleField(name="page_number",     type=SearchFieldDataType.Int32,             filterable=True),
         SearchableField(name="chunk_text",  type=SearchFieldDataType.String),
         SearchField(
@@ -259,6 +259,7 @@ def retrieve_chunks_smart(
     page_numbers: List[int] = None,
     top_k: int = 7,
     use_hybrid: bool = False,
+    filename_filter: str = None, 
 ) -> list:
     """
     Smart retrieval supporting page filtering and keyword boosting.
@@ -280,6 +281,8 @@ def retrieve_chunks_smart(
 
     # Build filter — always scope to user + conversation, optionally add page filter
     base_filter = f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'"
+    if filename_filter:
+        base_filter += f" and filename eq '{filename_filter}'"
     if page_numbers:
         page_filter = " or ".join([f"page_number eq {p}" for p in page_numbers])
         combined_filter = f"({base_filter}) and ({page_filter})"
@@ -299,11 +302,11 @@ def retrieve_chunks_smart(
         search_text=search_text,
         vector_queries=[vector_query],
         filter=combined_filter,
-        select=["chunk_text", "page_number"],
+        select=["chunk_text", "page_number", "filename"],
         top=top_k,
     )
 
-    return [(r["chunk_text"], r.get("page_number", 0)) for r in results]
+    return [(r["chunk_text"], r.get("page_number", 0), r.get("filename", "")) for r in results]
 
 
 def conversation_has_documents(user_id: str, conversation_id: str) -> bool:
@@ -328,3 +331,26 @@ def conversation_has_documents(user_id: str, conversation_id: str) -> bool:
     for _ in results:
         return True
     return False
+
+def get_conversation_filenames(user_id: str, conversation_id: str) -> list:
+    """
+    Returns ordered list of unique filenames uploaded to this conversation.
+    Order matches upload sequence — used to resolve 'document 1', 'document 2'.
+    """
+    search_client = SearchClient(
+        endpoint=_get_endpoint(),
+        index_name=_get_index_name(),
+        credential=_get_credential(),
+    )
+    results = search_client.search(
+        search_text="*",
+        filter=f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'",
+        select=["filename"],
+        top=100,
+    )
+    seen = []
+    for r in results:
+        fname = r.get("filename", "")
+        if fname and fname not in seen:
+            seen.append(fname)
+    return seen

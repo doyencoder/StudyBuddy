@@ -3237,9 +3237,8 @@ const ChatPage = () => {
           ? {
               attachments: sentFiles.map((f) => ({
                 name: f.name,
-                // Use proxy URL for the Cosmos-stored blob_url so that
-                // "Click to open" in chat history always works, forever.
-                blob_url: f.blobName
+                blob_url: f.blobUrl,                          // ← CHANGE: real SAS (for OCR)
+                proxy_url: f.blobName                         // ← ADD: permanent proxy (for display)
                   ? `${API_BASE}/upload/view-file?blob_name=${encodeURIComponent(f.blobName)}`
                   : f.blobUrl,
                 file_type: f.fileType ?? getFileType(f.name),

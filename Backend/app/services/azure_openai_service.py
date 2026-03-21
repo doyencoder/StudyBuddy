@@ -409,9 +409,7 @@ def generate_quiz_questions(
     deployment = _chat_deployment()
 
     if context_chunks:
-        context_text = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-        )
+        context_text = "\n\n---\n\n".join(context_chunks)
         topic_line = (
             f"Focus specifically on the topic: {topic}"
             if topic else
@@ -657,7 +655,7 @@ def generate_mermaid(
     deployment = _chat_deployment()
 
     context_text = (
-        "\n\n---\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(context_chunks))
+        "\n\n---\n\n".join(context_chunks)
         if context_chunks
         else "No specific material uploaded. Use your general knowledge about this topic."
     )
@@ -794,9 +792,7 @@ def generate_study_plan(
         focus_str = f"\nThe student prefers to study on: {', '.join(focus_days)}."
 
     if context_chunks:
-        context_text = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-        )
+        context_text = "\n\n---\n\n".join(context_chunks)
         topic_line = f'Topic: "{topic}"' if topic else "Cover all key topics from the material."
         source_instruction = f"""Base the plan on this uploaded study material.
 
@@ -835,7 +831,9 @@ Rules:
 - Exactly {timeline_weeks} week objects in the array
 - 3-6 actionable tasks per week
 - Tasks must be specific and build week over week
-- No raw chunk text in tasks"""
+- No raw chunk text in tasks
+- NEVER mention chunk numbers, file names, or page numbers in task descriptions
+- Tasks must be written as plain student-facing action items only"""
 
     def _generate():
         return client.chat.completions.create(
@@ -1101,3 +1099,45 @@ def generate_image(topic: str, context_chunks: List[str]) -> bytes:
         raise RuntimeError(f"HuggingFace API error {response.status_code}: {response.text[:300]}")
 
     return response.content
+
+def extract_document_context(message: str) -> dict:
+    """
+    Small targeted LLM call — only used when chip is selected.
+    Extracts clean topic, page numbers, and document reference.
+    Returns: { "clean_topic": "", "page_numbers": [], "document_reference": "" }
+    """
+    client = _get_client()
+    deployment = _chat_deployment()
+
+    response = client.chat.completions.create(
+        model=deployment,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Extract the following from the user message and respond with JSON only. No explanation.\n"
+                    "1. clean_topic: the actual study topic, stripped of any page or document references\n"
+                    "2. page_numbers: list of page numbers mentioned, empty list if none\n"
+                    "3. document_reference: any document/file reference mentioned, empty string if none\n\n"
+                    "Examples:\n"
+                    "'quiz on photosynthesis in document 1' → "
+                    "{\"clean_topic\": \"photosynthesis\", \"page_numbers\": [], \"document_reference\": \"document 1\"}\n"
+                    "'flowchart of page 5 of EC342' → "
+                    "{\"clean_topic\": \"EC342 content\", \"page_numbers\": [5], \"document_reference\": \"EC342\"}\n"
+                    "'study plan for pages 3 to 7 from mse1' → "
+                    "{\"clean_topic\": \"mse1 content\", \"page_numbers\": [3,4,5,6,7], \"document_reference\": \"mse1\"}\n"
+                    "'quiz on newton laws' → "
+                    "{\"clean_topic\": \"newton laws\", \"page_numbers\": [], \"document_reference\": \"\"}"
+                ),
+            },
+            {"role": "user", "content": message},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.0,
+        max_tokens=100,
+    )
+    raw = response.choices[0].message.content.strip()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"clean_topic": "", "page_numbers": [], "document_reference": ""}

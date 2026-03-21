@@ -17,11 +17,12 @@ from app.services.ai_service import (
     generate_quiz_questions,
     generate_mermaid,
     generate_image as generate_image_bytes,
+    extract_document_context,
 )
 from app.services.search_service import (
     retrieve_chunks, retrieve_chunks_hybrid, store_chunks,
     create_index_if_not_exists, conversation_has_documents,
-    retrieve_chunks_smart,
+    retrieve_chunks_smart,get_conversation_filenames,
 )
 from app.services.cosmos_service import (
     create_conversation,
@@ -43,6 +44,7 @@ from app.services.study_plan_service import create_study_plan
 from app.services.translator_service import translate_text
 from app.services.tts_service import synthesize_speech
 from app.services.web_search_service import web_search, build_search_context, image_search, is_image_query, youtube_search, is_video_query
+from app.utils.document_resolver import resolve_document_filter
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -82,12 +84,17 @@ def _tag_chunks_with_pages(chunk_tuples: list) -> list:
     """
     if not chunk_tuples:
         return []
-    # Sort by page number — ensures Q1 comes before Q2, page 3 before page 5, etc.
     sorted_tuples = sorted(
         [item for item in chunk_tuples if isinstance(item, tuple)],
-        key=lambda x: x[1]  # x[1] is page_number
+        key=lambda x: (x[2] if len(x) > 2 else "", x[1])
     )
-    return [f"[Page {page_num}]\n{text}" for text, page_num in sorted_tuples]
+    result = []
+    for item in sorted_tuples:
+        text, page_num = item[0], item[1]
+        filename = item[2] if len(item) > 2 else ""
+        prefix = f"[File: {filename} | Page {page_num}]" if filename else f"[Page {page_num}]"
+        result.append(f"{prefix}\n{text}")
+    return result
 
 
 # ── POST /chat/regenerate ─────────────────────────────────────────────────────
@@ -143,20 +150,13 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
         )
         if has_docs:
             query_embedding = await loop.run_in_executor(None, lambda: embed_query(q_text))
-            context_chunks = retrieve_chunks(
-                query_embedding=query_embedding,
-                user_id=request.user_id,
-                conversation_id=request.conversation_id,
-                top_k=5,
-            )
-            if not context_chunks:
-                context_chunks = retrieve_chunks(
-                    query_embedding=query_embedding,
-                    user_id=request.user_id,
-                    conversation_id=request.conversation_id,
-                    top_k=5,
-                    score_threshold=0.5,
-                )
+            raw_chunks = retrieve_chunks_smart(
+            query_embedding=query_embedding,
+            user_id=request.user_id,
+            conversation_id=request.conversation_id,
+            top_k=5,
+        )
+        context_chunks = [text for text, *_ in raw_chunks]
     except Exception:
         pass  # RAG failure is non-fatal — fall back to general knowledge
 
@@ -314,6 +314,33 @@ async def chat_message(request: ChatRequest):
         # Fall back to full message only if stripping removed everything
         topic_val = cleaned_topic or raw_msg or ("[from_document]" if has_attachment else None)
 
+        # ── Extract document/page context via small targeted LLM call ────────────
+        # Only fires when chip is selected and user has typed a message.
+        # Gives chip path the same page/document awareness as natural language path.
+        page_numbers_chip = []
+        if request.message.strip():
+            try:
+                loop = asyncio.get_event_loop()
+                doc_context = await loop.run_in_executor(
+                    None,
+                    lambda: extract_document_context(request.message)
+                )
+                page_numbers_chip = doc_context.get("page_numbers") or []
+                doc_ref           = doc_context.get("document_reference") or ""
+                clean_topic       = doc_context.get("clean_topic") or ""
+
+                # Use clean topic (strips "in document 1", "on page 3" etc.)
+                if clean_topic:
+                    topic_val = clean_topic
+
+                # Merge doc reference into topic_val so resolve_document_filter
+                # can match it against actual filenames later in dispatch
+                if doc_ref and doc_ref.lower() not in (topic_val or "").lower():
+                    topic_val = f"{topic_val} {doc_ref}".strip() if topic_val else doc_ref
+
+            except Exception:
+                pass   # non-fatal — falls back to empty
+
         classification = {
             "intent":               request.intent_hint,
             "topic":                topic_val,
@@ -329,7 +356,7 @@ async def chat_message(request: ChatRequest):
                 if no_topic else None
             ),
             # default values for new fields when chip path is used
-            "page_numbers": [], "keywords": [], "query_type": "broad",
+            "page_numbers": page_numbers_chip, "keywords": [], "query_type": "broad",
             "top_k_hint": "medium", "scope": "topic",
             "response_format": "paragraph", "detail_level": "detailed",
             "language_style": "formal", "is_comparison": False,
@@ -391,7 +418,7 @@ async def chat_message(request: ChatRequest):
             "text": request.message,
             "intent_hint": request.intent_hint,
             "attachments": [
-                {"name": a.name, "blob_url": a.blob_url, "file_type": a.file_type}
+                {"name": a.name, "blob_url": a.proxy_url or a.blob_url, "file_type": a.file_type}
                 for a in request.attachments
             ],
         })
@@ -406,7 +433,7 @@ async def chat_message(request: ChatRequest):
             "__type": "user_with_attachments",
             "text": request.message,
             "attachments": [
-                {"name": a.name, "blob_url": a.blob_url, "file_type": a.file_type}
+                {"name": a.name, "blob_url": a.proxy_url or a.blob_url, "file_type": a.file_type}
                 for a in request.attachments
             ],
         })
@@ -502,15 +529,34 @@ async def chat_message(request: ChatRequest):
 
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id})}\n\n"
 
-        # Blob RAG ingestion (when a file is sent WITH this message)
+        # Blob RAG ingestion (when one or more files are sent WITH this message)
         # Runs INSIDE the stream so retrieval happens AFTER chunks are stored —
         # this is critical for page filtering to work on the first message with a file.
+
+        # Build a unified list of ALL files to ingest from this message.
+        # request.blob_url carries the real SAS for the primary file (File 1).
+        # request.attachments carries real SAS blob_urls for ALL files (including File 1).
+        # We deduplicate by name so File 1 is never OCR'd twice.
+        files_to_ingest = []
         if request.blob_url and request.filename:
+            files_to_ingest.append((request.blob_url, request.filename))
+        if request.attachments:
+            for att in request.attachments:
+                if att.name != request.filename:   # skip File 1 — already added above
+                    files_to_ingest.append((att.blob_url, att.name))
+
+        if files_to_ingest:
             try:
                 yield f"data: {json.dumps({'type': 'status', 'content': 'reading_document'})}\n\n"
                 loop = asyncio.get_event_loop()
-                pages = await loop.run_in_executor(None, lambda: extract_pages_from_url(request.blob_url))
-                if pages:
+                all_ingested_chunks: list = []
+
+                for ingest_url, ingest_filename in files_to_ingest:
+                    pages = await loop.run_in_executor(None, lambda u=ingest_url: extract_pages_from_url(u))
+                    if not pages:
+                        print(f"[WARN] No pages extracted from {ingest_filename} — skipping")
+                        continue
+
                     chunk_dicts         = chunk_by_paragraphs(pages)
                     chunks              = [c["text"] for c in chunk_dicts]
                     page_numbers_stored = [c["page_number"] for c in chunk_dicts]
@@ -526,12 +572,15 @@ async def chat_message(request: ChatRequest):
                     store_chunks(
                         chunks=chunks, embeddings=embeddings,
                         user_id=request.user_id, conversation_id=conversation_id,
-                        file_id=fid, filename=request.filename,
+                        file_id=fid, filename=ingest_filename,
                         page_numbers=page_numbers_stored,
                     )
+                    print(f"[DEBUG-INGESTION] Indexed {len(chunks)} chunks from '{ingest_filename}'")
+                    all_ingested_chunks.extend(chunks)
 
-                    # ── Retrieval AFTER store so page filter actually finds chunks ──
-                    total = len(chunks)
+                if all_ingested_chunks:
+                    # ── Retrieval AFTER all files stored so every file's chunks are findable ──
+                    total = len(all_ingested_chunks)
                     tk = total if scope == "document" else min(total, 20)
                     q_emb = embed_query(q_text)
                     use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
@@ -548,6 +597,21 @@ async def chat_message(request: ChatRequest):
 
                     # Sort by page and tag each chunk with [Page N]
                     active_chunks = _tag_chunks_with_pages(active_chunks)
+
+                # Save a confirmation message listing ALL ingested files
+                all_names = ", ".join(f"**{fname}**" for _, fname in files_to_ingest)
+                try:
+                    await save_message(
+                        conversation_id=conversation_id,
+                        user_id=request.user_id,
+                        role="assistant",
+                        content=(
+                            f"📎 I've processed {all_names} ({len(all_ingested_chunks)} chunks indexed). "
+                            f"You can now ask me questions about them, or generate a flowchart / diagram!"
+                        ),
+                    )
+                except Exception:
+                    pass  # Non-critical — don't fail over a Cosmos write
 
                 yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
             except Exception as e:
@@ -631,19 +695,20 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
         if not has_docs:
             context_chunks = []
-        elif topic:
-            q_emb = embed_query(topic)
-            context_chunks = retrieve_chunks_hybrid(
-                topic=topic, query_embedding=q_emb,
-                user_id=user_id, conversation_id=conversation_id,
-                top_k=10, rrf_threshold=0.020,
-            )
-        else:
-            q_emb = embed_query("key concepts and important topics")
-            context_chunks = retrieve_chunks(
-                query_embedding=q_emb, user_id=user_id,
-                conversation_id=conversation_id, top_k=10, score_threshold=0.5,
-            )
+        filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+        filename_filter = resolve_document_filter(topic or "", filenames)
+
+        q_emb = embed_query(topic or "key concepts and important topics")
+        raw_chunks = retrieve_chunks_smart(
+            query_embedding=q_emb,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            top_k=10,
+            use_hybrid=bool(topic),
+            keywords=[topic] if topic else None,
+            filename_filter=filename_filter,
+        )
+        context_chunks = [text for text, *_ in raw_chunks]
 
         result = generate_quiz_questions(
             context_chunks=context_chunks,
@@ -707,11 +772,18 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
 
         chunks = []
         try:
+            filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+            filename_filter = resolve_document_filter(effective, filenames)
+
             q_emb = embed_query(effective)
-            chunks = retrieve_chunks(
-                query_embedding=q_emb, user_id=user_id,
-                conversation_id=conversation_id, top_k=8, score_threshold=0.5,
+            raw_chunks = retrieve_chunks_smart(
+                query_embedding=q_emb,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                top_k=8,
+                filename_filter=filename_filter,
             )
+            chunks = [text for text, *_ in raw_chunks]
         except Exception:
             pass
 

@@ -18,6 +18,7 @@ class UploadResponse(BaseModel):
 class ChatAttachment(BaseModel):
     name: str
     blob_url: str
+    proxy_url: str = ""
     file_type: str  # "image" | "pdf" | "document"
 
 class ChatRequest(BaseModel):

@@ -218,9 +218,7 @@ def chat_stream(
         system_instruction = system_prompt_override
         current_user_text = question
     elif context_chunks:
-        context_text = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-        )
+        context_text = "\n\n---\n\n".join(context_chunks)
         # Inject RAG context into the current user turn only
         current_user_text = (
             f"Use the following context from the student's study material to answer the question.\n\n"
@@ -352,9 +350,7 @@ def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions
     client = _get_client()
 
     if context_chunks:
-        context_text = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-        )
+        context_text = "\n\n---\n\n".join(context_chunks)
         topic_line = f"Focus specifically on the topic: {topic}" if topic else "Cover the most important concepts from the material."
 
         prompt = f"""You are a quiz generator for students. Based ONLY on the study material below, generate exactly {num_questions} multiple choice questions.
@@ -622,7 +618,7 @@ def generate_mermaid(
     client = _get_client()
 
     context_text = (
-        "\n\n---\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(context_chunks))
+        "\n\n---\n\n".join(context_chunks)
         if context_chunks
         else "No specific material uploaded. Use your general knowledge about this topic."
     )
@@ -760,9 +756,7 @@ def generate_study_plan(
         focus_str = f"\nThe student prefers to study on: {', '.join(focus_days)}."
 
     if context_chunks:
-        context_text = "\n\n---\n\n".join(
-            f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
-        )
+        context_text = "\n\n---\n\n".join(context_chunks)
         topic_line = f'Topic: "{topic}"' if topic else "Cover all key topics from the material."
         source_instruction = f"""The student has uploaded study material. Base the plan strictly on this material.
 
@@ -1087,3 +1081,41 @@ Reply with ONLY 2-5 words. No explanation. No punctuation. Just the topic name."
         return label if label else "General"
     except Exception:
         return "General"
+    
+def extract_document_context(message: str) -> dict:
+    """
+    Small targeted LLM call — only used when chip is selected.
+    Extracts clean topic, page numbers, and document reference.
+    Returns: { "clean_topic": "", "page_numbers": [], "document_reference": "" }
+    """
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    
+    prompt = (
+        "Extract the following from the user message and respond with JSON only. No explanation.\n"
+        "1. clean_topic: the actual study topic, stripped of any page or document references\n"
+        "2. page_numbers: list of page numbers mentioned, empty list if none\n"
+        "3. document_reference: any document/file reference mentioned, empty string if none\n\n"
+        "Examples:\n"
+        "'quiz on photosynthesis in document 1' → "
+        "{\"clean_topic\": \"photosynthesis\", \"page_numbers\": [], \"document_reference\": \"document 1\"}\n"
+        "'flowchart of page 5 of EC342' → "
+        "{\"clean_topic\": \"EC342 content\", \"page_numbers\": [5], \"document_reference\": \"EC342\"}\n"
+        "'study plan for pages 3 to 7 from mse1' → "
+        "{\"clean_topic\": \"mse1 content\", \"page_numbers\": [3,4,5,6,7], \"document_reference\": \"mse1\"}\n"
+        "'quiz on newton laws' → "
+        "{\"clean_topic\": \"newton laws\", \"page_numbers\": [], \"document_reference\": \"\"}\n\n"
+        f"Message: {message}"
+    )
+
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.0,
+            max_output_tokens=100,
+        ),
+    )
+    try:
+        return json.loads(response.text)
+    except Exception:
+        return {"clean_topic": "", "page_numbers": [], "document_reference": ""}

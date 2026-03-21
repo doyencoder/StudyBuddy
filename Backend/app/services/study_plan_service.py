@@ -16,7 +16,9 @@ from datetime import date, timedelta
 # FIX: was "from app.services.gemini_service import ..." which bypassed the
 # AI_PROVIDER toggle entirely. Now correctly routes through ai_service.
 from app.services.ai_service import embed_query, generate_study_plan
-from app.services.search_service import retrieve_chunks, conversation_has_documents
+# Add these two imports
+from app.services.search_service import retrieve_chunks_smart, conversation_has_documents, get_conversation_filenames
+from app.utils.document_resolver import resolve_document_filter
 
 
 async def create_study_plan(
@@ -57,13 +59,22 @@ async def create_study_plan(
             try:
                 query_text = topic or "key concepts and important topics"
                 query_embedding = embed_query(query_text)
-                context_chunks = retrieve_chunks(
+
+                # Detect if user referred to a specific file ("document 2", "file 1" etc.)
+                filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                filename_filter = resolve_document_filter(topic or "", filenames)
+                if filename_filter:
+                    print(f"[StudyPlan] Filtering to file: {filename_filter}")
+
+                raw_chunks = retrieve_chunks_smart(
                     query_embedding=query_embedding,
                     user_id=user_id,
                     conversation_id=conversation_id,
                     top_k=10,
-                    score_threshold=0.5,
+                    filename_filter=filename_filter,
                 )
+                # Extract plain text — study plan AI doesn't need page tags
+                context_chunks = [text for text, *_ in raw_chunks]
                 print(f"[StudyPlan] Retrieved {len(context_chunks)} chunks for plan")
             except Exception as e:
                 print(f"[StudyPlan] Chunk retrieval failed: {e}")
