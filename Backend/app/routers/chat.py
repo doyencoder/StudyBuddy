@@ -875,13 +875,13 @@ async def chat_message(request: ChatRequest):
 
         # ── Dispatch ─────────────────────────────────────────────────────────
         if intent == "quiz":
-            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds):
+            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope):
                 yield evt
             return
 
         if intent in ("flowchart", "mindmap"):
             dtype = "flowchart" if intent == "flowchart" else "diagram"
-            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message):
+            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope):
                 yield evt
             return
 
@@ -893,7 +893,7 @@ async def chat_message(request: ChatRequest):
         if intent == "study_plan":
             tw = int(timeline_weeks) if timeline_weeks else 4
             hw = int(hours_per_week) if hours_per_week else 8
-            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw):
+            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope):
                 yield evt
             return
 
@@ -945,7 +945,7 @@ async def chat_message(request: ChatRequest):
 
 # ── Feature dispatch helpers ──────────────────────────────────────────────────
 
-async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None):
+async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None):
     try:
         has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
         if not has_docs:
@@ -953,16 +953,23 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
         filename_filter = resolve_document_filter(topic or "", filenames)
 
-        q_emb = embed_query(topic or "key concepts and important topics")
-        raw_chunks = retrieve_chunks_smart(
-            query_embedding=q_emb,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            top_k=10,
-            use_hybrid=bool(topic),
-            keywords=[topic] if topic else None,
-            filename_filter=filename_filter,
-        )
+        if scope == "document":
+            raw_chunks = retrieve_all_chunks_ordered(
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+        else:
+            q_emb = embed_query(topic or "key concepts and important topics")
+            raw_chunks = retrieve_chunks_smart(
+                query_embedding=q_emb,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                top_k=10,
+                use_hybrid=bool(topic),
+                keywords=[topic] if topic else None,
+                filename_filter=filename_filter,
+                page_numbers=page_numbers if page_numbers else None,
+            )
         context_chunks = [text for text, *_ in raw_chunks]
 
         result = generate_quiz_questions(
@@ -1018,7 +1025,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = ""):
+async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None):
     try:
         effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
 
@@ -1039,14 +1046,21 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
             filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
             filename_filter = resolve_document_filter(effective, filenames)
 
-            q_emb = embed_query(effective)
-            raw_chunks = retrieve_chunks_smart(
-                query_embedding=q_emb,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                top_k=8,
-                filename_filter=filename_filter,
-            )
+            if scope == "document":
+                raw_chunks = retrieve_all_chunks_ordered(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                )
+            else:
+                q_emb = embed_query(effective)
+                raw_chunks = retrieve_chunks_smart(
+                    query_embedding=q_emb,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    top_k=8,
+                    filename_filter=filename_filter,
+                    page_numbers=page_numbers if page_numbers else None,
+                )
             chunks = [text for text, *_ in raw_chunks]
         except Exception:
             pass
@@ -1125,12 +1139,13 @@ async def _dispatch_image(user_id, conversation_id, topic, prior_messages):
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week):
+async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None):
     try:
         plan = await create_study_plan(
             user_id=user_id, conversation_id=conversation_id,
             topic=topic or None, timeline_weeks=timeline_weeks,
             hours_per_week=hours_per_week, focus_days=None,
+            page_numbers=page_numbers, scope=scope,
         )
 
         # ── Safety sentinel check ─────────────────────────────────────────────

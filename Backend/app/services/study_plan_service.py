@@ -28,6 +28,7 @@ async def create_study_plan(
     timeline_weeks: int = 4,
     hours_per_week: int = 8,
     focus_days: list[str] | None = None,
+    page_numbers=None, scope=None
 ) -> dict:
     """
     Generates a structured study plan.
@@ -66,14 +67,21 @@ async def create_study_plan(
                 if filename_filter:
                     print(f"[StudyPlan] Filtering to file: {filename_filter}")
 
-                raw_chunks = retrieve_chunks_smart(
-                    query_embedding=query_embedding,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    top_k=10,
-                    filename_filter=filename_filter,
-                )
-                # Extract plain text — study plan AI doesn't need page tags
+                if scope == "document":
+                    from app.services.search_service import retrieve_all_chunks_ordered
+                    raw_chunks = retrieve_all_chunks_ordered(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                    )
+                else:
+                    raw_chunks = retrieve_chunks_smart(
+                        query_embedding=query_embedding,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        top_k=10,
+                        filename_filter=filename_filter,
+                        page_numbers=page_numbers if page_numbers else None,
+                    )
                 context_chunks = [text for text, *_ in raw_chunks]
                 print(f"[StudyPlan] Retrieved {len(context_chunks)} chunks for plan")
             except Exception as e:

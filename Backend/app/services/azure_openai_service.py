@@ -1330,6 +1330,7 @@ def classify_search_intent(query: str) -> dict:
     Runs in parallel with conversation_has_documents() so it is never the
     bottleneck before the SerpAPI call fires.
     """
+    print(f"[classify_search_intent] called with query: {query!r}")
     client = _get_client()
     deployment = _chat_deployment()
 
@@ -1447,6 +1448,7 @@ def extract_document_context(message: str) -> dict:
     Extracts clean topic, page numbers, and document reference.
     Returns: { "clean_topic": "", "page_numbers": [], "document_reference": "" }
     """
+    print(f"[extract_document_context] called with message: {message!r}")
     client = _get_client()
     deployment = _chat_deployment()
 
