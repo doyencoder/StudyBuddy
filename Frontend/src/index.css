@@ -56,6 +56,15 @@
     --warning-foreground: 0 0% 5%;
     --info: 199 89% 48%;
     --info-foreground: 0 0% 98%;
+
+    /* Novaa graph tokens */
+    /* Novaa graph tokens — dark mode */
+    --novaa-curve-1: 217 91% 62%;    /* blue   — matches StudyBuddy primary  */
+    --novaa-curve-2: 340 75% 65%;    /* pink/rose                            */
+    --novaa-curve-3: 38  92% 58%;    /* orange/amber                         */
+    --novaa-curve-4: 270 65% 70%;    /* purple                               */
+    --novaa-grid:    220 15% 30%;    /* subtle but visible grid lines        */
+    --novaa-surface: 230 15% 7%;     /* canvas background                    */
   }
 
   /* Light theme */
@@ -106,6 +115,14 @@
     --warning-foreground: 0 0% 5%;
     --info: 199 89% 48%;
     --info-foreground: 0 0% 100%;
+
+    /* Novaa graph tokens */
+    --novaa-curve-1: 217 91% 50%;
+    --novaa-curve-2: 340 65% 50%;
+    --novaa-curve-3: 38  85% 44%;
+    --novaa-curve-4: 270 55% 52%;
+    --novaa-grid:    220 14% 60%;    /* darker = visible on light background */
+    --novaa-surface: 220 20% 97%;
   }
 }
 
@@ -154,6 +171,9 @@
   }
   .bg-surface-overlay {
     background-color: hsl(var(--surface-overlay));
+  }
+  .bg-novaa-surface {
+    background-color: hsl(var(--novaa-surface));
   }
   .animate-pulse-glow {
     animation: pulse-glow 2s ease-in-out infinite;
@@ -220,4 +240,7 @@ body.font-dyslexic {
 /* ── Dashboard uses Geist (matches V0 design) ─────────────────────────────── */
 .dashboard-font {
   font-family: 'Geist Sans', 'GeistSans', 'Inter', system-ui, sans-serif;
+}
+.bg-novaa-surface {
+  background-color: hsl(var(--novaa-surface));
 }

@@ -12,6 +12,7 @@ import QuizzesPage from "@/pages/QuizzesPage";
 import GoalsPage from "@/pages/GoalsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import ImagesPage from "@/pages/ImagesPage";
+import NovaaPage from "@/pages/NovaaPage";       // ← NEW
 import LandingPage from "@/pages/LandingPage";
 import NotFound from "@/pages/NotFound";
 
@@ -34,6 +35,7 @@ const App = () => (
                 <Route path="/quizzes" element={<QuizzesPage />} />
                 <Route path="/goals" element={<GoalsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/novaa" element={<NovaaPage />} />   {/* ← NEW */}
               </Route>
               <Route path="*" element={<NotFound />} />
             </Routes>

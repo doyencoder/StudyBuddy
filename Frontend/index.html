@@ -2,8 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- TODO: Set the document title to the name of your application -->
+    <!--
+      maximum-scale=1.0 and user-scalable=no prevent the browser from
+      intercepting two-finger pinch gestures before our canvas touch handlers
+      can call preventDefault(). Without this, iOS Safari and some Android
+      browsers zoom the whole page instead of passing the pinch to the canvas.
+      This only affects Nova — all other pages benefit from touch-action:pan-y
+      on their scroll containers which overrides this at the element level.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Study Buddy - AI Learning Assistant</title>
     <meta name="description" content="AI-powered learning assistant for students with quizzes, flashcards, study plans, and analytics." />
     <meta name="author" content="Study Buddy" />

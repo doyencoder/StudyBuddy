@@ -94,6 +94,7 @@ from app.routers.study_plans import router as study_plans_router
 from app.routers.goals import router as goals_router
 from app.routers.settings import router as settings_router
 from app.routers.sessions import router as sessions_router
+from app.routers.graph import router as graph_router
 app.include_router(chat_router)
 app.include_router(quiz_router)
 app.include_router(diagrams_router)
@@ -101,6 +102,7 @@ app.include_router(study_plans_router)
 app.include_router(goals_router)
 app.include_router(settings_router)
 app.include_router(sessions_router)
+app.include_router(graph_router)
 
 
 @app.get("/health")

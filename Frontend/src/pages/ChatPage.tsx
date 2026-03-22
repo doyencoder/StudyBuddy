@@ -17,7 +17,7 @@ import {
   ChevronDown,
   ChevronUp,
   Search,
-  Maximize2, ZoomIn, ZoomOut, X,
+  Maximize2, ZoomIn, ZoomOut, X,TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -313,7 +313,8 @@ function renderMath(latex: string, displayMode: boolean): React.ReactNode {
   }
 }
 
-function applyInline(text: string): React.ReactNode[] {
+function applyInline(text: string, onEquationClick?: (eq: string) => void): React.ReactNode[] {
+  const EQ_PATTERN = /(?:y|f\(x\))\s*=\s*[-\d\sx^+\-*/().sincotaqrlgepb]{3,60}/gi;
   // Split on markdown links, math, bold, italic, code — links and $$ must come first
   return text.split(/(\[[^\]]+\]\(https?:\/\/[^)]+\)|\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([^)]+\\\)|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
     // Markdown link: [label](url)
@@ -354,7 +355,31 @@ function applyInline(text: string): React.ReactNode[] {
           {part.slice(1, -1)}
         </code>
       );
-    return part;
+    if (onEquationClick && EQ_PATTERN.test(part)) {
+      EQ_PATTERN.lastIndex = 0;
+      const nodes: React.ReactNode[] = [];
+      let lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = EQ_PATTERN.exec(part)) !== null) {
+        if (match.index > lastIndex) nodes.push(part.slice(lastIndex, match.index));
+        const eqText = match[0].trim();
+        nodes.push(
+          <button
+            key={`eq-${i}-${match.index}`}
+            onClick={() => onEquationClick(eqText)}
+            className="inline-flex items-center gap-1 mx-0.5 px-2 py-0.5 rounded bg-primary/10 text-primary text-xs font-mono border border-primary/20 hover:bg-primary/20 transition-colors cursor-pointer"
+            title="Click to plot in Novaa"
+          >
+            <TrendingUp className="w-3 h-3 shrink-0" />
+            {eqText}
+          </button>
+        );
+        lastIndex = match.index + match[0].length;
+      }
+      if (lastIndex < part.length) nodes.push(part.slice(lastIndex));
+      return nodes;
+    }
+    return [part];
   });
 }
 
@@ -493,7 +518,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
   );
 }
 
-function renderMarkdown(text: string) {
+function renderMarkdown(text: string, onEquationClick?: (eq: string) => void) {
   const lines = text.split("\n");
   const elements: React.ReactNode[] = [];
   let i = 0;
@@ -653,7 +678,7 @@ function renderMarkdown(text: string) {
         <ol key={`ol-${i}`} start={startNum} className="list-decimal list-inside space-y-1 my-2 ml-2">
           {items.map((item, j) => (
             <li key={j} className="text-sm">
-              {applyInline(item)}
+              {applyInline(item, onEquationClick)}
             </li>
           ))}
         </ol>
@@ -669,7 +694,7 @@ function renderMarkdown(text: string) {
         <ul key={`ul-${i}`} className="list-disc list-inside space-y-1 my-2 ml-2">
           {items.map((item, j) => (
             <li key={j} className="text-sm">
-              {applyInline(item)}
+              {applyInline(item, onEquationClick)}
             </li>
           ))}
         </ul>
@@ -679,7 +704,7 @@ function renderMarkdown(text: string) {
 
     elements.push(
       <p key={`p-${i}`} className="text-sm leading-relaxed my-1">
-        {applyInline(line)}
+        {applyInline(line, onEquationClick)}
       </p>
     );
     i++;
@@ -2293,6 +2318,9 @@ const ChatPage = () => {
 
   const location = useLocation();
   const navigate = useNavigate();
+  const handleEquationClick = (eq: string) => {
+    navigate("/novaa", { state: { equation: eq } });
+  };
   const [searchParams] = useSearchParams();
 
   // AutoSend trigger: fires sendMessage on mount if sessionStorage flag is set.
@@ -4174,7 +4202,7 @@ const ChatPage = () => {
                             {msg.content}
                           </>
                         ) : (
-                          renderMarkdown(translatedContent[msg.id] ?? msg.content)
+                          renderMarkdown(translatedContent[msg.id] ?? msg.content, handleEquationClick)
                         )}
 
                         {msg.role === "assistant" && translatedContent[msg.id] && (

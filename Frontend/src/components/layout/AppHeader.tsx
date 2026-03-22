@@ -1,16 +1,19 @@
-import { GraduationCap, User, Menu } from "lucide-react";
+import { GraduationCap, User, Menu, BarChart2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useSidebar } from "@/components/ui/sidebar";
 
 const AppHeader = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toggleSidebar } = useSidebar();
+
+  const isNovaa = location.pathname === "/novaa";
 
   return (
     <header className="h-14 flex items-center justify-between border-b border-border px-4 bg-card">
       <div className="flex items-center gap-2">
-        {/* Hamburger — only visible on mobile, toggles the sidebar drawer */}
+        {/* Hamburger — mobile only */}
         <Button
           variant="ghost"
           size="icon"
@@ -21,20 +24,26 @@ const AppHeader = () => {
           <Menu className="w-5 h-5" />
         </Button>
 
-        {/* Logo — always visible, navigates to /chat on click */}
-        <button
-          onClick={() => navigate("/chat")}
-          className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity shrink-0"
-          aria-label="Go to chat"
-        >
-          <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
-            <GraduationCap className="w-5 h-5 text-primary" />
+        {/* Logo / title — changes per page */}
+        {isNovaa ? (
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
+              <BarChart2 className="w-5 h-5 text-primary" />
+            </div>
+            <span className="text-lg font-semibold text-foreground">Nova</span>
           </div>
-          {/* Fix 3: removed "hidden sm:inline" so title is always visible */}
-          <span className="text-lg font-semibold text-foreground">
-            Study Buddy
-          </span>
-        </button>
+        ) : (
+          <button
+            onClick={() => navigate("/chat")}
+            className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity shrink-0"
+            aria-label="Go to chat"
+          >
+            <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
+              <GraduationCap className="w-5 h-5 text-primary" />
+            </div>
+            <span className="text-lg font-semibold text-foreground">Study Buddy</span>
+          </button>
+        )}
       </div>
 
       <div className="flex items-center gap-2">
