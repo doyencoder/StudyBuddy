@@ -3344,6 +3344,15 @@ const ChatPage = () => {
 
     const hasContent =
       (landingMsg || input.trim()) || attachedFiles.some((f) => f.status === "ready") || intentChip;
+    const uploadingFiles = attachedFiles.filter((f) => f.status === "uploading");
+    if (uploadingFiles.length > 0) {
+      toast.info(
+        uploadingFiles.length === 1
+          ? `Please wait — "${uploadingFiles[0].name}" is still uploading.`
+          : `Please wait — ${uploadingFiles.length} files are still uploading.`
+      );
+      return;
+    }
     if (!hasContent || isTyping) return;
 
     const userMessage = landingMsg || input.trim();
@@ -3743,7 +3752,7 @@ const ChatPage = () => {
     const toAdd = files.slice(0, availableSlots);
     if (files.length > availableSlots) {
       toast.error(
-        `Looks like you have a lot to upload! We skipped ${files.length - availableSlots} file(s) since you only have room for ${availableSlots} more. Go Premium to unlock larger batch uploads!`
+        `Looks like you have a lot to upload! We skipped ${files.length - availableSlots} file(s) since you only have room for ${availableSlots} more. Upgrade to Pro Version to unlock larger batch uploads!`
       );
     }
     const newEntries = toAdd.map((file) => ({
@@ -3770,6 +3779,7 @@ const ChatPage = () => {
           });
           if (!r.ok) {
             const err = await r.json();
+            // Pass the raw detail through so the catch block can inspect it
             throw new Error(err.detail || "Upload failed");
           }
           const data = await r.json();
@@ -3781,7 +3791,21 @@ const ChatPage = () => {
             )
           );
         } catch (err: any) {
-          toast.error(`Could not upload "${file.name}". It has been removed.`);
+          const msg: string = err.message || "";
+          if (msg.startsWith("PAGE_LIMIT_EXCEEDED:")) {
+            const pageCount = msg.split(":")[1];
+            toast.error(
+              `"${file.name}" has ${pageCount} pages. Free plan supports up to 35 pages. Upgrade to Pro Version to upload longer documents.`,
+              { duration: 6000 }
+            );
+          } else if (msg.toLowerCase().includes("exceeds") && msg.toLowerCase().includes("mb")) {
+            toast.error(
+              `"${file.name}" is too large. Free plan supports up to 20 MB. Upgrade to Pro Version to upload larger files.`,
+              { duration: 6000 }
+            );
+          } else {
+            toast.error(`Could not upload "${file.name}". ${msg || "Please try again."}`);
+          }
           setAttachedFiles((prev) => prev.filter((f) => f.id !== entryId));
         }
       })

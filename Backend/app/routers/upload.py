@@ -65,6 +65,24 @@ async def upload_blob_only(
     if size_mb > MAX_FILE_SIZE_MB:
         raise HTTPException(status_code=400, detail=f"File size {size_mb:.1f} MB exceeds {MAX_FILE_SIZE_MB} MB limit.")
 
+    # ── Page limit check for PDFs ─────────────────────────────────────────────
+    if extension == "pdf":
+        try:
+            import fitz
+            pdf_doc    = fitz.open(stream=file_bytes, filetype="pdf")
+            page_count = len(pdf_doc)
+            pdf_doc.close()
+            if page_count > 35:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"PAGE_LIMIT_EXCEEDED:{page_count}",
+                )
+        except HTTPException:
+            raise   # re-raise the 422 — don't swallow it
+        except Exception as e:
+            print(f"[upload] Could not count PDF pages: {e}")
+            # non-fatal — let the upload proceed if page counting fails
+
     try:
         blob_info = upload_file_to_blob(file_bytes, filename, user_id)
     except Exception as e:
