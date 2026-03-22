@@ -49,10 +49,21 @@ interface EquationsPanelProps {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const colorDotStyle: Record<string, React.CSSProperties> = {
-  "novaa-curve-1": { backgroundColor: "hsl(var(--novaa-curve-1))" },
-  "novaa-curve-2": { backgroundColor: "hsl(var(--novaa-curve-2))" },
-  "novaa-curve-3": { backgroundColor: "hsl(var(--novaa-curve-3))" },
-  "novaa-curve-4": { backgroundColor: "hsl(var(--novaa-curve-4))" },
+  "novaa-curve-1":  { backgroundColor: "hsl(var(--novaa-curve-1))" },
+  "novaa-curve-2":  { backgroundColor: "hsl(var(--novaa-curve-2))" },
+  "novaa-curve-3":  { backgroundColor: "hsl(var(--novaa-curve-3))" },
+  "novaa-curve-4":  { backgroundColor: "hsl(var(--novaa-curve-4))" },
+  "novaa-curve-5":  { backgroundColor: "hsl(var(--novaa-curve-5))" },
+  "novaa-curve-6":  { backgroundColor: "hsl(var(--novaa-curve-6))" },
+  "novaa-curve-7":  { backgroundColor: "hsl(var(--novaa-curve-7))" },
+  "novaa-curve-8":  { backgroundColor: "hsl(var(--novaa-curve-8))" },
+  "novaa-curve-9":  { backgroundColor: "hsl(var(--novaa-curve-9))" },
+  "novaa-curve-10": { backgroundColor: "hsl(var(--novaa-curve-10))" },
+  "novaa-curve-11": { backgroundColor: "hsl(var(--novaa-curve-11))" },
+  "novaa-curve-12": { backgroundColor: "hsl(var(--novaa-curve-12))" },
+  "novaa-curve-13": { backgroundColor: "hsl(var(--novaa-curve-13))" },
+  "novaa-curve-14": { backgroundColor: "hsl(var(--novaa-curve-14))" },
+  "novaa-curve-15": { backgroundColor: "hsl(var(--novaa-curve-15))" },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,191 +165,269 @@ function renderKatex(raw: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SmartMathInput
-// A text input that intercepts keystrokes for a Desmos-like math typing experience:
-//   • Auto-close brackets:    (  →  (|)      [  →  [|]
-//   • Skip closing bracket:   if cursor is before ) and you type ), jump over it
-//   • Auto-close after ^:     x^  →  x^(|)
-//   • Fraction shortcut:      typing / wraps the token before cursor in a fraction
-//   • Greek shortcuts:        \a → alpha,  \b → beta,  \t → theta,  etc.
-//   • sqrt shortcut:          \s → sqrt(
-//   • pi shortcut:            \p → pi
-//   • KaTeX preview above:    rendered live as you type (handled by parent)
+// MathQuill types (no @types/mathquill package exists, define minimal interface)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Mapping from backslash shortcut key → expanded text
-const BACKSLASH_SHORTCUTS: Record<string, string> = {
-  // Greek lowercase
-  a: "alpha",
-  b: "beta",
-  g: "gamma",
-  d: "delta",
-  e: "epsilon",
-  z: "zeta",
-  h: "eta",
-  t: "theta",
-  i: "iota",
-  k: "kappa",
-  l: "lambda",
-  m: "mu",
-  n: "nu",
-  x: "xi",
-  r: "rho",
-  s: "sqrt(",     // special: not a greek letter but very common
-  o: "omega",
-  f: "phi",
-  c: "chi",
-  w: "psi",
-  p: "pi",
-  // Useful constants
-  I: "infty",
-};
-
-// Extract the "token" immediately before the cursor position in the string.
-// Used to determine what the numerator of a fraction should be.
-function tokenBefore(val: string, cursor: number): { token: string; start: number } {
-  const before = val.slice(0, cursor);
-  // Match: a parenthesised group  OR  a sequence of word chars/dots
-  const match = before.match(/(\([^()]+\)|[\w.]+)$/);
-  if (!match) return { token: "", start: cursor };
-  return { token: match[1], start: cursor - match[1].length };
+interface MQMathField {
+  latex(): string;
+  latex(val: string): void;
+  focus(): void;
+  blur(): void;
+  revert(): HTMLElement;
 }
 
-interface SmartMathInputProps {
-  value: string;
-  onChange: (val: string) => void;
-  onSubmit: () => void;
+interface MQStatic {
+  MathField(el: HTMLElement, config?: object): MQMathField;
+}
+
+declare global {
+  interface Window {
+    MathQuill: { getInterface(v: number): MQStatic };
+    jQuery: any;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// latexToMathjs
+// Converts the LaTeX string MathQuill gives us into the plain mathjs syntax
+// that MathEvaluator and the graphing engine consume.
+//
+//   \frac{a}{b}  →  (a)/(b)
+//   \sqrt{x}     →  sqrt(x)
+//   \sin         →  sin   (same for cos, tan, ln, log, etc.)
+//   \pi          →  pi
+//   \theta       →  theta
+//   x^{2}        →  x^(2)
+//   \cdot        →  *
+//   \left( \right) → ( )
+//   \infty       →  infinity
+// ─────────────────────────────────────────────────────────────────────────────
+
+function latexToMathjs(latex: string): string {
+  let s = latex.trim();
+
+  // Remove MathQuill cursor/selection artefacts
+  s = s.replace(/\\class\{[^}]*\}\{[^}]*\}/g, "");
+
+  // \frac{num}{den} → (num)/(den)  — handle up to 3 levels of nesting
+  for (let i = 0; i < 5; i++) {
+    s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, "($1)/($2)");
+  }
+
+  // \sqrt{expr} → sqrt(expr)
+  s = s.replace(/\\sqrt\{([^{}]*)\}/g, "sqrt($1)");
+  s = s.replace(/\\sqrt\s+/g, "sqrt");
+
+  // \left( and \right) → plain parens
+  s = s.replace(/\\left\(/g, "(").replace(/\\right\)/g, ")");
+  s = s.replace(/\\left\[/g, "[").replace(/\\right\]/g, "]");
+  s = s.replace(/\\left\|/g, "abs(").replace(/\\right\|/g, ")");
+
+  // x^{expr} → x^(expr)
+  s = s.replace(/\^\{([^{}]*)\}/g, "^($1)");
+
+  // Named functions — strip backslash
+  const FNS = ["sin","cos","tan","cot","sec","csc","ln","log","exp","arcsin","arccos","arctan"];
+  for (const fn of FNS) {
+    s = s.replace(new RegExp(`\\\\${fn}\\b`, "g"), fn);
+  }
+
+  // Add implicit parens for function calls not followed by (
+  // e.g. "sin x" → "sin(x)",  "cos 2x" → "cos(2x)",  "sin x + 1" → "sin(x)"
+  // Matches: fn followed by space then a token (variable, number, or paren group)
+  for (const fn of FNS) {
+    s = s.replace(
+      new RegExp(`\\b${fn}\\s+([a-zA-Z0-9_]+|\\([^)]*\\))`, "g"),
+      `${fn}($1)`,
+    );
+  }
+
+  // Greek letters and constants
+  s = s
+    .replace(/\\pi\b/g,      "pi")
+    .replace(/\\theta\b/g,   "theta")
+    .replace(/\\alpha\b/g,   "alpha")
+    .replace(/\\beta\b/g,    "beta")
+    .replace(/\\gamma\b/g,   "gamma")
+    .replace(/\\delta\b/g,   "delta")
+    .replace(/\\epsilon\b/g, "epsilon")
+    .replace(/\\lambda\b/g,  "lambda")
+    .replace(/\\mu\b/g,      "mu")
+    .replace(/\\omega\b/g,   "omega")
+    .replace(/\\phi\b/g,     "phi")
+    .replace(/\\sigma\b/g,   "sigma")
+    .replace(/\\infty\b/g,   "infinity");
+
+  // Multiplication operators
+  s = s.replace(/\\cdot\s*/g, "*").replace(/\\times\s*/g, "*");
+
+  // Strip any remaining unknown latex commands
+  s = s.replace(/\\[a-zA-Z]+/g, "");
+
+  // Clean up spaces
+  s = s.replace(/\s+/g, " ").trim();
+
+  return s;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// useMathQuill — loads jQuery (CDN) then MathQuill (npm package via Vite)
+// Both are loaded once and cached. Returns MQ interface or null while loading.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _mqPromise: Promise<MQStatic> | null = null;
+
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload  = () => resolve();
+    s.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+function useMathQuill(): MQStatic | null {
+  const [mq, setMq] = React.useState<MQStatic | null>(() =>
+    window.MathQuill ? window.MathQuill.getInterface(2) : null
+  );
+
+  React.useEffect(() => {
+    if (mq) return;
+    if (!_mqPromise) {
+      _mqPromise = (async () => {
+        // 1. Load MathQuill CSS from CDN
+        if (!document.querySelector('link[data-mq]')) {
+          const link = document.createElement("link");
+          link.rel  = "stylesheet";
+          link.setAttribute("data-mq", "1");
+          link.href = "https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.css";
+          document.head.appendChild(link);
+        }
+        // 2. Load jQuery from CDN (MathQuill requires it)
+        if (!(window as any).jQuery) {
+          await loadScript(
+            "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+          );
+        }
+        // 3. Load MathQuill JS from CDN
+        await loadScript(
+          "https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.js"
+        );
+        return window.MathQuill.getInterface(2);
+      })();
+    }
+    _mqPromise.then(setMq).catch(() => { _mqPromise = null; });
+  }, [mq]);
+
+  return mq;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MathQuillInput
+// Drop-in replacement for SmartMathInput.
+// Renders a MathQuill MathField inside a styled wrapper.
+// onChange receives the plain mathjs string (converted from LaTeX).
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface MathQuillInputProps {
+  onSubmit:    (val?: string) => void;
+  onChange:    (mathjsValue: string) => void;
+  onEmpty?:    () => void;
   placeholder?: string;
-  disabled?: boolean;
-  className?: string;
+  disabled?:   boolean;
+  className?:  string;
+  initialLatex?: string;
+  autoFocus?:  boolean;
 }
 
-function SmartMathInput({
-  value, onChange, onSubmit, placeholder, disabled, className,
-}: SmartMathInputProps) {
-  const inputRef = React.useRef<HTMLInputElement>(null);
+function MathQuillInput({
+  onSubmit, onChange, onEmpty, placeholder, disabled, className, initialLatex, autoFocus,
+}: MathQuillInputProps) {
+  const mq        = useMathQuill();
+  const spanRef   = React.useRef<HTMLSpanElement>(null);
+  const mqRef     = React.useRef<MQMathField | null>(null);
+  const lastVal   = React.useRef("");
 
-  // Helper: insert text at cursor position, optionally repositioning cursor
-  const insertAt = (
-    val: string,
-    start: number,
-    end: number,
-    text: string,
-    newCursorOffset?: number,
-  ) => {
-    const next = val.slice(0, start) + text + val.slice(end);
-    onChange(next);
-    const newCursor = start + (newCursorOffset ?? text.length);
-    // Must defer because React hasn't flushed yet
-    requestAnimationFrame(() => {
-      inputRef.current?.setSelectionRange(newCursor, newCursor);
+  // Keep latest callbacks in refs so MathQuill handlers never capture stale closures.
+  const onSubmitRef  = React.useRef(onSubmit);
+  const onChangeRef  = React.useRef(onChange);
+  const onEmptyRef   = React.useRef(onEmpty);
+  onSubmitRef.current  = onSubmit;
+  onChangeRef.current  = onChange;
+  onEmptyRef.current   = onEmpty;
+
+  // Expose a clear() method via an imperative handle so the parent can
+  // clear the MathQuill field visually after a successful submit.
+  // We store it on the span element so the parent can call spanRef.current?.__mqClear?.()
+  // without needing React.forwardRef complexity.
+
+  // Init MathField once MQ is loaded
+  React.useEffect(() => {
+    if (!mq || !spanRef.current || mqRef.current) return;
+
+    const field = mq.MathField(spanRef.current, {
+      spaceBehavesLikeTab: false,
+      autoCommands: "pi theta alpha beta gamma delta epsilon lambda mu omega phi sigma sqrt",
+      autoOperatorNames: "sin cos tan cot sec csc ln log exp arcsin arccos arctan",
+      handlers: {
+        edited: (mathField: MQMathField) => {
+          const latex  = mathField.latex();
+          const mathjs = latexToMathjs(latex);
+          if (mathjs !== lastVal.current) {
+            lastVal.current = mathjs;
+            onChangeRef.current(mathjs);
+            if (!mathjs.trim()) onEmptyRef.current?.();
+          }
+        },
+        enter: () => {
+          const val = lastVal.current.trim();
+          if (!val) return;
+          onSubmitRef.current(val);       // pass live value directly — bypasses state timing
+          field.latex("");
+          lastVal.current = "";
+          onChangeRef.current("");
+        },
+      },
     });
-  };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    const input = inputRef.current;
-    if (!input) return;
-    const { selectionStart: rawStart, selectionEnd: rawEnd, value: val } = input;
-    const start = rawStart ?? val.length;
-    const end   = rawEnd   ?? val.length;
+    mqRef.current = field;
 
-    // ── Enter: submit the form ───────────────────────────────────────────────
-    if (e.key === "Enter") {
-      e.preventDefault();
-      onSubmit();
-      return;
-    }
+    if (initialLatex) field.latex(initialLatex);
+    if (autoFocus)    setTimeout(() => field.focus(), 50);
 
-    // ── Auto-close ( → () with cursor inside ────────────────────────────────
-    if (e.key === "(") {
-      e.preventDefault();
-      // If there's selected text, wrap it
-      const selected = val.slice(start, end);
-      if (selected) {
-        insertAt(val, start, end, `(${selected})`, selected.length + 1);
-      } else {
-        insertAt(val, start, end, "()", 1);
-      }
-      return;
-    }
+    return () => {
+      try { field.revert(); } catch { /* ignore */ }
+      mqRef.current = null;
+    };
+  }, [mq]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ── Auto-close [ → [] with cursor inside ────────────────────────────────
-    if (e.key === "[") {
-      e.preventDefault();
-      insertAt(val, start, end, "[]", 1);
-      return;
-    }
-
-    // ── Skip over existing ) or ] if cursor is already before one ───────────
-    if ((e.key === ")" || e.key === "]") && val[start] === e.key && start === end) {
-      e.preventDefault();
-      requestAnimationFrame(() => {
-        inputRef.current?.setSelectionRange(start + 1, start + 1);
-      });
-      return;
-    }
-
-    // ── Caret ^ : insert ^() and place cursor inside parens ─────────────────
-    if (e.key === "^") {
-      e.preventDefault();
-      insertAt(val, start, end, "^()", 2);
-      return;
-    }
-
-    // ── Fraction /: wrap token before cursor in numerator slot ──────────────
-    if (e.key === "/" && start === end) {
-      e.preventDefault();
-      const { token, start: tokenStart } = tokenBefore(val, start);
-      if (token) {
-        // Replace "token" with "(token)/()" and put cursor inside denominator
-        const replacement = `(${token})/()`;
-        insertAt(val, tokenStart, start, replacement, replacement.length - 1);
-      } else {
-        // Nothing before cursor — just insert the slash
-        insertAt(val, start, end, "/");
-      }
-      return;
-    }
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newVal = e.target.value;
-    const cursor = e.target.selectionStart ?? newVal.length;
-
-    // ── Backslash shortcuts: detect \<key> just completed ───────────────────
-    const beforeCursor = newVal.slice(0, cursor);
-    const bsMatch = beforeCursor.match(/\\([a-zA-Z])$/);
-    if (bsMatch) {
-      const key = bsMatch[1];
-      const expansion = BACKSLASH_SHORTCUTS[key];
-      if (expansion) {
-        const replStart = cursor - 2; // position of the backslash
-        const nextVal = newVal.slice(0, replStart) + expansion + newVal.slice(cursor);
-        onChange(nextVal);
-        const newCursor = replStart + expansion.length;
-        requestAnimationFrame(() => {
-          inputRef.current?.setSelectionRange(newCursor, newCursor);
-        });
-        return;
-      }
-    }
-
-    onChange(newVal);
-  };
+  // If MQ hasn't loaded yet, show a plain input as fallback
+  if (!mq) {
+    return (
+      <span
+        className={cn(
+          "flex-1 min-w-0 flex items-center px-2 text-xs text-muted-foreground",
+          className,
+        )}
+      >
+        Loading…
+      </span>
+    );
+  }
 
   return (
-    <input
-      ref={inputRef}
-      value={value}
-      onChange={handleChange}
-      onKeyDown={handleKeyDown}
-      placeholder={placeholder}
-      disabled={disabled}
-      className={className}
-      spellCheck={false}
-      autoComplete="off"
-      autoCorrect="off"
-      autoCapitalize="off"
+    <span
+      ref={spanRef}
+      className={cn(
+        // Reset MQ's default styling to match the panel's design
+        "mq-nova",
+        disabled && "pointer-events-none opacity-50",
+        className,
+      )}
+      data-placeholder={placeholder}
     />
   );
 }
@@ -399,9 +488,13 @@ export function EquationsPanel({
   onEditEquation,
 }: EquationsPanelProps) {
   const [isAIMode, setIsAIMode] = React.useState(false);
-  const [inputValue, setInputValue] = React.useState("");
+  const [inputValue, setInputValue] = React.useState("");   // AI mode text / mathjs from MQ
+  const [mqValue,    setMqValue]    = React.useState("");   // live mathjs from MathQuill field
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // The value to submit depends on mode
+  const submitValue = isAIMode ? inputValue : mqValue;
 
   const regularEquations = equations.filter((eq) => !eq.fromChat);
   const chatEquations    = equations.filter((eq) =>  eq.fromChat);
@@ -424,8 +517,11 @@ export function EquationsPanel({
   };
 
   // ── Submit handler (both Math and AI modes) ────────────────────────────────
-  const handleSubmit = async () => {
-    const trimmed = inputValue.trim();
+  // valueOverride: used by MathQuill's enter handler to pass the live lastVal
+  // directly, bypassing React state timing (edited fires setMqValue but React
+  // may not have re-rendered before enter fires).
+  const handleSubmit = async (valueOverride?: string) => {
+    const trimmed = (valueOverride ?? submitValue).trim();
     if (!trimmed) return;
     setError(null);
 
@@ -469,6 +565,9 @@ export function EquationsPanel({
       // Math mode: add the raw expression directly
       onAddEquations([trimmed], "");
       setInputValue("");
+      setMqValue("");
+      // Note: MathQuill field is cleared visually by the enter handler itself.
+      // If submitted via + button, we rely on setMqValue("") to disable the button.
     }
   };
 
@@ -571,15 +670,7 @@ export function EquationsPanel({
         </div>
 
         <div className="px-2 pb-2 space-y-1">
-          {/* KaTeX live preview — only in Math mode, only when there's input */}
-          {!isAIMode && inputValue.trim() && (
-            <div
-              className="px-2 py-1 rounded bg-muted/40 border border-border/40 text-sm overflow-x-auto min-h-[28px]"
-              dangerouslySetInnerHTML={{ __html: renderKatex(inputValue) }}
-            />
-          )}
-
-          {/* Input row: SmartMathInput (Math) or plain input (AI) */}
+          {/* Input row: MathQuillInput (Math) or plain input (AI) */}
           <div className="flex items-center gap-1">
             {isAIMode ? (
               // AI mode: plain text input, no math interception
@@ -593,25 +684,27 @@ export function EquationsPanel({
                 spellCheck={false}
               />
             ) : (
-              // Math mode: SmartMathInput with all smart features
-              <SmartMathInput
-                value={inputValue}
-                onChange={setInputValue}
-                onSubmit={handleSubmit}
-                placeholder="y = x^2   try: \t, \p, \a..."
-                disabled={isLoading}
-                className="flex-1 min-w-0 h-8 px-2 text-xs font-mono rounded-md border bg-background/50 border-border/60 outline-none focus:border-primary/50 transition-colors"
-              />
+              // Math mode: MathQuill rich math editor
+              <div className="flex-1 min-w-0 min-h-[32px] flex items-center rounded-md border bg-background/50 border-border/60 focus-within:border-primary/50 transition-colors px-2 py-1 overflow-x-auto">
+                <MathQuillInput
+                  onChange={(val) => setMqValue(val)}
+                  onEmpty={() => setMqValue("")}
+                  onSubmit={handleSubmit}
+                  placeholder="y = x^2"
+                  disabled={isLoading}
+                  autoFocus={false}
+                />
+              </div>
             )}
 
-            {/* Submit button — always outside the input so it can never overlap */}
+            {/* Submit button */}
             <Button
               type="button"
               size="icon"
               variant="ghost"
-              onClick={handleSubmit}
+              onClick={() => handleSubmit()}
               className="h-7 w-7 shrink-0 text-muted-foreground hover:text-primary"
-              disabled={!inputValue.trim() || isLoading}
+              disabled={!submitValue.trim() || isLoading}
             >
               {isLoading
                 ? <Loader2 className="w-3 h-3 animate-spin" />
@@ -620,10 +713,10 @@ export function EquationsPanel({
             </Button>
           </div>
 
-          {/* Shortcut hint — only in Math mode, only when input is empty */}
-          {!isAIMode && !inputValue && (
+          {/* Shortcut hint — Math mode only */}
+          {!isAIMode && !mqValue && (
             <p className="text-[10px] text-muted-foreground/60 leading-tight px-0.5">
-              \p=π  \t=θ  \a=α  \s=sqrt(  ^=exponent  (/=fraction
+              type ^ for exponent · / for fraction · pi, theta, sqrt auto-render
             </p>
           )}
 
@@ -692,8 +785,12 @@ function EquationGroupRow({
           <EditableEquation
             equation={{ ...primary, expression: primary.displayExpression! }}
             onEdit={(_id, val) => {
-              // When the display equation is edited, update all equations in the group
-              group.forEach((eq) => onEdit(eq.id, val));
+              // Delete all non-primary group members — the edited equation
+              // will have groupId cleared by handleEdit, so it stands alone.
+              // The MathEvaluator handles y² forms internally (two evaluators
+              // per CurveEntry), so we don't need two separate equations anymore.
+              group.slice(1).forEach((eq) => onDelete(eq.id));
+              onEdit(primary.id, val);
             }}
           />
         ) : (
@@ -738,16 +835,16 @@ function EditableEquation({
   equation: Equation;
   onEdit: (id: string, newExpression: string) => void;
 }) {
-  const [isEditing, setIsEditing]   = React.useState(false);
-  const [editValue, setEditValue]   = React.useState(equation.expression);
+  const [isEditing, setIsEditing] = React.useState(false);
+  const editValueRef = React.useRef(equation.expression);
 
   const startEdit = () => {
-    setEditValue(equation.expression);
+    editValueRef.current = equation.expression;
     setIsEditing(true);
   };
 
   const commitEdit = () => {
-    const trimmed = editValue.trim();
+    const trimmed = editValueRef.current.trim();
     if (trimmed && trimmed !== equation.expression) {
       onEdit(equation.id, trimmed);
     }
@@ -755,20 +852,20 @@ function EditableEquation({
   };
 
   const cancelEdit = () => {
-    setEditValue(equation.expression);
     setIsEditing(false);
   };
 
   if (isEditing) {
     return (
       <div className="flex items-center gap-1">
-        {/* Use SmartMathInput here too so editing is also smart */}
-        <SmartMathInput
-          value={editValue}
-          onChange={setEditValue}
-          onSubmit={commitEdit}
-          className="flex-1 min-w-0 font-mono text-xs bg-muted/50 border border-border rounded px-1.5 py-0.5 outline-none focus:border-primary/50 text-foreground"
-        />
+        <div className="flex-1 min-w-0 min-h-[24px] flex items-center rounded border bg-muted/50 border-border px-1.5 py-0.5 overflow-x-auto focus-within:border-primary/50">
+          <MathQuillInput
+            onChange={(val) => { editValueRef.current = val; }}
+            onSubmit={commitEdit}
+            initialLatex={equation.expression}
+            autoFocus
+          />
+        </div>
         <button onClick={commitEdit} className="text-primary shrink-0">
           <Check className="w-3 h-3" />
         </button>
@@ -779,7 +876,6 @@ function EditableEquation({
     );
   }
 
-  // Normal display: rendered KaTeX, click to edit
   return (
     <div
       className="cursor-text hover:bg-muted/30 rounded px-1 py-0.5 transition-colors overflow-hidden"

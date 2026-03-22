@@ -10,11 +10,25 @@ import { GraphCanvas } from "@/components/novaa/GraphCanvas";
 
 // Four maximally distinct hues: blue, red/coral, green, magenta.
 // Cycled when adding new equations.
+// 15 perceptually distinct colors — hues spread evenly around the wheel at
+// high saturation so they stay vivid on both dark and light backgrounds.
+// CSS variable names map to tokens defined in index.css.
 const CURVE_COLORS = [
-  "novaa-curve-1",  // vivid sky blue   (210°)
-  "novaa-curve-2",  // vivid red/coral  (  4°)
-  "novaa-curve-3",  // vivid green      (142°)
-  "novaa-curve-4",  // vivid magenta    (290°)
+  "novaa-curve-1",   // blue        210°
+  "novaa-curve-2",   // red/coral     4°
+  "novaa-curve-3",   // green       142°
+  "novaa-curve-4",   // magenta     290°
+  "novaa-curve-5",   // cyan        185°
+  "novaa-curve-6",   // yellow       52°
+  "novaa-curve-7",   // orange       28°
+  "novaa-curve-8",   // violet      260°
+  "novaa-curve-9",   // lime        100°
+  "novaa-curve-10",  // crimson     350°
+  "novaa-curve-11",  // teal        172°
+  "novaa-curve-12",  // gold         44°
+  "novaa-curve-13",  // indigo      230°
+  "novaa-curve-14",  // rose        320°
+  "novaa-curve-15",  // mint        155°
 ] as const;
 
 const STORAGE_KEY = "novaa_equations";
@@ -203,7 +217,7 @@ const NovaaPage = () => {
     setEquations((prev) =>
       prev.map((eq) =>
         eq.id === id
-          ? { ...eq, expression: newExpr, displayExpression: undefined }
+          ? { ...eq, expression: newExpr, displayExpression: undefined, groupId: undefined }
           : eq,
       ),
     );

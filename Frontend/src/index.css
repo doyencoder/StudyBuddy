@@ -63,6 +63,17 @@
     --novaa-curve-2: 340 75% 65%;    /* pink/rose                            */
     --novaa-curve-3: 38  92% 58%;    /* orange/amber                         */
     --novaa-curve-4: 270 65% 70%;    /* purple                               */
+    --novaa-curve-5: 185 85% 55%;    /* cyan                                 */
+    --novaa-curve-6: 52  95% 55%;    /* yellow                               */
+    --novaa-curve-7: 28  95% 58%;    /* deep orange                          */
+    --novaa-curve-8: 260 70% 68%;    /* violet                               */
+    --novaa-curve-9: 100 75% 52%;    /* lime green                           */
+    --novaa-curve-10: 350 85% 62%;   /* crimson                              */
+    --novaa-curve-11: 172 80% 48%;   /* teal                                 */
+    --novaa-curve-12: 44  95% 55%;   /* gold                                 */
+    --novaa-curve-13: 230 80% 65%;   /* indigo                               */
+    --novaa-curve-14: 320 75% 65%;   /* rose                                 */
+    --novaa-curve-15: 155 70% 52%;   /* mint                                 */
     --novaa-grid:    220 15% 30%;    /* subtle but visible grid lines        */
     --novaa-surface: 230 15% 7%;     /* canvas background                    */
   }
@@ -121,6 +132,17 @@
     --novaa-curve-2: 340 65% 50%;
     --novaa-curve-3: 38  85% 44%;
     --novaa-curve-4: 270 55% 52%;
+    --novaa-curve-5: 185 80% 38%;
+    --novaa-curve-6: 52  90% 40%;
+    --novaa-curve-7: 28  90% 44%;
+    --novaa-curve-8: 260 65% 52%;
+    --novaa-curve-9: 100 65% 38%;
+    --novaa-curve-10: 350 75% 48%;
+    --novaa-curve-11: 172 72% 35%;
+    --novaa-curve-12: 44  90% 40%;
+    --novaa-curve-13: 230 72% 50%;
+    --novaa-curve-14: 320 68% 50%;
+    --novaa-curve-15: 155 62% 38%;
     --novaa-grid:    220 14% 60%;    /* darker = visible on light background */
     --novaa-surface: 220 20% 97%;
   }
@@ -243,4 +265,42 @@ body.font-dyslexic {
 }
 .bg-novaa-surface {
   background-color: hsl(var(--novaa-surface));
+}
+/* ── MathQuill overrides — match Nova panel dark theme ───────────────────── */
+.mq-nova {
+  display: inline-block;
+  width: 100%;
+  min-height: 20px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: hsl(var(--foreground));
+  cursor: text;
+}
+/* Remove MathQuill's default border/shadow — parent wrapper handles it */
+.mq-nova.mq-editable-field {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+/* Cursor color */
+.mq-nova .mq-cursor {
+  border-color: hsl(var(--primary)) !important;
+}
+/* Selection highlight */
+.mq-nova .mq-selection,
+.mq-nova .mq-selection .mq-non-leaf {
+  background: hsl(var(--primary) / 0.25) !important;
+}
+/* Fraction bar */
+.mq-nova .mq-fraction .mq-numerator {
+  border-bottom-color: hsl(var(--foreground) / 0.6) !important;
+}
+/* Placeholder when empty */
+.mq-nova.mq-editable-field.mq-empty::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  pointer-events: none;
+  position: absolute;
 }

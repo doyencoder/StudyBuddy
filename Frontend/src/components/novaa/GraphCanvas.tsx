@@ -152,7 +152,7 @@ export function GraphCanvas({
         color:    eq.color,
         visible:  eq.visible,
         fromChat: !!eq.fromChat,
-      } satisfies EquationDescriptor);
+      } satisfies EquationDescriptor, () => scheduleRender());
     }
 
     setTickLabels(buildTickLabels(vp, gridDensityRef.current));
@@ -253,7 +253,7 @@ export function GraphCanvas({
         color:    eq.color,
         visible:  eq.visible,
         fromChat: !!eq.fromChat,
-      } satisfies EquationDescriptor);
+      } satisfies EquationDescriptor, () => scheduleRender());
     }
 
     prevEqIdsRef.current = currentIds;

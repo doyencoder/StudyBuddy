@@ -41,6 +41,10 @@
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders';
 import { MathEvaluator, type CurveEvaluator } from './MathEvaluator';
 
+// Vite worker import — bundled as a separate chunk, loaded lazily
+// ?worker tells Vite to treat this as a Web Worker module
+import MarchingSquaresWorker from './marchingSquares.worker?worker';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,16 +74,17 @@ export interface EquationDescriptor {
 interface CurveSegment {
   buffer: WebGLBuffer;
   vao:    WebGLVertexArrayObject;
-  count:  number;          // number of vertices in this segment
+  count:  number;
 }
 
 /** Internal per-equation data. */
 interface CurveEntry {
   segments:    CurveSegment[];
-  color:       [number, number, number, number];  // RGBA [0,1]
-  opacity:     number;    // 1.0 normal, 0.65 from-chat
+  color:       [number, number, number, number];
+  opacity:     number;
+  fromChat:    boolean;
   evaluators:  CurveEvaluator[];
-  // The viewport at which this curve was last sampled
+  isImplicit:  boolean;   // true = rendered via marching squares worker
   lastSampledScale:  number;
   lastSampledXMin:   number;
   lastSampledXMax:   number;
@@ -143,6 +148,12 @@ const SAMPLE_MARGIN = 2.0;  // sample 200% beyond visible so panning never hits 
  * Splits the result at discontinuities (large y jumps or undefined values).
  * Returns an array of Float32Arrays, each being a continuous segment:
  *   [x0, y0, x1, y1, ...]
+ *
+ * Endpoint bisection (both entry and exit):
+ *   At a null→valid transition (domain entry, e.g. left tip of ellipse) and a
+ *   valid→null transition (domain exit, e.g. right tip), we bisect 10 times to
+ *   find the exact boundary. Both halves of the ellipse converge to the same
+ *   (±a, 0) point, closing the gap completely.
  */
 function sampleCurve(
   fn:    (x: number) => number | null,
@@ -153,44 +164,89 @@ function sampleCurve(
 ): Float32Array[] {
   const segments: Float32Array[] = [];
   let current: number[] = [];
-  let prevY: number | null = null;
+  let prevY:    number | null = null;
+  let prevX:    number = xMin;
+  let prevNullX: number = xMin - (xMax - xMin) / SAMPLE_COUNT; // tracks last null x
   const step    = (xMax - xMin) / SAMPLE_COUNT;
   const yRange  = Math.abs(yMax - yMin);
-  const yBuffer = yRange * 4;  // how far outside visible range we still record
+  const yBuffer = yRange * 4;
+
+  const ITERS = 10; // bisection iterations → precision of step/1024
+
+  // valid→null: find the last valid point approaching the boundary from inside
+  const bisectExit = (lo: number, hi: number): [number, number] | null => {
+    let bestX = lo;
+    let bestY = fn(lo);
+    if (bestY === null || !isFinite(bestY)) return null;
+    for (let k = 0; k < ITERS; k++) {
+      const mid = (lo + hi) / 2;
+      const y   = fn(mid);
+      if (y !== null && isFinite(y) && !isNaN(y)) { lo = mid; bestX = mid; bestY = y; }
+      else { hi = mid; }
+    }
+    return [bestX, bestY as number];
+  };
+
+  // null→valid: find the first valid point approaching the boundary from outside
+  const bisectEntry = (lo: number, hi: number): [number, number] | null => {
+    let bestX = hi;
+    let bestY = fn(hi);
+    if (bestY === null || !isFinite(bestY as number)) return null;
+    for (let k = 0; k < ITERS; k++) {
+      const mid = (lo + hi) / 2;
+      const y   = fn(mid);
+      if (y !== null && isFinite(y) && !isNaN(y)) { hi = mid; bestX = mid; bestY = y; }
+      else { lo = mid; }
+    }
+    return [bestX, bestY as number];
+  };
 
   for (let i = 0; i <= SAMPLE_COUNT; i++) {
     const x = xMin + i * step;
     const y = fn(x);
 
-    // ── Invalid point: break the current segment ────────────────────────────
+    // ── Invalid point ────────────────────────────────────────────────────────
     if (y === null || !isFinite(y) || isNaN(y)
         || y < yMin - yBuffer || y > yMax + yBuffer) {
-      if (current.length >= 4) {  // need at least 2 points for a line
-        segments.push(new Float32Array(current));
+
+      // valid→null: bisect to find exact exit point before breaking segment
+      if (current.length >= 2 && prevY !== null) {
+        const pt = bisectExit(prevX, x);
+        if (pt) {
+          const lastX = current[current.length - 2];
+          const lastY = current[current.length - 1];
+          if (Math.abs(pt[0] - lastX) > step * 0.01 || Math.abs(pt[1] - lastY) > 1e-9) {
+            current.push(pt[0], pt[1]);
+          }
+        }
       }
-      current = [];
-      prevY   = null;
+
+      if (current.length >= 4) segments.push(new Float32Array(current));
+      current   = [];
+      prevNullX = x;
+      prevY     = null;
       continue;
     }
 
-    // ── Discontinuity detection: large jump → break segment ─────────────────
-    // Threshold: 60% of visible y range. Catches tan(x) asymptotes, 1/x, etc.
+    // ── Discontinuity: large jump — hard break, no bisection ────────────────
     if (prevY !== null && Math.abs(y - prevY) > yRange * 0.6) {
-      if (current.length >= 4) {
-        segments.push(new Float32Array(current));
-      }
+      if (current.length >= 4) segments.push(new Float32Array(current));
       current = [];
+      // prevY stays non-null so next point doesn't trigger entry bisection
+    }
+
+    // ── null→valid: bisect to find exact entry point ─────────────────────────
+    if (prevY === null && i > 0) {
+      const pt = bisectEntry(prevNullX, x);
+      if (pt) current.push(pt[0], pt[1]);
     }
 
     current.push(x, y);
+    prevX = x;
     prevY = y;
   }
 
-  // Flush the last segment
-  if (current.length >= 4) {
-    segments.push(new Float32Array(current));
-  }
-
+  if (current.length >= 4) segments.push(new Float32Array(current));
   return segments;
 }
 
@@ -267,8 +323,65 @@ function buildGridGeometry(vp: Viewport, densityDivisor: number = 1): GridGeomet
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tick label builder (used by React component for HTML overlay)
+// Axis arrowhead geometry builder
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * buildArrowGeometry
+ * Builds two small filled triangles (one per axis) in math coordinates.
+ * Drawn with gl.TRIANGLES — no lineWidth needed.
+ *
+ * X-axis arrowhead: points right, tip at the screen's right edge.
+ * Y-axis arrowhead: points up (positive math-Y = top of screen).
+ *
+ * Both are only included when their respective axis is visible on screen.
+ * If an axis is off-screen the triangle still gets computed but will be
+ * clipped by WebGL — the visibility guard is just an optimisation.
+ *
+ * Arrow dimensions (CSS pixels):
+ *   length = 10px from base to tip
+ *   half-width = 5.5px at the base
+ */
+function buildArrowGeometry(vp: Viewport): Float32Array {
+  const { originX, originY, scale, width, height } = vp;
+  const pts: number[] = [];
+
+  // ── X-axis arrowhead ──────────────────────────────────────────────────────
+  // Axis is visible when the horizontal axis (y=0 in math, screen-y=originY)
+  // crosses the canvas vertically.
+  if (originY >= 0 && originY <= height) {
+    // Tip: right edge of canvas minus a small margin
+    const tipX  = (width  - 4  - originX) / scale;
+    // Base: 10px left of tip, ±5.5px vertically
+    const baseX = (width  - 14 - originX) / scale;
+    const baseYT =  5.5 / scale;   // top base vertex (positive math-Y)
+    const baseYB = -5.5 / scale;   // bottom base vertex
+    pts.push(
+      tipX, 0,          // tip (on x-axis, y=0)
+      baseX, baseYT,    // upper-left
+      baseX, baseYB,    // lower-left
+    );
+  }
+
+  // ── Y-axis arrowhead ──────────────────────────────────────────────────────
+  // Axis is visible when the vertical axis (x=0 in math, screen-x=originX)
+  // crosses the canvas horizontally.
+  if (originX >= 0 && originX <= width) {
+    // Tip: 4px from top of canvas (small margin)
+    const tipY  = (originY - 4)  / scale;   // positive math-Y (up)
+    // Base: 10px below tip in screen space = smaller math-Y
+    const baseY = (originY - 14) / scale;
+    const baseXR =  5.5 / scale;   // right base vertex
+    const baseXL = -5.5 / scale;   // left base vertex
+    pts.push(
+      0,      tipY,    // tip (on y-axis, x=0)
+      baseXR, baseY,   // lower-right
+      baseXL, baseY,   // lower-left
+    );
+  }
+
+  return new Float32Array(pts);
+}
 
 export interface TickLabel {
   x:      number;  // CSS pixel position
@@ -399,11 +512,13 @@ export class NovaRenderer {
   private uOrigin!:     WebGLUniformLocation;
   private uScale!:      WebGLUniformLocation;
   private uColor!:      WebGLUniformLocation;
+  private uDashed!:     WebGLUniformLocation;  // 0=solid, 1=dashed (from-chat)
 
   // Grid geometry — three separate buffers for different opacity levels
-  private minorGrid: GridBuffer | null = null;
-  private majorGrid: GridBuffer | null = null;
-  private axisLines: GridBuffer | null = null;
+  private minorGrid:   GridBuffer | null = null;
+  private majorGrid:   GridBuffer | null = null;
+  private axisLines:   GridBuffer | null = null;
+  private axisArrows:  GridBuffer | null = null;  // filled triangles, gl.TRIANGLES
 
   // Equation curve data
   private curves    = new Map<string, CurveEntry>();
@@ -412,6 +527,11 @@ export class NovaRenderer {
 
   // Math evaluator (caches compiled functions)
   private evaluator = new MathEvaluator();
+
+  // Web Worker for marching squares (implicit curves that can't be solved analytically)
+  private worker: Worker | null = null;
+  // Pending worker callbacks: job id → callback when segments arrive
+  private workerCallbacks = new Map<string, (segs: Float32Array) => void>();
 
   // Current viewport (CSS pixel values, DPR-independent)
   private viewport!: Viewport;
@@ -443,10 +563,27 @@ export class NovaRenderer {
     this.uOrigin     = gl.getUniformLocation(this.program, 'u_origin')!;
     this.uScale      = gl.getUniformLocation(this.program, 'u_scale')!;
     this.uColor      = gl.getUniformLocation(this.program, 'u_color')!;
+    this.uDashed     = gl.getUniformLocation(this.program, 'u_dashed')!;
 
     // Enable alpha blending for smooth antialiased lines and transparency
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    // Spawn marching squares worker
+    try {
+      this.worker = new MarchingSquaresWorker();
+      this.worker.onmessage = (e: MessageEvent) => {
+        const { id, segments } = e.data as { id: string; segments: Float32Array };
+        const cb = this.workerCallbacks.get(id);
+        if (cb) {
+          this.workerCallbacks.delete(id);
+          cb(segments);
+        }
+      };
+    } catch {
+      // Worker unavailable (e.g. in test env) — implicit curves won't render
+      this.worker = null;
+    }
 
     return true;
   }
@@ -502,6 +639,7 @@ export class NovaRenderer {
     const yMax = (vp.originY - 0)          / vp.scale;
 
     for (const [id, entry] of this.curves) {
+      if (entry.isImplicit) continue;  // implicit curves handled by worker, not resample
       const scaleDelta = Math.abs(vp.scale - entry.lastSampledScale)
                        / Math.max(entry.lastSampledScale, 1);
       // Trigger resample when visible range is within 10% of sampled edges
@@ -520,44 +658,103 @@ export class NovaRenderer {
   /**
    * upsertEquation
    * Add or update an equation in the renderer.
-   * Compiles the math function and samples it to GPU buffers.
+   *
+   * Fast path (analytical):  explicit y=f(x), y² implicit, linear implicit
+   *   → compile once, sample to GPU buffer synchronously
+   *
+   * Slow path (marching squares):  y^3=x^2, sin(xy)=0.5, anything else
+   *   → post to Web Worker, receive Float32Array of line segments, upload to GPU
+   *   → renders at GPU speed after the first ~10ms worker compute
    */
-  upsertEquation(desc: EquationDescriptor): void {
+  upsertEquation(desc: EquationDescriptor, onReady?: () => void): void {
     const evaluators = this.evaluator.getEvaluators(desc.raw);
     const color      = cssVarToRGBA(desc.color, desc.fromChat ? 0.65 : 1.0);
+    const vp         = this.viewport ?? { originX: 0, originY: 0, scale: 60, width: 800, height: 600 };
 
-    // Compute current visible math range for initial sampling
-    const vp   = this.viewport ?? { originX: 0, originY: 0, scale: 60, width: 800, height: 600 };
     const xMin = (0        - vp.originX) / vp.scale;
     const xMax = (vp.width - vp.originX) / vp.scale;
     const yMin = (vp.originY - vp.height) / vp.scale;
     const yMax = (vp.originY - 0)         / vp.scale;
 
-    const margin = (xMax - xMin) * SAMPLE_MARGIN;
-
-    const segments = this.buildCurveSegments(
-      evaluators,
-      xMin - margin, xMax + margin,
-      yMin, yMax,
-    );
-
-    // Free old buffers for this id if they exist
+    // Free old buffers for this id
     this.freeCurveBuffers(desc.id);
 
-    const entry: CurveEntry = {
-      segments,
-      color,
-      opacity:              desc.fromChat ? 0.65 : 1.0,
-      evaluators,
-      lastSampledScale:     vp.scale,
-      lastSampledXMin:      xMin - margin,
-      lastSampledXMax:      xMax + margin,
-    };
+    if (evaluators.length > 0) {
+      // ── Fast analytical path ──────────────────────────────────────────────
+      const margin   = (xMax - xMin) * SAMPLE_MARGIN;
+      const segments = this.buildCurveSegments(
+        evaluators, xMin - margin, xMax + margin, yMin, yMax,
+      );
 
-    if (!this.curves.has(desc.id)) {
-      this.curveOrder.push(desc.id);
+      const entry: CurveEntry = {
+        segments, color,
+        opacity:          desc.fromChat ? 0.65 : 1.0,
+        fromChat:         desc.fromChat,
+        isImplicit:       false,
+        evaluators,
+        lastSampledScale: vp.scale,
+        lastSampledXMin:  xMin - margin,
+        lastSampledXMax:  xMax + margin,
+      };
+
+      if (!this.curves.has(desc.id)) this.curveOrder.push(desc.id);
+      this.curves.set(desc.id, entry);
+
+    } else {
+      // ── Marching squares path ─────────────────────────────────────────────
+      // Insert a placeholder entry immediately so the equation shows in the
+      // panel with correct color. Segments will be filled when worker replies.
+      const placeholder: CurveEntry = {
+        segments:         [],
+        color, opacity:   desc.fromChat ? 0.65 : 1.0,
+        fromChat:         desc.fromChat,
+        isImplicit:       true,
+        evaluators:       [],
+        lastSampledScale: vp.scale,
+        lastSampledXMin:  xMin,
+        lastSampledXMax:  xMax,
+      };
+
+      if (!this.curves.has(desc.id)) this.curveOrder.push(desc.id);
+      this.curves.set(desc.id, placeholder);
+
+      if (!this.worker) return;  // worker unavailable — can't render
+
+      // Extend sampling range by SAMPLE_MARGIN so panning doesn't show gaps
+      const margin = (xMax - xMin) * SAMPLE_MARGIN;
+      const jobId  = `${desc.id}-${Date.now()}`;
+
+      this.workerCallbacks.set(jobId, (segsFlat: Float32Array) => {
+        const entry = this.curves.get(desc.id);
+        if (!entry) return;  // equation was removed while worker was computing
+
+        // Upload all segments to GPU as a single VBO
+        // (marching squares returns [x0,y0, x1,y1, ...] pairs — each pair is a segment)
+        this.freeSegments(entry.segments);
+        const newSegs = this.uploadImplicitSegments(segsFlat);
+        entry.segments          = newSegs;
+        entry.lastSampledScale  = vp.scale;
+        entry.lastSampledXMin   = xMin - margin;
+        entry.lastSampledXMax   = xMax + margin;
+
+        onReady?.();
+      });
+
+      // For implicit curves, extend x range for pan smoothness but keep y range tight.
+      // A large y range causes asymptotic curves (x*y=1) to draw far-off-screen
+      // branches that render as vertical artifacts near discontinuities.
+      const xMargin = (xMax - xMin) * SAMPLE_MARGIN;
+      const yMargin = (yMax - yMin) * 1.0;  // 100% y buffer — needed for y^(2/3)=x and hyperbolas
+
+      this.worker.postMessage({
+        id:   jobId,
+        raw:  desc.raw,
+        xMin: xMin - xMargin,
+        xMax: xMax + xMargin,
+        yMin: yMin - yMargin,
+        yMax: yMax + yMargin,
+      });
     }
-    this.curves.set(desc.id, entry);
   }
 
   /**
@@ -599,6 +796,13 @@ export class NovaRenderer {
    *   To simulate thicker lines we draw each primitive multiple times with
    *   sub-pixel origin offsets. 3 passes → visually ~2px. 5 passes → ~3px.
    *   Axes: 4 passes. Hovered curve: 5 passes. Normal curve: 3 passes.
+   *
+   * Dashed curves (from-chat):
+   *   u_dashed=1.0 activates a gl_FragCoord-based diagonal stipple in the
+   *   fragment shader. Because gl_FragCoord is in physical pixels (not the
+   *   shifted per-pass origin), every pass discards the same set of fragments
+   *   → clean dashes even with multi-pass thickness rendering.
+   *   Glow passes always use u_dashed=0.0 (solid) — a dashed glow looks wrong.
    */
   render(visible: Set<string>, hoveredId?: string): void {
     const { gl, program, viewport: vp, dpr } = this;
@@ -628,6 +832,9 @@ export class NovaRenderer {
     setOrigin();
     gl.uniform1f(this.uScale, vp.scale * dpr);
 
+    // Grid and axes are always solid
+    gl.uniform1f(this.uDashed, 0.0);
+
     // ── Grid: minor then major ───────────────────────────────────────────────
     if (this.minorGrid) {
       this.drawGeometry(this.minorGrid, [0.3, 0.35, 0.45, 0.3], gl.LINES);
@@ -637,8 +844,8 @@ export class NovaRenderer {
     }
 
     // ── Axes: 4-pass for visual ~2.5px thickness ─────────────────────────────
+    const axisColor: [number,number,number,number] = [0.6, 0.65, 0.75, 0.7];
     if (this.axisLines) {
-      const axisColor: [number,number,number,number] = [0.6, 0.65, 0.75, 0.7];
       const axisOffsets = [[0,0],[0.5,0],[-0.5,0],[0,0.5]] as const;
       for (const [ox, oy] of axisOffsets) {
         setOrigin(ox, oy);
@@ -647,10 +854,15 @@ export class NovaRenderer {
       restoreOrigin();
     }
 
+    // ── Axis arrowheads: filled triangles, single pass ────────────────────────
+    // Triangles are filled by the GPU — no multi-pass needed for thickness.
+    if (this.axisArrows && this.axisArrows.count > 0) {
+      setOrigin(0, 0);
+      this.drawGeometry(this.axisArrows, axisColor, gl.TRIANGLES);
+    }
+
     // ── Curves ───────────────────────────────────────────────────────────────
-    // Normal curves: 3 passes (simulates ~2px).
-    // Hovered curve: 5 passes (simulates ~3px) + soft glow first pass.
-    // Normal: 6 passes → visually ~3px thick
+    // Normal curves: 6 passes → visually ~3px thick
     const normalOffsets = [[0,0],[1.2,0],[-1.2,0],[0,1.2],[0,-1.2],[0.8,0.8]] as const;
     // Hovered: 8 passes → visually ~4px thick
     const hoverOffsets  = [[0,0],[1.5,0],[-1.5,0],[0,1.5],[0,-1.5],[1.0,1.0],[-1.0,1.0],[1.0,-1.0]] as const;
@@ -664,14 +876,15 @@ export class NovaRenderer {
       const offsets   = isHovered ? hoverOffsets : normalOffsets;
       const [r, g, b, a] = entry.color;
 
-      // Optional soft glow pass for hovered curve (drawn before main passes)
+      // Optional soft glow pass for hovered curve (drawn before main passes).
+      // Always solid — a dashed glow looks fragmented and wrong.
       if (isHovered) {
+        gl.uniform1f(this.uDashed, 0.0);
         setOrigin(0, 0);
         gl.uniform4fv(this.uColor, [r, g, b, a * 0.25]);
         for (const seg of entry.segments) {
           if (seg.count < 2) continue;
           gl.bindVertexArray(seg.vao);
-          // Draw glow with slightly offset origins for a halo effect
           for (const [ox, oy] of [[3.0,0],[-3.0,0],[0,3.0],[0,-3.0]] as const) {
             setOrigin(ox, oy);
             gl.drawArrays(gl.LINE_STRIP, 0, seg.count);
@@ -680,7 +893,9 @@ export class NovaRenderer {
         }
       }
 
-      // Main passes (multi-offset for thickness)
+      // Main passes: multi-pass offset for thickness (works for both analytical
+      // LINE_STRIP curves and implicit polyline chains from marching squares)
+      gl.uniform1f(this.uDashed, entry.fromChat ? 1.0 : 0.0);
       gl.uniform4fv(this.uColor, [r, g, b, a]);
       for (const [ox, oy] of offsets) {
         setOrigin(ox, oy);
@@ -693,6 +908,9 @@ export class NovaRenderer {
       }
       restoreOrigin();
     }
+
+    // Reset dashed state at end of frame
+    gl.uniform1f(this.uDashed, 0.0);
   }
 
   // ── Hover detection (CPU — for tooltip) ────────────────────────────────────
@@ -721,16 +939,65 @@ export class NovaRenderer {
     return null;
   }
 
+  /**
+   * getCurveRightmostPoint
+   * Scans from xRight inward (3 CSS pixels per step) and returns the
+   * first math-space point where the curve has a valid, visible y value.
+   *
+   * Used by GraphCanvas to position curve-end labels. The scan starts at the
+   * screen's right edge so:
+   *   - Infinite curves (sin, x²) → label at right screen edge on the curve
+   *   - Bounded curves (circle, ellipse) → label at the actual right endpoint
+   *
+   * @param xRight  Rightmost math-x visible on screen
+   * @param yMin    Minimum math-y visible (used for generous range filter)
+   * @param yMax    Maximum math-y visible
+   */
+  getCurveRightmostPoint(
+    id:     string,
+    xRight: number,
+    yMin:   number,
+    yMax:   number,
+  ): { x: number; y: number } | null {
+    const entry = this.curves.get(id);
+    if (!entry || !entry.evaluators.length || !this.viewport) return null;
+
+    // 3 CSS pixels per step → up to 200 steps = 600px scan range from right edge
+    const step    = 3 / this.viewport.scale;
+    const yBuffer = (yMax - yMin) * 2;  // generous: allow points well outside visible range
+
+    for (let i = 0; i <= 200; i++) {
+      const x = xRight - i * step;
+      for (const ev of entry.evaluators) {
+        const y = ev.fn(x);
+        if (
+          y !== null &&
+          isFinite(y) &&
+          !isNaN(y) &&
+          y >= yMin - yBuffer &&
+          y <= yMax + yBuffer
+        ) {
+          return { x, y };
+        }
+      }
+    }
+    return null;
+  }
+
   // ── Cleanup ─────────────────────────────────────────────────────────────────
 
   destroy(): void {
     const { gl } = this;
+    // Terminate worker
+    this.worker?.terminate();
+    this.worker = null;
+    this.workerCallbacks.clear();
     // Free all curve buffers
     for (const id of [...this.curves.keys()]) {
       this.freeCurveBuffers(id);
     }
     // Free grid buffers
-    for (const g of [this.minorGrid, this.majorGrid, this.axisLines]) {
+    for (const g of [this.minorGrid, this.majorGrid, this.axisLines, this.axisArrows]) {
       if (g) { gl.deleteBuffer(g.buffer); gl.deleteVertexArray(g.vao); }
     }
     gl.deleteProgram(this.program);
@@ -770,6 +1037,44 @@ export class NovaRenderer {
     return segments;
   }
 
+  /**
+   * uploadImplicitSegments
+   * Parses the NaN-separated polychain format from the marching squares worker
+   * and uploads each chain as its own VBO with gl.LINE_STRIP semantics.
+   *
+   * Format: [x0,y0,..., NaN,NaN, x0,y0,..., NaN,NaN, ...]
+   * Each run between NaN pairs is one connected polyline → solid curve.
+   *
+   * With chaining (done in the worker), what were N×1px dots are now
+   * a handful of long polylines that render as solid smooth curves.
+   */
+  private uploadImplicitSegments(flat: Float32Array): CurveSegment[] {
+    const { gl, program } = this;
+    const segments: CurveSegment[] = [];
+
+    const uploadChain = (data: Float32Array) => {
+      if (data.length < 4) return;
+      const { vao, buffer } = createVAO(gl, program, data, gl.STATIC_DRAW);
+      // Positive count — rendered with gl.LINE_STRIP (same as analytical curves)
+      segments.push({ vao, buffer, count: data.length / 2 });
+    };
+
+    // Split on NaN pairs
+    let start = 0;
+    for (let i = 0; i < flat.length; i++) {
+      if (isNaN(flat[i])) {
+        if (i > start) uploadChain(flat.slice(start, i));
+        // Skip consecutive NaNs
+        while (i < flat.length && isNaN(flat[i])) i++;
+        start = i;
+        i--; // loop will i++ again
+      }
+    }
+    if (start < flat.length) uploadChain(flat.slice(start));
+
+    return segments;
+  }
+
   /** Resample a curve at the current viewport and upload new buffers. */
   private resampleCurve(
     id:    string,
@@ -794,7 +1099,8 @@ export class NovaRenderer {
   /** Rebuild the three grid VBOs from current viewport. */
   private rebuildGrid(vp: Viewport): void {
     const { gl, program } = this;
-    const geo = buildGridGeometry(vp, this.gridDensity);
+    const geo    = buildGridGeometry(vp, this.gridDensity);
+    const arrows = buildArrowGeometry(vp);
 
     const upload = (data: Float32Array, existing: GridBuffer | null): GridBuffer => {
       if (existing) {
@@ -809,9 +1115,10 @@ export class NovaRenderer {
       return { vao, buffer, count: data.length / 2 };
     };
 
-    this.minorGrid = upload(geo.minor, this.minorGrid);
-    this.majorGrid = upload(geo.major, this.majorGrid);
-    this.axisLines = upload(geo.axis,  this.axisLines);
+    this.minorGrid  = upload(geo.minor,  this.minorGrid);
+    this.majorGrid  = upload(geo.major,  this.majorGrid);
+    this.axisLines  = upload(geo.axis,   this.axisLines);
+    this.axisArrows = upload(arrows,     this.axisArrows);
   }
 
   private freeSegments(segments: CurveSegment[]): void {

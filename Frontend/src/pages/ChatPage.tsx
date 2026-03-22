@@ -324,6 +324,9 @@ function renderMath(latex: string, displayMode: boolean): React.ReactNode {
 }
 
 function applyInline(text: string, onEquationClick?: (eq: string) => void): React.ReactNode[] {
+  // Matches y = f(x) written in plain text (not LaTeX).
+  // The character whitelist deliberately excludes \ so LaTeX like \( y = \sin(x) \)
+  // does NOT produce a chip — only clean plain-text equations like y = sin(x) do.
   const EQ_PATTERN = /(?:y|f\(x\))\s*=\s*[-\d\sx^+\-*/().sincotaqrlgepb]{3,60}/gi;
   const normalized = text
     // Collapse repeated escaped delimiters like \\\(...\\\) -> \(...\)
@@ -353,7 +356,7 @@ function applyInline(text: string, onEquationClick?: (eq: string) => void): Reac
       return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
     if (/^\$[^$\r\n]+\$$/.test(part))
       return <span key={i}>{renderMath(part.slice(1, -1), false)}</span>;
-    if (/^\\\([\s\S]+?\\\)$/.test(part))
+    if (/^\\\([\s\S]+\\\)$/.test(part))
       return <span key={i}>{renderMath(part.slice(2, -2), false)}</span>;
     if (/^\\\[[\s\S]+?\\\]$/.test(part))
       return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
@@ -567,7 +570,30 @@ function renderMarkdown(text: string, onEquationClick?: (eq: string) => void) {
       continue;
     }
 
-    // ── Fenced code block: ```lang ... ``` ────────────────────────────────
+    // ── PLOT: tag — emitted by the AI for plottable equations ────────────────
+    // Format: "PLOT: y = sin(x)"
+    // Strip the line from the visible message (don't show the raw tag to the user)
+    // and replace it with a clickable chip that sends the equation to Nova.
+    const plotMatch = line.match(/^PLOT:\s*(.+)/i);
+    if (plotMatch) {
+      const eq = plotMatch[1].trim();
+      if (onEquationClick && eq) {
+        elements.push(
+          <div key={`plot-${i}`} className="my-1.5">
+            <button
+              onClick={() => onEquationClick(eq)}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 text-primary text-xs font-mono border border-primary/25 hover:bg-primary/20 active:scale-95 transition-all cursor-pointer"
+              title="Click to plot in Nova"
+            >
+              <TrendingUp className="w-3 h-3 shrink-0" />
+              {eq}
+            </button>
+          </div>
+        );
+      }
+      i++;
+      continue;
+    }
     if (line.trim().startsWith("```")) {
       const openFence = line.trim();
       const language = openFence.slice(3).trim().toLowerCase();

@@ -14,7 +14,7 @@
  */
 
 // ── Main vertex shader ────────────────────────────────────────────────────────
-// Shared by curves, grid lines, and axis lines.
+// Shared by curves, grid lines, axis lines, and arrowhead triangles.
 //
 // Inputs:
 //   a_position   — math-space (x, y) coordinate
@@ -52,15 +52,33 @@ void main() {
 
 // ── Main fragment shader ──────────────────────────────────────────────────────
 // Outputs a flat color. Opacity is baked into u_color.a.
-// Used for all geometry: curves, grid lines, axis lines, hover dot.
+// Used for all geometry: curves, grid lines, axis lines, hover dot, arrowheads.
+//
+// u_dashed:
+//   0.0 → solid (grid, axes, arrowheads, normal curves)
+//   1.0 → dashed (from-chat equations)
+//
+// Dash implementation uses gl_FragCoord (physical pixel position) rather than
+// a varying, so the discard decision is IDENTICAL across all multi-pass origin
+// offsets. Each physical pixel gets the same result in every pass — dashes are
+// clean even with the ±1.5px thickness offsets for hovered/normal curves.
+//
+// Pattern: diagonal stipple — 9 physical px on / 9 physical px off at 45°.
+// Visual dash length: ~12.7 px along a 45° line, ~9 px horizontal/vertical.
 export const FRAGMENT_SHADER = /* glsl */ `#version 300 es
-precision mediump float;
+precision highp float;
 
-uniform vec4 u_color;   // RGBA, all channels [0, 1]
+uniform vec4  u_color;   // RGBA, all channels [0, 1]
+uniform float u_dashed;  // 0.0 = solid, 1.0 = dashed
 
 out vec4 fragColor;
 
 void main() {
+  // Dashed stipple: discard every other 9px diagonal band.
+  // gl_FragCoord.xy is in physical pixels, consistent across all render passes.
+  if (u_dashed > 0.5 && mod(gl_FragCoord.x + gl_FragCoord.y, 18.0) < 9.0) {
+    discard;
+  }
   fragColor = u_color;
 }
 `;

@@ -53,6 +53,7 @@
     "lottie-react": "^2.4.1",
     "lucide-react": "^0.462.0",
     "mathjs": "^15.1.1",
+    "mathquill": "^0.10.1-a",
     "mermaid": "^11.12.3",
     "next-themes": "^0.3.0",
     "react": "^18.3.1",

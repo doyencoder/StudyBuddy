@@ -59,8 +59,18 @@ export function normalise(raw: string): string {
   // Lowercase variables (but not function names like Sin, Cos)
   s = s.replace(/\bX\b/g, 'x').replace(/\bY\b/g, 'y');
 
+  // Strip parentheses from simple numeric exponents that MathQuill emits:
+  // x^(2) → x^2,  y^(4) → y^4,  x^(10) → x^10
+  // This normalises MathQuill LaTeX output (^{n} → ^(n) via latexToMathjs)
+  // so that all downstream regexes can use the plain x^n form.
+  s = s.replace(/\^\((\d+)\)/g, '^$1');
+
   // y2, y3 → y^2, y^3  (must come before implicit-mult rules)
   s = s.replace(/\by(\d)\b/g, 'y^$1');
+
+  // Dot used as multiplication: x.y → x*y, 2.x → 2*x
+  // Must come BEFORE the implicit multiplication rules to avoid double-conversion
+  s = s.replace(/([a-zA-Z0-9])\s*\.\s*([a-zA-Z])/g, '$1*$2');
 
   // Implicit multiplication rules (order matters):
   // 1. digit immediately followed by x, y, or opening paren
@@ -83,6 +93,26 @@ export function normalise(raw: string): string {
   }
 
   s = s.replace(/\binfinity\b/gi, '1e308');  // very large number
+
+  // ── Fractional exponent real-valued fix ───────────────────────────────────
+  // mathjs treats x^(p/q) as complex for negative x (principal complex root).
+  // We want the real-valued interpretation:
+  //   even numerator: x^(p/q) = |x|^(p/q)          (always positive, symmetric)
+  //   odd numerator:  x^(p/q) = sign(x)*|x|^(p/q)  (preserves sign)
+  // Replace: x^(p/q) or y^(p/q) with abs-based expressions.
+  // Also handles the MathQuill output x^((p)/(q)) form.
+  const fractionalPow = (base: string, num: string, den: string): string => {
+    const n = parseInt(num, 10);
+    const expr = `(${num})/(${den})`;
+    if (n % 2 === 0) {
+      return `(abs(${base})^(${expr}))`;
+    } else {
+      return `(sign(${base})*abs(${base})^(${expr}))`;
+    }
+  };
+  // Match: var^(num/den) or var^((num)/(den))
+  s = s.replace(/\b([xy])\s*\^\s*\(\s*\(?(\d+)\)?\s*\/\s*\(?(\d+)\)?\s*\)/g,
+    (_, base, num, den) => fractionalPow(base, num, den));
 
   return s;
 }
@@ -172,7 +202,11 @@ function tryYSquared(s: string): CurveEvaluator[] | null {
 
   // ── Confirm it's purely quadratic in y ────────────────────────────────────
   // We check: at a fixed x, does F(y=t) - F(y=0) scale as t^2?
-  // If yes, y appears only as y^2 (coefficient may vary with x).
+  // i.e. (F(2)-F(0)) / (F(1)-F(0)) ≈ 4  and  F(-1)-F(0) ≈ F(1)-F(0)
+  //
+  // IMPORTANT: we use F(y)-F(0) (relative to y=0), NOT F(y) directly.
+  // Using F(y) directly fails whenever there's a constant offset in the equation
+  // (e.g. x^2/9 + y^2/4 = 5 has a large constant -5 that drowns the y^2 signal).
   const checkQuadratic = (lhsE: string, rhsE: string): boolean => {
     try {
       for (const testX of [0.5, 1.5, 2.5]) {
@@ -189,11 +223,19 @@ function tryYSquared(s: string): CurveEvaluator[] | null {
         const d2  = diff(2);
         const dm1 = diff(-1);
         if (d0 === null || d1 === null || d2 === null || dm1 === null) continue;
-        // For purely quadratic in y:  F(y) - F(0) ≈ A * y^2
-        // So diff(1)/diff(2) ≈ 1/4 and diff(1) ≈ diff(-1)
-        const ratio = Math.abs(d1) > 1e-10 ? Math.abs(d2 / d1) : 0;
-        if (Math.abs(ratio - 4) > 0.5) return false;   // not ~ y^2 scaling
-        if (Math.abs(d1 - dm1) > Math.abs(d1) * 0.1 + 1e-10) return false; // not symmetric
+
+        // Use relative values: subtract the y=0 baseline so constant offsets cancel
+        const r1  = d1 - d0;   // F(1) - F(0) ≈ A
+        const r2  = d2 - d0;   // F(2) - F(0) ≈ 4A
+        const rm1 = dm1 - d0;  // F(-1) - F(0) ≈ A  (symmetric)
+
+        if (Math.abs(r1) < 1e-10) continue;  // no y variation at this testX, skip
+
+        const ratio = r2 / r1;
+        if (Math.abs(ratio - 4) > 0.5) return false;  // not ~y^2 scaling
+
+        const symRatio = rm1 / r1;
+        if (Math.abs(symRatio - 1) > 0.1) return false;  // not symmetric in y
       }
       return true;
     } catch { return false; }
@@ -236,9 +278,24 @@ function tryYSquared(s: string): CurveEvaluator[] | null {
   const testFx = tryEval(fxExpr, 1);
   if (testFx === null) return null;
 
-  const topFn    = compileExpr(`sqrt(max(0, ${fxExpr}))`);
-  const bottomFn = compileExpr(`-sqrt(max(0, ${fxExpr}))`);
-  if (!topFn || !bottomFn) return null;
+  // Compile the inner expression once. We do NOT wrap with sqrt(max(0, ...))
+  // because that would return 0 for out-of-domain x values (e.g. x > 1 for a
+  // unit circle), producing a flat y=0 tail on the curve instead of a clean
+  // endpoint. Instead we return null when the inner expression is negative,
+  // which tells sampleCurve to break the segment at the natural domain boundary.
+  const fxFnRaw = compileExpr(fxExpr);
+  if (!fxFnRaw) return null;
+
+  const topFn: EvalFn = (x: number) => {
+    const v = fxFnRaw(x);
+    if (v === null || v < 0) return null;   // outside domain → null, not 0
+    return Math.sqrt(v);
+  };
+  const bottomFn: EvalFn = (x: number) => {
+    const v = fxFnRaw(x);
+    if (v === null || v < 0) return null;
+    return -Math.sqrt(v);
+  };
 
   return [
     { fn: topFn,    label: `y = √(${fxExpr})` },
@@ -286,6 +343,20 @@ function tryLinearY(s: string): CurveEvaluator[] | null {
   const F20 = F(2, 1);
   if (F20 === null || Math.abs(F20 - (F00 + 2 * yCoeff)) > 0.001) return null;
 
+  // ── Confirm the y-coefficient is CONSTANT across x values ─────────────────
+  // If yCoeff varies with x (e.g. y/x = 1 where coeff = 1/x), the solution
+  // yCoeff_at_x1 is wrong for other x values → curve renders as y=const.
+  // Test: recompute yCoeff at x=2 and x=3 and ensure they match x=1.
+  for (const testX of [2, 3, 0.5]) {
+    const fa = F(0, testX);
+    const fb = F(1, testX);
+    if (fa === null || fb === null) continue;
+    const coeffAtX = fb - fa;
+    if (!isFinite(coeffAtX)) return null;  // x/y type: coefficient is 1/x → non-finite at x=0
+    // Allow 1% tolerance — tighter than before to reject x/y=1 style equations
+    if (Math.abs(coeffAtX - yCoeff) > Math.abs(yCoeff) * 0.01 + 1e-8) return null;
+  }
+
   // Build the expression: y = (rhs_at_y0 - lhs_at_y0) / yCoeff
   const lhsAt0 = lhs.replace(/\by\b/g, '0');
   const rhsAt0 = rhs.replace(/\by\b/g, '0');
@@ -306,9 +377,111 @@ function tryLinearY(s: string): CurveEvaluator[] | null {
   return [{ fn, label: `[implicit] ${solvedExpr}` }];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MathEvaluator — the public API
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * tryYEvenPower
+ * Handles equations where y appears only as y^n for even n ≥ 4 (e.g. y^4, y^6, y^8).
+ * Strategy: same as tryYSquared but:
+ *   - detects the power n numerically (checks scaling ratio matches 2^n)
+ *   - solves for y^n = f(x), then returns y = ±f(x)^(1/n)
+ *
+ * Examples:
+ *   y^4 = x^2 + 2   →  y = ±(x²+2)^(1/4)
+ *   y^4 - x^2 = 1   →  y = ±(x²+1)^(1/4)
+ */
+function tryYEvenPower(s: string): CurveEvaluator[] | null {
+  if (!s.includes('=')) return null;
+
+  // Must contain y^n where n is an even integer ≥ 4
+  const powerMatch = s.match(/y\s*\^\s*(\d+)/);
+  if (!powerMatch) return null;
+  const n = parseInt(powerMatch[1], 10);
+  if (n < 4 || n % 2 !== 0) return null;   // y^2 handled by tryYSquared, odd powers unsupported
+
+  const parts = s.split('=');
+  if (parts.length !== 2) return null;
+  const [lhs, rhs] = parts.map(p => p.trim());
+
+  // Confirm y appears ONLY as y^n (check scaling: F(2)-F(0) / (F(1)-F(0)) ≈ 2^n)
+  const expectedRatio = Math.pow(2, n);
+  const checkPower = (): boolean => {
+    try {
+      for (const testX of [0.5, 1.5, 2.5]) {
+        const diff = (yVal: number): number | null => {
+          try {
+            const lhsV = compile(lhs).evaluate({ x: testX, y: yVal });
+            const rhsV = compile(rhs).evaluate({ x: testX, y: yVal });
+            const v = lhsV - rhsV;
+            return typeof v === 'number' && isFinite(v) ? v : null;
+          } catch { return null; }
+        };
+        const d0 = diff(0);
+        const d1 = diff(1);
+        const d2 = diff(2);
+        const dm1 = diff(-1);
+        if (d0 === null || d1 === null || d2 === null || dm1 === null) continue;
+
+        const r1  = d1 - d0;
+        const r2  = d2 - d0;
+        const rm1 = dm1 - d0;
+
+        if (Math.abs(r1) < 1e-10) continue;
+
+        const ratio = r2 / r1;
+        if (Math.abs(ratio - expectedRatio) > expectedRatio * 0.1) return false;
+
+        // Must be symmetric (even power)
+        const symRatio = rm1 / r1;
+        if (Math.abs(symRatio - 1) > 0.1) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
+
+  if (!checkPower()) return null;
+
+  // Solve for y^n = f(x):  f(x) = (rhs - lhs_no_y) / y^n_coefficient
+  const yPowerRegex = new RegExp(`y\\s*\\^\\s*${n}`, 'g');
+  const lhsNoY    = lhs.replace(yPowerRegex, '0');
+  const rhsStr    = `((${rhs}) - (${lhsNoY}))`;
+  const coeffExpr = lhs.replace(yPowerRegex, '1') + ` - (${lhsNoY})`;
+
+  const testCoeff = tryEval(coeffExpr, 1);
+  if (testCoeff === null) return null;
+
+  let fxExpr: string;
+  if (Math.abs(testCoeff - 1) < 1e-6) {
+    fxExpr = rhsStr;
+  } else if (Math.abs(testCoeff + 1) < 1e-6) {
+    fxExpr = `-1 * (${rhsStr})`;
+  } else {
+    fxExpr = `(${rhsStr}) / (${coeffExpr})`;
+  }
+
+  const testFx = tryEval(fxExpr, 1);
+  if (testFx === null) return null;
+
+  const fxFnRaw = compileExpr(fxExpr);
+  if (!fxFnRaw) return null;
+
+  const root = 1 / n;
+  const topFn: EvalFn = (x: number) => {
+    const v = fxFnRaw(x);
+    if (v === null || v < 0) return null;
+    return Math.pow(v, root);
+  };
+  const bottomFn: EvalFn = (x: number) => {
+    const v = fxFnRaw(x);
+    if (v === null || v < 0) return null;
+    return -Math.pow(v, root);
+  };
+
+  return [
+    { fn: topFn,    label: `y = (${fxExpr})^(1/${n})` },
+    { fn: bottomFn, label: `y = -(${fxExpr})^(1/${n})` },
+  ];
+}
+
+
 
 /**
  * MathEvaluator
@@ -336,14 +509,26 @@ export class MathEvaluator {
 
     const s = normalise(key);
     const result =
-      tryExplicit(s)  ??
-      tryYSquared(s)  ??
-      tryLinearY(s)   ??
-      tryBare(s)      ??
+      tryExplicit(s)      ??
+      tryYSquared(s)      ??
+      tryYEvenPower(s)    ??
+      tryLinearY(s)       ??
+      tryBare(s)          ??
       [];
 
     this.cache.set(key, result);
     return result;
+  }
+
+  /**
+   * canSolveExplicitly
+   * Returns true if the equation can be handled by the fast analytical path
+   * (explicit y=f(x), y² implicit, linear implicit, bare expression).
+   * Returns false for equations that need marching squares (odd powers, etc.)
+   */
+  canSolveExplicitly(raw: string): boolean {
+    const result = this.getEvaluators(raw);
+    return result.length > 0;
   }
 
   /** Clear the evaluator cache (call when equations are all removed). */

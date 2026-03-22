@@ -133,7 +133,17 @@ NEVER proactively mention prior personal facts or prior topics when answering an
 
 CRITICAL — Page references:
 Each context excerpt is labelled with [Page N]. When referring to document content, always say "Page N" not "Chunk N".
-Never use the word "chunk" in your response."""
+Never use the word "chunk" in your response.
+
+NOVA GRAPHING — when your answer involves a mathematical equation that could be graphed:
+After writing the equation in your normal explanation (using LaTeX or plain text as usual), add a separate line in this exact format:
+PLOT: <equation in plain mathjs syntax>
+Rules for the PLOT line:
+- Use mathjs syntax only: sin(x) not \\sin(x), x^2 not x^{2}, sqrt(x) not \\sqrt{x}, pi not \\pi
+- Only emit PLOT: for equations a graphing calculator can draw — y = f(x) forms, or implicit forms like x^2 + y^2 = 9
+- One PLOT: line per distinct plottable equation
+- Do NOT emit PLOT: for coordinate points, inequalities, or equations with no x or y
+Example: if explaining y = sin(x), after your explanation add a line: PLOT: y = sin(x)"""
 
 SYSTEM_PROMPT_GENERAL = """You are StudyBuddy, an educational AI assistant.
 Answer the student's question using your general knowledge.
@@ -162,7 +172,17 @@ CRITICAL — Answer discipline:
 CRITICAL — Conversation memory rule:
 The conversation history may contain facts the student has shared (e.g. name, favourite players, preferences).
 Treat these as established facts — BUT only recall them when the student is DIRECTLY and EXPLICITLY asking about them.
-NEVER proactively mention prior personal facts or prior topics when answering an unrelated question."""
+NEVER proactively mention prior personal facts or prior topics when answering an unrelated question.
+
+NOVA GRAPHING — when your answer involves a mathematical equation that could be graphed:
+After writing the equation in your normal explanation (using LaTeX or plain text as usual), add a separate line in this exact format:
+PLOT: <equation in plain mathjs syntax>
+Rules for the PLOT line:
+- Use mathjs syntax only: sin(x) not \\sin(x), x^2 not x^{2}, sqrt(x) not \\sqrt{x}, pi not \\pi
+- Only emit PLOT: for equations a graphing calculator can draw — y = f(x) forms, or implicit forms like x^2 + y^2 = 9
+- One PLOT: line per distinct plottable equation
+- Do NOT emit PLOT: for coordinate points, inequalities, or equations with no x or y
+Example: if explaining y = sin(x), after your explanation add a line: PLOT: y = sin(x)"""
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
