@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from app.services.doc_intelligence_service import extract_text_from_url, extract_pages_from_url
 from app.utils.chunking import chunk_text, chunk_by_paragraphs
 from app.models import ChatRequest, ChatHistoryResponse, ChatMessage
@@ -61,6 +61,15 @@ _REFUSAL_MESSAGE = (
     "I can't help with that topic. Please ask me something related to your studies!"
 )
 
+# Extra guard for chip-driven web search path (where classify_intent is skipped).
+_WEB_BLOCKED_PATTERN = re.compile(
+    r"\b("
+    r"porn|pornography|adult\s*content|adult\s*films?|onlyfans|xxx|nsfw|erotic|nude|"
+    r"sex\s*videos?|sexual\s*videos?|lustful|explicit\s*content"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 async def _yield_refusal(conversation_id: str, user_id: str):
     """
@@ -76,6 +85,86 @@ async def _yield_refusal(conversation_id: str, user_id: str):
     )
     yield f"data: {json.dumps({'type': 'text', 'content': _REFUSAL_MESSAGE})}\n\n"
     yield "data: [DONE]\n\n"
+
+
+def _is_blocked_web_query(query: str) -> bool:
+    """Fast keyword guard for unsafe web-search requests in chip path."""
+    return bool(_WEB_BLOCKED_PATTERN.search(query or ""))
+
+
+def _is_refusal_text(text: str) -> bool:
+    """Detect refusal-like replies produced by upstream safety handlers/models."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if t.startswith(_REFUSAL_SENTINEL.lower()):
+        return True
+    if t == _REFUSAL_MESSAGE.lower():
+        return True
+    return (
+        "i'm studybuddy, an educational assistant" in t
+        and "can't help with that topic" in t
+    )
+
+
+def _build_web_search_answer_payload(
+    *,
+    query: str,
+    answer: str,
+    sources: list,
+    images: list,
+    videos: list,
+    previous_raw: Optional[str] = None,
+) -> str:
+    """
+    Builds the persisted JSON payload for web search answers.
+
+    When `previous_raw` is provided (regeneration path), keep full regeneration
+    history under `regen_versions` so response switching survives page reloads.
+    """
+    payload = {
+        "__type": "web_search_answer",
+        "query": query,
+        "answer": answer,
+        "sources": sources,
+        "images": images,
+        "videos": videos,
+    }
+
+    if not previous_raw:
+        return json.dumps(payload)
+
+    try:
+        prev = json.loads(previous_raw) if isinstance(previous_raw, str) else {}
+    except Exception:
+        prev = {}
+
+    versions = prev.get("regen_versions") if isinstance(prev.get("regen_versions"), list) else None
+    if not versions:
+        prev_answer = prev.get("answer") if isinstance(prev, dict) else ""
+        versions = []
+        if prev_answer:
+            versions.append(
+                {
+                    "content": prev_answer,
+                    "sources": prev.get("sources") or [],
+                    "images": prev.get("images") or [],
+                    "videos": prev.get("videos") or [],
+                }
+            )
+
+    versions.append(
+        {
+            "content": answer,
+            "sources": sources,
+            "images": images,
+            "videos": videos,
+        }
+    )
+
+    payload["regen_versions"] = versions
+    payload["active_regen_version_idx"] = max(0, len(versions) - 1)
+    return json.dumps(payload)
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -181,6 +270,7 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
                 prior_messages=prior_messages,
                 has_attachment=False,
                 update_message_id=request.message_id,
+                previous_message_content=prev_response,
             ):
                 yield evt
 
@@ -1194,6 +1284,7 @@ async def _dispatch_web_search(
     has_attachment: bool = False,
     pre_has_docs: bool | None = None,
     update_message_id=None,
+    previous_message_content: Optional[str] = None,
 ):
     """
     Optimised web search dispatcher — minimum latency, 2 LLM calls total.
@@ -1226,9 +1317,20 @@ async def _dispatch_web_search(
             chat_stream()   LLM CALL 2 — answer grounded in web results
 
     Net latency vs broken architecture: saves ~280ms + eliminates spike under load.
+
+    previous_message_content: when supplied (regeneration path), the prior answer
+        is included in the persisted payload via _build_web_search_answer_payload
+        so that regen_versions history is preserved across page reloads.
     """
     try:
         loop = asyncio.get_event_loop()
+
+        # Chip path can bypass classify_intent safety checks; block obvious
+        # unsafe web queries before any network fetch or media retrieval.
+        if _is_blocked_web_query(query):
+            async for evt in _yield_refusal(conversation_id, user_id):
+                yield evt
+            return
 
         # ── CHECK 1: Zero-cost field check ────────────────────────────────────
         if has_attachment:
@@ -1458,6 +1560,29 @@ CURRENT QUESTION: "{query}"
             yield "data: [DONE]\n\n"
             return
 
+        # If the generated answer is a refusal, never attach web metadata.
+        if _is_refusal_text(full_reply):
+            clean_refusal = _REFUSAL_MESSAGE
+            if update_message_id:
+                await update_message_content(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    message_id=update_message_id,
+                    new_content=clean_refusal,
+                )
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': update_message_id})}\n\n"
+            else:
+                saved_msg = await save_message(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=clean_refusal,
+                )
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': saved_msg['id']})}\n\n"
+
+            yield "data: [DONE]\n\n"
+            return
+
         # Emit media SSE events below the text
         if images:
             yield f"data: {json.dumps({'type': 'web_search_images', 'data': images})}\n\n"
@@ -1471,15 +1596,17 @@ CURRENT QUESTION: "{query}"
             yield f"data: {json.dumps({'type': 'web_search_sources', 'data': sources})}\n\n"
             await asyncio.sleep(0)
 
-        # Persist as web_search_answer so regenerate re-runs web search on this message
-        new_content = json.dumps({
-            "__type":  "web_search_answer",
-            "query":   query,
-            "answer":  full_reply,
-            "sources": sources,
-            "images":  images,
-            "videos":  videos,
-        })
+        # Persist as web_search_answer so regenerate re-runs web search on this message.
+        # _build_web_search_answer_payload preserves regen_versions history when
+        # previous_message_content is supplied (regeneration path).
+        new_content = _build_web_search_answer_payload(
+            query=query,
+            answer=full_reply,
+            sources=sources,
+            images=images,
+            videos=videos,
+            previous_raw=previous_message_content,
+        )
 
         if update_message_id:
             await update_message_content(

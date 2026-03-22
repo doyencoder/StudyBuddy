@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import LoadingDots from "../components/LoadingDots";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -259,6 +259,16 @@ function generateUUID(): string {
   });
 }
 
+function isSafetyRefusalText(text?: string): boolean {
+  const t = (text ?? "").trim().toLowerCase();
+  if (!t) return false;
+  if (t.startsWith("__refused__")) return true;
+  return (
+    t.includes("i'm studybuddy, an educational assistant") &&
+    t.includes("can't help with that topic")
+  );
+}
+
 function downloadPNG(svgContent: string, filename: string) {
   const b64 = btoa(unescape(encodeURIComponent(svgContent)));
   const dataUrl = `data:image/svg+xml;base64,${b64}`;
@@ -315,8 +325,16 @@ function renderMath(latex: string, displayMode: boolean): React.ReactNode {
 
 function applyInline(text: string, onEquationClick?: (eq: string) => void): React.ReactNode[] {
   const EQ_PATTERN = /(?:y|f\(x\))\s*=\s*[-\d\sx^+\-*/().sincotaqrlgepb]{3,60}/gi;
+  const normalized = text
+    // Collapse repeated escaped delimiters like \\\(...\\\) -> \(...\)
+    .replace(/\\{2,}(?=[()\[\]])/g, "\\")
+    .replace(/\\\s+\(/g, "\\(")
+    .replace(/\\\s+\[/g, "\\[")
+    .replace(/\\\s+\)/g, "\\)")
+    .replace(/\\\s+\]/g, "\\]");
+
   // Split on markdown links, math, bold, italic, code — links and $$ must come first
-  return text.split(/(\[[^\]]+\]\(https?:\/\/[^)]+\)|\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([^)]+\\\)|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
+  return normalized.split(/(\[[^\]]+\]\(https?:\/\/[^)]+\)|\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
     // Markdown link: [label](url)
     const linkMatch = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
     if (linkMatch)
@@ -335,18 +353,20 @@ function applyInline(text: string, onEquationClick?: (eq: string) => void): Reac
       return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
     if (/^\$[^$\r\n]+\$$/.test(part))
       return <span key={i}>{renderMath(part.slice(1, -1), false)}</span>;
-    if (/^\\\([^)]+\\\)$/.test(part))
+    if (/^\\\([\s\S]+?\\\)$/.test(part))
       return <span key={i}>{renderMath(part.slice(2, -2), false)}</span>;
+    if (/^\\\[[\s\S]+?\\\]$/.test(part))
+      return <span key={i}>{renderMath(part.slice(2, -2), true)}</span>;
     if (/^\*\*[^*]+\*\*$/.test(part))
       return (
         <strong key={i} className="font-semibold text-foreground">
-          {part.slice(2, -2)}
+          {applyInline(part.slice(2, -2))}
         </strong>
       );
     if (/^\*[^*]+\*$/.test(part))
       return (
         <em key={i} className="italic">
-          {part.slice(1, -1)}
+          {applyInline(part.slice(1, -1))}
         </em>
       );
     if (/^`[^`]+`$/.test(part))
@@ -519,7 +539,16 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 }
 
 function renderMarkdown(text: string, onEquationClick?: (eq: string) => void) {
-  const lines = text.split("\n");
+  // Some model responses contain double-escaped math delimiters like `\\(`.
+  // Normalize them so inline/display KaTeX parsing works consistently.
+  const normalizedText = text
+    .replace(/\\{2,}(?=[()\[\]])/g, "\\")
+    .replace(/\\\s+\(/g, "\\(")
+    .replace(/\\\s+\[/g, "\\[")
+    .replace(/\\\s+\)/g, "\\)")
+    .replace(/\\\s+\]/g, "\\]");
+
+  const lines = normalizedText.split("\n");
   const elements: React.ReactNode[] = [];
   let i = 0;
   const headingClasses: Record<number, string> = {
@@ -1576,9 +1605,14 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
     mermaid
       .render(containerId.current, diagramData.mermaid_code)
       .then(({ svg: renderedSvg }) => {
-        setSvg(renderedSvg);
+        // Force responsive SVG sizing so diagrams never clip on smaller viewports.
+        const normalizedSvg = renderedSvg.replace(
+          "<svg ",
+          '<svg style="max-width:100%;height:auto;display:block;" '
+        );
+        setSvg(normalizedSvg);
         // viewBox="minX minY width height" — split on whitespace, take index 2 & 3
-        const vbMatch = renderedSvg.match(/viewBox="([^"]+)"/);
+        const vbMatch = normalizedSvg.match(/viewBox="([^"]+)"/);
         if (vbMatch) {
           const parts = vbMatch[1].trim().split(/\s+/);
           if (parts.length === 4) {
@@ -2487,13 +2521,39 @@ const ChatPage = () => {
 
           // Reconstruct web search answers: restore answer text + source cards + image grid from Cosmos
           if (parsed?.__type === "web_search_answer") {
+            const rawAnswer = parsed.answer ?? "";
+            const isRefusalAnswer = isSafetyRefusalText(rawAnswer);
+            const regenVersions = Array.isArray(parsed.regen_versions)
+              ? parsed.regen_versions
+                  .map((v: any) => ({
+                    content: v?.content ?? v?.answer ?? "",
+                    webSearchSources: isSafetyRefusalText(v?.content ?? v?.answer ?? "")
+                      ? undefined
+                      : (v?.sources?.length ? v.sources : undefined),
+                    webSearchImages: isSafetyRefusalText(v?.content ?? v?.answer ?? "")
+                      ? undefined
+                      : (v?.images?.length ? v.images : undefined),
+                    webSearchVideos: isSafetyRefusalText(v?.content ?? v?.answer ?? "")
+                      ? undefined
+                      : (v?.videos?.length ? v.videos : undefined),
+                  }))
+                  .filter((v: any) => typeof v.content === "string")
+              : undefined;
+            const activeRegenVersionIdx =
+              typeof parsed.active_regen_version_idx === "number" && regenVersions && regenVersions.length > 0
+                ? Math.max(0, Math.min(parsed.active_regen_version_idx, regenVersions.length - 1))
+                : regenVersions && regenVersions.length > 0
+                  ? regenVersions.length - 1
+                  : undefined;
             return {
               id: m.id,
               role: "assistant" as const,
-              content: parsed.answer ?? "",
-              webSearchSources: parsed.sources?.length > 0 ? parsed.sources : undefined,
-              webSearchImages: parsed.images?.length > 0 ? parsed.images : undefined,
-              webSearchVideos: parsed.videos?.length > 0 ? parsed.videos : undefined,
+              content: rawAnswer.replace(/^__REFUSED__\s*/i, ""),
+              webSearchSources: !isRefusalAnswer && parsed.sources?.length > 0 ? parsed.sources : undefined,
+              webSearchImages: !isRefusalAnswer && parsed.images?.length > 0 ? parsed.images : undefined,
+              webSearchVideos: !isRefusalAnswer && parsed.videos?.length > 0 ? parsed.videos : undefined,
+              regenVersions,
+              activeRegenVersionIdx,
               timestamp: new Date(m.timestamp),
             };
           }
@@ -2613,6 +2673,13 @@ const ChatPage = () => {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const syncTextareaHeight = () => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+  };
+
   const [translatingMsgId, setTranslatingMsgId] = useState<string | null>(null);
   const [translatedContent, setTranslatedContent] = useState<Record<string, string>>({});
   const [translatedLang, setTranslatedLang] = useState<Record<string, string>>({});
@@ -2621,12 +2688,14 @@ const ChatPage = () => {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
-    const ta = textareaRef.current;
-    if (ta) {
-      ta.style.height = "auto";
-      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-    }
+    syncTextareaHeight();
   };
+
+  // Keep textarea height in sync for programmatic updates (speech-to-text,
+  // prefill actions, or layout remounts) so multiline text never appears cut.
+  useLayoutEffect(() => {
+    syncTextareaHeight();
+  }, [input, intentChip]);
 
   // ── Effects ───────────────────────────────────────────────────────────────
 
@@ -2649,18 +2718,9 @@ const ChatPage = () => {
     return () => window.removeEventListener("new-chat-clicked", handler);
   }, [navigate]);
 
-  // Re-sync textarea height whenever intentChip toggles — switching between
-  // single-row and two-row layouts re-mounts the textarea DOM node, which
-  // resets its inline height to "" and makes the browser fall back to the
-  // default rows=1 height even if the user had already typed several lines.
+  // Use rAF after chip layout toggles because the textarea node may remount.
   useEffect(() => {
-    const ta = textareaRef.current;
-    if (!ta) return;
-    // Use rAF so the DOM has finished re-rendering before we measure
-    requestAnimationFrame(() => {
-      ta.style.height = "auto";
-      ta.style.height = `${ta.scrollHeight}px`;
-    });
+    requestAnimationFrame(syncTextareaHeight);
   }, [intentChip]);
 
   useEffect(() => {
@@ -2848,6 +2908,7 @@ const ChatPage = () => {
       }
       if (final) baseTextRef.current = (baseTextRef.current + " " + final).trim();
       setInput((baseTextRef.current + " " + interim).trim());
+      requestAnimationFrame(syncTextareaHeight);
     };
     recognition.onerror = (event: any) => {
       setIsListening(false);
@@ -3252,7 +3313,9 @@ const ChatPage = () => {
               ...s,
               messages: s.messages.map((m) =>
                 m.id === assistantMsgId
-                  ? { ...m, webSearchSources: newSources }
+                  ? isSafetyRefusalText(m.content)
+                    ? { ...m, webSearchSources: undefined, webSearchImages: undefined, webSearchVideos: undefined }
+                    : { ...m, webSearchSources: newSources }
                   : m
               ),
             }));
@@ -3265,7 +3328,9 @@ const ChatPage = () => {
               ...s,
               messages: s.messages.map((m) =>
                 m.id === assistantMsgId
-                  ? { ...m, webSearchImages: newImages }
+                  ? isSafetyRefusalText(m.content)
+                    ? { ...m, webSearchSources: undefined, webSearchImages: undefined, webSearchVideos: undefined }
+                    : { ...m, webSearchImages: newImages }
                   : m
               ),
             }));
@@ -3278,7 +3343,9 @@ const ChatPage = () => {
               ...s,
               messages: s.messages.map((m) =>
                 m.id === assistantMsgId
-                  ? { ...m, webSearchVideos: newVideos }
+                  ? isSafetyRefusalText(m.content)
+                    ? { ...m, webSearchSources: undefined, webSearchImages: undefined, webSearchVideos: undefined }
+                    : { ...m, webSearchVideos: newVideos }
                   : m
               ),
             }));
@@ -3414,6 +3481,16 @@ const ChatPage = () => {
       isTyping: true,
     }));
 
+    // Existing-chat UX: move this chat up immediately in the sidebar.
+    // If the request fails before any assistant output, we roll this back.
+    if (startConvId) {
+      window.dispatchEvent(
+        new CustomEvent("conversation-optimistic-bump", {
+          detail: { conversationId: startConvId },
+        })
+      );
+    }
+
     let messageAdded = false;
     try {
       const primaryFile = sentFiles[0];
@@ -3504,7 +3581,11 @@ const ChatPage = () => {
             updateConv(convKey, (s) => ({ ...s, isTyping: false }));
             // Fallback refresh signal so sidebar reorders even if message_saved
             // event arrives before listeners process state changes.
-            window.dispatchEvent(new CustomEvent("conversation-updated"));
+            window.dispatchEvent(
+              new CustomEvent("conversation-updated", {
+                detail: { conversationId: startConvId ?? convKey },
+              })
+            );
             break;
           }
 
@@ -3667,7 +3748,9 @@ const ChatPage = () => {
               isSearchingWeb: false,
               messages: s.messages.map((m) =>
                 m.id === aiMsgId
-                  ? { ...m, webSearchSources: parsed.data as WebSearchSource[] }
+                  ? isSafetyRefusalText(m.content)
+                    ? { ...m, webSearchSources: undefined, webSearchImages: undefined, webSearchVideos: undefined }
+                    : { ...m, webSearchSources: parsed.data as WebSearchSource[] }
                   : m
               ),
             }));
@@ -3682,7 +3765,9 @@ const ChatPage = () => {
               isSearchingWeb: false,
               messages: s.messages.map((m) =>
                 m.id === aiMsgId
-                  ? { ...m, webSearchImages: parsed.data as WebSearchImage[] }
+                  ? isSafetyRefusalText(m.content)
+                    ? { ...m, webSearchSources: undefined, webSearchImages: undefined, webSearchVideos: undefined }
+                    : { ...m, webSearchImages: parsed.data as WebSearchImage[] }
                   : m
               ),
             }));
@@ -3696,7 +3781,9 @@ const ChatPage = () => {
               isSearchingWeb: false,
               messages: s.messages.map((m) =>
                 m.id === aiMsgId
-                  ? { ...m, webSearchVideos: parsed.data as WebSearchVideo[] }
+                  ? isSafetyRefusalText(m.content)
+                    ? { ...m, webSearchSources: undefined, webSearchImages: undefined, webSearchVideos: undefined }
+                    : { ...m, webSearchVideos: parsed.data as WebSearchVideo[] }
                   : m
               ),
             }));
@@ -3713,6 +3800,13 @@ const ChatPage = () => {
                 ? s.messages
                 : s.messages.filter((m) => m.id !== userMsgId),
             }));
+            if (startConvId && !messageAdded) {
+              window.dispatchEvent(
+                new CustomEvent("conversation-optimistic-rollback", {
+                  detail: { conversationId: startConvId },
+                })
+              );
+            }
             break;
           }
 
@@ -3730,12 +3824,23 @@ const ChatPage = () => {
               ),
             }));
             // Primary refresh signal: backend has persisted the assistant reply.
-            window.dispatchEvent(new CustomEvent("conversation-updated"));
+            window.dispatchEvent(
+              new CustomEvent("conversation-updated", {
+                detail: { conversationId: startConvId ?? convKey },
+              })
+            );
           }
         }
       }
     } catch {
       toast.error("Could not reach the server. Is the backend running?");
+      if (startConvId && !messageAdded) {
+        window.dispatchEvent(
+          new CustomEvent("conversation-optimistic-rollback", {
+            detail: { conversationId: startConvId },
+          })
+        );
+      }
     } finally {
       updateConv(convKey, (s) => ({ ...s, isTyping: false }));
     }

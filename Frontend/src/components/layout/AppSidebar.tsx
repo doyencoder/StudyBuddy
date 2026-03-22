@@ -93,6 +93,7 @@ const AppSidebar = () => {
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const optimisticTsSnapshotRef = useRef<Map<string, string | undefined>>(new Map());
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -107,7 +108,19 @@ const AppSidebar = () => {
       const res = await fetch(`${API_BASE}/chat/conversations?user_id=${USER_ID}`);
       if (!res.ok) return;
       const data = await res.json();
-      setConversations(data.conversations || []);
+      const incoming: Conversation[] = data.conversations || [];
+
+      // Preserve optimistic bump while a prompt is in-flight for an existing chat.
+      // Without this, any in-flight/background fetch can temporarily overwrite the
+      // optimistic updated_at and make the row jump down before final confirmation.
+      setConversations((prev) => {
+        const prevById = new Map(prev.map((c) => [c.conversation_id, c]));
+        return incoming.map((conv) => {
+          if (!optimisticTsSnapshotRef.current.has(conv.conversation_id)) return conv;
+          const prevConv = prevById.get(conv.conversation_id);
+          return prevConv?.updated_at ? { ...conv, updated_at: prevConv.updated_at } : conv;
+        });
+      });
     } catch { /* Silently fail */ }
   };
 
@@ -134,12 +147,65 @@ const AppSidebar = () => {
   // Refresh when an existing conversation is updated (new prompt in old chat).
   // Immediate + short retry keeps ordering stable even if DB write and fetch race.
   useEffect(() => {
-    const handler = () => {
+    const handler = (event: Event) => {
       fetchConversations();
       setTimeout(() => fetchConversations(), 300);
+      const detail = (event as CustomEvent<{ conversationId?: string }>).detail;
+      if (detail?.conversationId) {
+        optimisticTsSnapshotRef.current.delete(detail.conversationId);
+      }
     };
-    window.addEventListener("conversation-updated", handler);
-    return () => window.removeEventListener("conversation-updated", handler);
+    window.addEventListener("conversation-updated", handler as EventListener);
+    return () => window.removeEventListener("conversation-updated", handler as EventListener);
+  }, []);
+
+  // Optimistically bump an existing conversation to top as soon as user sends a prompt.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: string }>).detail;
+      const conversationId = detail?.conversationId;
+      if (!conversationId) return;
+
+      setConversations((prev) => {
+        const idx = prev.findIndex((c) => c.conversation_id === conversationId);
+        if (idx === -1) return prev;
+        const target = prev[idx];
+        if (!optimisticTsSnapshotRef.current.has(conversationId)) {
+          optimisticTsSnapshotRef.current.set(conversationId, target.updated_at);
+        }
+        const bumped = {
+          ...target,
+          updated_at: new Date().toISOString(),
+        };
+        const next = [...prev];
+        next[idx] = bumped;
+        return next;
+      });
+    };
+
+    window.addEventListener("conversation-optimistic-bump", handler as EventListener);
+    return () => window.removeEventListener("conversation-optimistic-bump", handler as EventListener);
+  }, []);
+
+  // Roll back optimistic bump if the prompt fails before any assistant answer is produced.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: string }>).detail;
+      const conversationId = detail?.conversationId;
+      if (!conversationId) return;
+      const snapshot = optimisticTsSnapshotRef.current.get(conversationId);
+      if (!optimisticTsSnapshotRef.current.has(conversationId)) return;
+
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.conversation_id === conversationId ? { ...c, updated_at: snapshot } : c
+        )
+      );
+      optimisticTsSnapshotRef.current.delete(conversationId);
+    };
+
+    window.addEventListener("conversation-optimistic-rollback", handler as EventListener);
+    return () => window.removeEventListener("conversation-optimistic-rollback", handler as EventListener);
   }, []);
 
   // If any stream just finished, pull fresh ordering so active old chats rise to top
