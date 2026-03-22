@@ -653,6 +653,7 @@ async def chat_message(request: ChatRequest):
                 yield f"data: {json.dumps({'type': 'status', 'content': 'reading_document'})}\n\n"
                 loop = asyncio.get_event_loop()
                 all_ingested_chunks: list = []
+                just_ingested_filenames: list = []
 
                 for ingest_url, ingest_filename in files_to_ingest:
                     pages = await loop.run_in_executor(None, lambda u=ingest_url: extract_pages_from_url(u))
@@ -680,6 +681,7 @@ async def chat_message(request: ChatRequest):
                     )
                     print(f"[DEBUG-INGESTION] Indexed {len(chunks)} chunks from '{ingest_filename}'")
                     all_ingested_chunks.extend(chunks)
+                    just_ingested_filenames.append(ingest_filename)
 
                 if all_ingested_chunks:
                     # ── Retrieval AFTER all files stored so every file's chunks are findable ──
@@ -692,8 +694,37 @@ async def chat_message(request: ChatRequest):
                     else:
                         total = len(all_ingested_chunks)
                         tk = min(total, 20)
-                        q_emb = embed_query(q_text)
+
+                        # ── Fix: use actual message/topic as query, not "key concepts" ──
+                        # When message is empty (e.g. image uploaded with no text),
+                        # use the first ingested chunk text as the query so the
+                        # embedding is grounded in the actual uploaded content,
+                        # not a meaningless fallback string.
+                        if request.message.strip():
+                            post_q_text = request.message
+                        elif topic:
+                            post_q_text = topic
+                        else:
+                            # Empty message + no topic → use first chunk of
+                            # the just-uploaded file as the query anchor
+                            post_q_text = all_ingested_chunks[0][:500] if all_ingested_chunks else "key concepts"
+
+                        q_emb = embed_query(post_q_text)
                         use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
+
+                        # ── Fix: restrict retrieval to ONLY just-uploaded files ──
+                        # Without this, old files in the conversation dominate
+                        # the vector search and the new file's content is buried.
+                        # If only 1 new file → filter strictly to that file.
+                        # If multiple new files → no filename filter (all new files
+                        # are fair game) but old files are naturally outranked
+                        # because post_q_text is derived from new content.
+                        post_filename_filter = (
+                            just_ingested_filenames[0]
+                            if len(just_ingested_filenames) == 1
+                            else None
+                        )
+
                         active_chunks = retrieve_chunks_smart(
                             query_embedding=q_emb,
                             user_id=request.user_id,
@@ -702,6 +733,7 @@ async def chat_message(request: ChatRequest):
                             page_numbers=page_numbers if page_numbers else None,
                             top_k=tk,
                             use_hybrid=use_hybrid_post,
+                            filename_filter=post_filename_filter,   # ← KEY FIX
                         )
                     print(f"[DEBUG-RETRIEVAL] post-ingestion chunks retrieved: {len(active_chunks)}")
 

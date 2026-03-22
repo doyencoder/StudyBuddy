@@ -36,4 +36,14 @@ def resolve_document_filter(topic: str, filenames: list) -> str | None:
                 if word in topic_lower and len(filenames) > idx:
                     return filenames[idx]
 
+     # Handles: "quiz on EC342" → "EC342 mW_Quiz-1 Solution.pdf"
+    for filename in filenames:
+        name_without_ext = filename.rsplit(".", 1)[0].lower()
+        name_normalised = name_without_ext.replace("_", " ").replace("-", " ")
+        topic_normalised = topic_lower.replace("_", " ").replace("-", " ")
+        name_words = [w for w in name_normalised.split() if len(w) > 2]
+        matches = sum(1 for w in name_words if w in topic_normalised)
+        if name_words and matches >= max(1, len(name_words) // 2):
+            return filename
+
     return None

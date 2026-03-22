@@ -1366,3 +1366,90 @@ def extract_document_context(message: str) -> dict:
         return json.loads(raw)
     except Exception:
         return {"clean_topic": "", "page_numbers": [], "document_reference": ""}
+
+def describe_figure(image_bytes: bytes) -> str:
+    """
+    Sends a cropped figure image to gpt-4o-mini Vision and returns
+    a plain-text technical description suitable for RAG indexing.
+
+    Called by doc_intelligence_service.py for each figure detected
+    on a page. The returned string is injected into the page text
+    as [Figure: <description>] before chunking.
+
+    Args:
+        image_bytes: Raw bytes of the cropped figure (PNG format).
+
+    Returns:
+        A technical description string, or empty string on failure.
+    """
+    import base64
+
+    client     = _get_client()
+    deployment = _chat_deployment()
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    def _generate():
+        return client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an academic figure interpreter for a student study assistant. "
+                        "Your job is to extract and describe the content of the image with full precision.\n\n"
+
+                        "MATH AND FORMULAS (highest priority rule):\n"
+                        "If the image contains ANY mathematical notation — integrals, derivatives, "
+                        "equations, expressions, matrices, limits, summations — you MUST reproduce "
+                        "them in exact LaTeX notation. "
+                        "Wrap inline math in $...$ and display math in $$...$$. "
+                        "Include ALL parts: limits of integration, bounds, exponents, subscripts, "
+                        "fractions, radicals, Greek letters, operators. "
+                        "Example: An integral from 0 to π/2 of √(sin x)/(√(sin x)+√(cos x)) dx "
+                        "must be written as: $$\\int_0^{\\pi/2} \\frac{\\sqrt{\\sin x}}"
+                        "{\\sqrt{\\sin x} + \\sqrt{\\cos x}}\\,dx$$\n"
+                        "Do NOT describe math in prose. Reproduce it in LaTeX exactly.\n\n"
+
+                        "FOR ALL OTHER FIGURE TYPES:\n"
+                        "If it is a circuit diagram, name every component, its value, and connections. "
+                        "If it is a graph or plot, describe axes labels, units, curves, and key data points. "
+                        "If it is a biology diagram, name every labelled structure and its role. "
+                        "If it is a geometry figure, state all shapes, angles, side lengths, and measurements. "
+                        "If it is a flowchart or block diagram, describe each block and the flow between them. "
+                        "Write as plain prose for non-math content. "
+                        "Be specific enough that a student who cannot see the image can fully understand it."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64}",
+                                "detail": "high",
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "Describe this academic figure in full technical detail.",
+                        },
+                    ],
+                },
+            ],
+            max_tokens=400,
+            temperature=0.2,
+        )
+
+    try:
+        response = _call_with_retry(_generate)
+        return response.choices[0].message.content.strip()
+    except openai.BadRequestError as e:
+        if _is_content_filter_error(e):
+            print(f"[describe_figure] Azure content filter blocked figure: {e}")
+            return ""
+        raise
+    except Exception as e:
+        print(f"[describe_figure] Vision call failed — skipping figure: {e}")
+        return ""
