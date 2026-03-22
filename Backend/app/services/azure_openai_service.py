@@ -1307,6 +1307,140 @@ FIELD RULES:
 # remains unchanged — no other file needs to be updated.
 from app.services.image_service import generate_image  # noqa: F401, E402
 
+def classify_search_intent(query: str) -> dict:
+    """
+    Small targeted LLM call fired at the start of every web search dispatch.
+
+    Replaces all regex-based routing (is_video_query / is_image_query) with a
+    single semantic classifier that understands negation, topic nouns, and
+    document references — things a regex cannot handle.
+
+    Returns:
+        {
+            "result_type":    "text" | "images" | "videos" |
+                              "text_with_images" | "text_with_videos",
+            "needs_document": bool,   # True → retrieve from uploaded docs
+            "web_query":      str,    # clean, optimised SerpAPI query string
+            "page_numbers":   list,   # e.g. [2, 3] if user said "page 2"
+            "scope":          str,    # "document"|"topic"|"page"|"general"
+            "is_harmful":     bool,
+        }
+
+    Latency: ~150 ms (max_tokens=120, temperature=0, JSON mode).
+    Runs in parallel with conversation_has_documents() so it is never the
+    bottleneck before the SerpAPI call fires.
+    """
+    client = _get_client()
+    deployment = _chat_deployment()
+
+    def _classify():
+        return client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a search-intent classifier for StudyBuddy, a student study app. "
+                        "Analyse the user query and return ONLY valid JSON — no markdown, no explanation.\n\n"
+
+                        "FIELDS TO RETURN:\n"
+                        "1. result_type: what kind of results the user wants.\n"
+                        "   - \'text\'             : factual/informational answer (default)\n"
+                        "   - \'images\'           : user ONLY wants to see pictures/photos/diagrams (no explanation needed)\n"
+                        "   - \'videos\'           : user ONLY wants video links (no explanation needed)\n"
+                        "   - \'text_with_images\' : user wants an explanation AND images\n"
+                        "   - \'text_with_videos\' : user wants an explanation AND video recommendations\n"
+                        "   RULES for result_type:\n"
+                        "   - Negation overrides everything: \'dont give videos\', \'no videos\', "
+                        "\'without videos\' → NEVER set videos in result_type.\n"
+                        "   - Topic nouns are NOT media requests: \'video games\', \'photo editing\', "
+                        "\'image processing\' → result_type=\'text\', NOT images/videos.\n"
+                        "   - \'what is a video/image/photo\' → result_type=\'text\' (conceptual question).\n"
+                        "   - \'show me photos of X\', \'pictures of X\' → result_type=\'images\'.\n"
+                        "   - \'recommend videos on X\', \'youtube videos about X\' → result_type=\'videos\'.\n"
+                        "   - \'explain X with images\', \'show diagrams of X and explain\' → result_type=\'text_with_images\'.\n"
+                        "   - \'explain X and recommend videos\' → result_type=\'text_with_videos\'.\n\n"
+
+                        "2. needs_document: true if the query references the user\'s uploaded document "
+                        "(e.g. \'explain page 2\', \'what does my document say about\', \'this doc\', "
+                        "\'the uploaded file\', \'page 3 of the pdf\', \'document 1\'). "
+                        "false for all general knowledge or external web queries.\n\n"
+
+                        "3. web_query: a clean, concise Google search string (≤10 words). "
+                        "Strip document/page references entirely — turn \'explain page 2 of my uploaded doc\' "
+                        "into the actual topic (e.g. \'machine learning fundamentals\'). "
+                        "If the topic cannot be extracted from the message, use the raw query as-is.\n\n"
+
+                        "4. page_numbers: list of integers if the user mentioned specific page numbers. "
+                        "Empty list otherwise.\n\n"
+
+                        "5. scope: one of \'document\'|\'topic\'|\'page\'|\'general\'.\n"
+                        "   - \'document\' : user wants full document coverage (\'explain all\', \'summarize the doc\')\n"
+                        "   - \'topic\'    : user asks about a specific concept\n"
+                        "   - \'page\'     : user mentioned specific page numbers\n"
+                        "   - \'general\'  : no document needed\n\n"
+
+                        "6. is_harmful: true ONLY if the query involves sexual content, violence, "
+                        "illegal acts, or self-harm. false for all normal academic and general queries.\n\n"
+
+                        "EXAMPLES:\n"
+                        "\'explain page 2 of this doc\' → "
+                        "{\"result_type\":\"text\",\"needs_document\":true,\"web_query\":\"page 2 topic summary\","
+                        "\"page_numbers\":[2],\"scope\":\"page\",\"is_harmful\":false}\n"
+                        "\'photos on hockey\' → "
+                        "{\"result_type\":\"images\",\"needs_document\":false,\"web_query\":\"hockey photos\","
+                        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+                        "\'what is a video\' → "
+                        "{\"result_type\":\"text\",\"needs_document\":false,\"web_query\":\"what is a video\","
+                        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+                        "\'something latest about video games and dont give videos\' → "
+                        "{\"result_type\":\"text\",\"needs_document\":false,\"web_query\":\"latest video games news\","
+                        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+                        "\'recommend youtube videos on machine learning\' → "
+                        "{\"result_type\":\"videos\",\"needs_document\":false,\"web_query\":\"machine learning tutorials\","
+                        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+                        "\'explain photosynthesis with diagrams\' → "
+                        "{\"result_type\":\"text_with_images\",\"needs_document\":false,"
+                        "\"web_query\":\"photosynthesis diagrams\","
+                        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+                        "\'what is the stipend of this intern\' → "
+                        "{\"result_type\":\"text\",\"needs_document\":true,\"web_query\":\"intern stipend salary\","
+                        "\"page_numbers\":[],\"scope\":\"topic\",\"is_harmful\":false}\n"
+                        "\'mia khalifa porn videos\' → "
+                        "{\"result_type\":\"text\",\"needs_document\":false,\"web_query\":\"\"," 
+                        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":true}\n"
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=120,
+        )
+
+    try:
+        response = _call_with_retry(_classify)
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+        return {
+            "result_type":    parsed.get("result_type", "text"),
+            "needs_document": bool(parsed.get("needs_document", False)),
+            "web_query":      parsed.get("web_query") or query,
+            "page_numbers":   parsed.get("page_numbers") or [],
+            "scope":          parsed.get("scope", "general"),
+            "is_harmful":     bool(parsed.get("is_harmful", False)),
+        }
+    except Exception:
+        return {
+            "result_type":    "text",
+            "needs_document": False,
+            "web_query":      query,
+            "page_numbers":   [],
+            "scope":          "general",
+            "is_harmful":     False,
+        }
+
+
 def extract_document_context(message: str) -> dict:
     """
     Small targeted LLM call — only used when chip is selected.

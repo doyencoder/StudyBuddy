@@ -1207,6 +1207,95 @@ Reply with ONLY 2-5 words. No explanation. No punctuation. Just the topic name."
         return "General"
 
 
+def classify_search_intent(query: str) -> dict:
+    """
+    Small targeted LLM call — semantic replacement for all regex-based routing.
+
+    Identical contract to azure_openai_service.classify_search_intent.
+    Returns:
+        {
+            "result_type":    "text"|"images"|"videos"|"text_with_images"|"text_with_videos",
+            "needs_document": bool,
+            "web_query":      str,
+            "page_numbers":   list,
+            "scope":          str,
+            "is_harmful":     bool,
+        }
+    """
+    model = genai.GenerativeModel("gemini-2.0-flash")
+
+    prompt = (
+        "You are a search-intent classifier for StudyBuddy, a student study app. "
+        "Analyse the user query and return ONLY valid JSON — no markdown, no explanation.\n\n"
+
+        "FIELDS TO RETURN:\n"
+        "1. result_type: what kind of results the user wants.\n"
+        "   - \'text\'             : factual/informational answer (default)\n"
+        "   - \'images\'           : user ONLY wants to see pictures/photos/diagrams\n"
+        "   - \'videos\'           : user ONLY wants video links\n"
+        "   - \'text_with_images\' : user wants an explanation AND images\n"
+        "   - \'text_with_videos\' : user wants an explanation AND video recommendations\n"
+        "   RULES:\n"
+        "   - Negation overrides: \'dont give videos\', \'no videos\' → NEVER include videos.\n"
+        "   - Topic nouns are NOT media requests: \'video games\', \'image processing\' → result_type=\'text\'.\n"
+        "   - \'what is a video/image\' → result_type=\'text\' (conceptual question).\n\n"
+
+        "2. needs_document: true if query references uploaded document "
+        "(\'page 2\', \'my document\', \'this doc\', \'the pdf\', \'document 1\'). false otherwise.\n\n"
+
+        "3. web_query: clean Google search string (≤10 words). "
+        "Strip document/page references — extract the actual topic.\n\n"
+
+        "4. page_numbers: list of integers for specific pages mentioned. Empty list otherwise.\n\n"
+
+        "5. scope: \'document\'|\'topic\'|\'page\'|\'general\'.\n\n"
+
+        "6. is_harmful: true only for sexual, violent, illegal, or self-harm content.\n\n"
+
+        "EXAMPLES:\n"
+        "\'explain page 2 of this doc\' → "
+        "{\"result_type\":\"text\",\"needs_document\":true,\"web_query\":\"page 2 topic\","
+        "\"page_numbers\":[2],\"scope\":\"page\",\"is_harmful\":false}\n"
+        "\'photos on hockey\' → "
+        "{\"result_type\":\"images\",\"needs_document\":false,\"web_query\":\"hockey photos\","
+        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+        "\'something latest about video games and dont give videos\' → "
+        "{\"result_type\":\"text\",\"needs_document\":false,\"web_query\":\"latest video games news\","
+        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":false}\n"
+        "\'mia khalifa porn videos\' → "
+        "{\"result_type\":\"text\",\"needs_document\":false,\"web_query\":\"\"," 
+        "\"page_numbers\":[],\"scope\":\"general\",\"is_harmful\":true}\n"
+    )
+
+    try:
+        response = model.generate_content(
+            prompt + f"\n\nUser query: {query}",
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+                max_output_tokens=120,
+            ),
+        )
+        parsed = json.loads(response.text)
+        return {
+            "result_type":    parsed.get("result_type", "text"),
+            "needs_document": bool(parsed.get("needs_document", False)),
+            "web_query":      parsed.get("web_query") or query,
+            "page_numbers":   parsed.get("page_numbers") or [],
+            "scope":          parsed.get("scope", "general"),
+            "is_harmful":     bool(parsed.get("is_harmful", False)),
+        }
+    except Exception:
+        return {
+            "result_type":    "text",
+            "needs_document": False,
+            "web_query":      query,
+            "page_numbers":   [],
+            "scope":          "general",
+            "is_harmful":     False,
+        }
+
+
 def extract_document_context(message: str) -> dict:
     """
     Small targeted LLM call — only used when chip is selected.

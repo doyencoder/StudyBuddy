@@ -47,6 +47,7 @@ if _PROVIDER == "gemini":
         parse_study_plan_intent,
         infer_topic_from_messages,
         extract_document_context,
+        classify_search_intent,
     )
     print(f"[ai_service] Provider: GEMINI (gemini-2.5-flash + gemini-embedding-001)")
 
@@ -67,5 +68,6 @@ else:
         parse_study_plan_intent,
         infer_topic_from_messages,
         extract_document_context,
+        classify_search_intent,
     )
     print(f"[ai_service] Provider: AZURE OPENAI (gpt-4o-mini + text-embedding-3-large)")
