@@ -4614,6 +4614,7 @@ const ChatPage = () => {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
+                      if (!input.trim() && !attachedFiles.some((f) => f.status === "ready")) return;
                       sendMessage();
                     }
                   }}
@@ -4668,7 +4669,7 @@ const ChatPage = () => {
                   </Button>
                   <Button
                     onClick={sendMessage}
-                    disabled={(!input.trim() && !attachedFiles.some((f) => f.status === "ready") && !intentChip) || isTyping || attachedFiles.some((f) => f.status === "uploading")}
+                    disabled={(!input.trim() && !attachedFiles.some((f) => f.status === "ready")) || isTyping || attachedFiles.some((f) => f.status === "uploading")}
                     size="icon"
                     className="h-8 w-8 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"
                   >
@@ -4734,6 +4735,7 @@ const ChatPage = () => {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
+                      if (!input.trim() && !attachedFiles.some((f) => f.status === "ready")) return;
                       sendMessage();
                     }
                   }}
@@ -4761,8 +4763,7 @@ const ChatPage = () => {
                     onClick={sendMessage}
                     disabled={
                       (!input.trim() &&
-                        !attachedFiles.some((f) => f.status === "ready") &&
-                        !intentChip) ||
+                        !attachedFiles.some((f) => f.status === "ready")) ||
                       isTyping ||
                       attachedFiles.some((f) => f.status === "uploading")
                     }

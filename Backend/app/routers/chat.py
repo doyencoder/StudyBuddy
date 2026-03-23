@@ -779,23 +779,25 @@ async def chat_message(request: ChatRequest):
                 all_ingested_chunks: list = []
                 just_ingested_filenames: list = []
 
-                for ingest_url, ingest_filename in files_to_ingest:
+                create_index_if_not_exists()
+
+                embed_semaphore = asyncio.Semaphore(5)  # shared across ALL files
+
+                async def ingest_one_file(ingest_url: str, ingest_filename: str):
                     pages = await loop.run_in_executor(None, lambda u=ingest_url: extract_pages_from_url(u))
                     if not pages:
                         print(f"[WARN] No pages extracted from {ingest_filename} — skipping")
-                        continue
+                        return None  # signals skip — handled in aggregation below
 
                     chunk_dicts         = chunk_by_paragraphs(pages)
                     chunks              = [c["text"] for c in chunk_dicts]
                     page_numbers_stored = [c["page_number"] for c in chunk_dicts]
 
-                    semaphore = asyncio.Semaphore(5)
                     async def embed_one(c):
-                        async with semaphore:
+                        async with embed_semaphore:
                             return await asyncio.get_event_loop().run_in_executor(None, lambda: embed_text(c))
                     embeddings = await asyncio.gather(*[embed_one(c) for c in chunks])
 
-                    create_index_if_not_exists()
                     fid = str(uuid.uuid4())
                     store_chunks(
                         chunks=chunks, embeddings=embeddings,
@@ -804,8 +806,21 @@ async def chat_message(request: ChatRequest):
                         page_numbers=page_numbers_stored,
                     )
                     print(f"[DEBUG-INGESTION] Indexed {len(chunks)} chunks from '{ingest_filename}'")
-                    all_ingested_chunks.extend(chunks)
-                    just_ingested_filenames.append(ingest_filename)
+                    return (chunks, ingest_filename)
+
+                # All files OCR + embed + store in parallel
+                # asyncio.gather preserves order — result[0] = file 1, result[1] = file 2, etc.
+                ingest_results = await asyncio.gather(
+                    *[ingest_one_file(url, name) for url, name in files_to_ingest]
+                )
+
+                # Aggregate in original upload order
+                for result in ingest_results:
+                    if result is None:
+                        continue  # file was skipped (no pages extracted)
+                    file_chunks, file_name = result
+                    all_ingested_chunks.extend(file_chunks)
+                    just_ingested_filenames.append(file_name)
 
                 if all_ingested_chunks:
                     # ── Retrieval AFTER all files stored so every file's chunks are findable ──
