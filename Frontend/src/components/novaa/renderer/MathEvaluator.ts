@@ -27,6 +27,7 @@ import { parse, compile } from 'mathjs';
 
 /** A fast compiled function that maps x → y (or null if undefined at that x). */
 export type EvalFn = (x: number) => number | null;
+export type ResidualFn = (x: number, y: number) => number | null;
 
 /** One plottable branch of an equation (e.g. top half of an ellipse). */
 export interface CurveEvaluator {
@@ -55,9 +56,21 @@ export interface CurveEvaluator {
  */
 export function normalise(raw: string): string {
   let s = raw.trim();
+  const functionNames = ['arcsin', 'arccos', 'arctan', 'sqrt', 'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'ln', 'log', 'exp', 'abs'];
+  const functionPattern = functionNames.join('|');
+  const constantNames = ['pi', 'e', 'theta', 'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'lambda', 'mu', 'sigma', 'omega'];
+  const constantPattern = constantNames.join('|');
+  const compactFunctionArgPattern = `(?:\\([^()]*\\)|${constantPattern}|[xy]|\\d+(?:\\.\\d+)?(?:[xy])?)`;
 
-  // Lowercase variables (but not function names like Sin, Cos)
-  s = s.replace(/\bX\b/g, 'x').replace(/\bY\b/g, 'y');
+  // Nova only supports x/y variables, so fold them aggressively to lowercase.
+  s = s.replace(/X/g, 'x').replace(/Y/g, 'y');
+
+  for (const fn of functionNames) {
+    s = s.replace(new RegExp(`\\b${fn}\\b`, 'gi'), fn);
+  }
+  for (const constant of constantNames) {
+    s = s.replace(new RegExp(`\\b${constant}\\b`, 'gi'), constant);
+  }
 
   // Strip parentheses from simple numeric exponents that MathQuill emits:
   // x^(2) → x^2,  y^(4) → y^4,  x^(10) → x^10
@@ -68,9 +81,68 @@ export function normalise(raw: string): string {
   // y2, y3 → y^2, y^3  (must come before implicit-mult rules)
   s = s.replace(/\by(\d)\b/g, 'y^$1');
 
+  // Cross-multiply simple quotient equations so singular denominators don't
+  // confuse the implicit renderer. Examples:
+  //   x / y = 1     →   x = 1 * y
+  //   2 / y = x     →   2 = x * y
+  //   x / y^2 = 1   →   x = 1 * y^2
+  const rewriteSimpleQuotient = (expr: string): string => {
+    if (!expr.includes('=')) return expr;
+    const parts = expr.split('=');
+    if (parts.length !== 2) return expr;
+    const [lhs, rhs] = parts.map((p) => p.trim());
+    const quotientPattern = /^(.+?)\s*\/\s*\(?\s*([xy](?:\s*\^\s*\d+)?)\s*\)?$/;
+
+    const lhsMatch = lhs.match(quotientPattern);
+    if (lhsMatch) {
+      return `(${lhsMatch[1].trim()}) = (${rhs}) * (${lhsMatch[2].trim()})`;
+    }
+
+    const rhsMatch = rhs.match(quotientPattern);
+    if (rhsMatch) {
+      return `(${lhs}) * (${rhsMatch[2].trim()}) = (${rhsMatch[1].trim()})`;
+    }
+
+    return expr;
+  };
+  s = rewriteSimpleQuotient(s);
+
   // Dot used as multiplication: x.y → x*y, 2.x → 2*x
   // Must come BEFORE the implicit multiplication rules to avoid double-conversion
   s = s.replace(/([a-zA-Z0-9])\s*\.\s*([a-zA-Z])/g, '$1*$2');
+
+  const applyCompactFunctionPass = (input: string): string => {
+    let next = input;
+
+    // Insert explicit multiplication before recognised function names:
+    //   xsinx -> x*sinx, 2tan(x) -> 2*tan(x), )logx -> )*logx
+    next = next.replace(new RegExp(`([0-9xy)])\\s*(${functionPattern})(?=[a-zA-Z0-9(])`, 'g'), '$1*$2');
+    next = next.replace(new RegExp(`(${constantPattern})\\s*(${functionPattern})(?=[a-zA-Z0-9(])`, 'g'), '$1*$2');
+    next = next.replace(new RegExp(`([0-9xy)])\\s*(${constantPattern})\\b`, 'g'), '$1*$2');
+    next = next.replace(new RegExp(`(${constantPattern})\\s*([xy(])`, 'g'), '$1*$2');
+
+    // Compact bare function calls:
+    //   sinx -> sin(x), tan2x -> tan(2x), log10 -> log(10), sinpi -> sin(pi)
+    for (const fn of functionNames) {
+      next = next.replace(
+        new RegExp(`\\b${fn}(?!\\s*\\()\\s*(${compactFunctionArgPattern})`, 'g'),
+        `${fn}($1)`,
+      );
+    }
+
+    return next;
+  };
+
+  // Run a few normalisation passes so chained compact input stabilises:
+  //   xsinx      -> x*sin(x)
+  //   xtanx      -> x*tan(x)
+  //   sinxcosx   -> sin(x)*cos(x)
+  //   2sin3x     -> 2*sin(3*x)
+  for (let pass = 0; pass < 4; pass++) {
+    const next = applyCompactFunctionPass(s);
+    if (next === s) break;
+    s = next;
+  }
 
   // Implicit multiplication rules (order matters):
   // 1. digit immediately followed by x, y, or opening paren
@@ -464,15 +536,19 @@ function tryYEvenPower(s: string): CurveEvaluator[] | null {
   if (!fxFnRaw) return null;
 
   const root = 1 / n;
+  const snapRoot = (v: number): number => {
+    const rooted = Math.pow(v, root);
+    return Math.abs(rooted) < 1e-10 ? 0 : rooted;
+  };
   const topFn: EvalFn = (x: number) => {
     const v = fxFnRaw(x);
     if (v === null || v < 0) return null;
-    return Math.pow(v, root);
+    return snapRoot(v);
   };
   const bottomFn: EvalFn = (x: number) => {
     const v = fxFnRaw(x);
     if (v === null || v < 0) return null;
-    return -Math.pow(v, root);
+    return -snapRoot(v);
   };
 
   return [
@@ -493,6 +569,7 @@ function tryYEvenPower(s: string): CurveEvaluator[] | null {
  */
 export class MathEvaluator {
   private cache = new Map<string, CurveEvaluator[]>();
+  private residualCache = new Map<string, ResidualFn | null>();
 
   /**
    * getEvaluators
@@ -504,10 +581,9 @@ export class MathEvaluator {
    *   4. Bare expression     — "x^2 + 1" treated as y = x^2 + 1
    */
   getEvaluators(raw: string): CurveEvaluator[] {
-    const key = raw.trim();
-    if (this.cache.has(key)) return this.cache.get(key)!;
+    const s = normalise(raw.trim());
+    if (this.cache.has(s)) return this.cache.get(s)!;
 
-    const s = normalise(key);
     const result =
       tryExplicit(s)      ??
       tryYSquared(s)      ??
@@ -516,8 +592,32 @@ export class MathEvaluator {
       tryBare(s)          ??
       [];
 
-    this.cache.set(key, result);
+    this.cache.set(s, result);
     return result;
+  }
+
+  getResidual(raw: string): ResidualFn | null {
+    const s = normalise(raw.trim());
+    if (this.residualCache.has(s)) return this.residualCache.get(s)!;
+
+    let residualExpr: string;
+    const explicitMatch = s.match(/^(?:y|f\s*\(x\))\s*=\s*(.+)$/i);
+    if (explicitMatch) {
+      residualExpr = `y - (${explicitMatch[1].trim()})`;
+    } else if (!s.includes('=')) {
+      residualExpr = `y - (${s})`;
+    } else {
+      const parts = s.split('=');
+      if (parts.length !== 2) {
+        this.residualCache.set(s, null);
+        return null;
+      }
+      residualExpr = `((${parts[0].trim()})) - ((${parts[1].trim()}))`;
+    }
+
+    const residual = compileResidualExpr(residualExpr);
+    this.residualCache.set(s, residual);
+    return residual;
   }
 
   /**
@@ -534,5 +634,26 @@ export class MathEvaluator {
   /** Clear the evaluator cache (call when equations are all removed). */
   clearCache(): void {
     this.cache.clear();
+    this.residualCache.clear();
+  }
+}
+
+/** Safely compile a mathjs expression string into a residual f(x, y). */
+function compileResidualExpr(expr: string): ResidualFn | null {
+  try {
+    const compiled = compile(expr);
+    return (x: number, y: number): number | null => {
+      try {
+        const result = compiled.evaluate({ x, y, pi: Math.PI, e: Math.E });
+        if (typeof result !== 'number' || !isFinite(result) || isNaN(result)) {
+          return null;
+        }
+        return result;
+      } catch {
+        return null;
+      }
+    };
+  } catch {
+    return null;
   }
 }

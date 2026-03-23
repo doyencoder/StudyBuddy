@@ -13,8 +13,9 @@
  * Each run between NaN pairs is one polyline for gl.LINE_STRIP.
  */
 
-const COARSE_GRID = 24;
-const MAX_DEPTH   = 6;
+const DEFAULT_COARSE_GRID = 20;
+const DEFAULT_MAX_DEPTH   = 6;
+const ZERO_EPS    = 1e-8;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // F(x,y) builder
@@ -81,6 +82,8 @@ function parseToF(raw: string): ((x: number, y: number) => number) | null {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function lerp(a: number, b: number, fa: number, fb: number): number {
+  if (Math.abs(fa) < ZERO_EPS) return Math.abs(a) < 1e-10 ? 0 : a;
+  if (Math.abs(fb) < ZERO_EPS) return Math.abs(b) < 1e-10 ? 0 : b;
   if (Math.abs(fa-fb) < 1e-12) return (a+b)/2;
   const t = -fa / (fb - fa);
   const result = a + (b - a) * t;
@@ -125,6 +128,7 @@ function subdivide(
   x0:number, y0:number, x1:number, y1:number,
   tl:number, tr:number, bl:number, br:number,
   depth: number,
+  maxDepth: number,
   out: number[],
 ): void {
   const vals = [tl,tr,bl,br];
@@ -133,7 +137,7 @@ function subdivide(
   const hasNeg = vals.some(v => v<0);
   if (!hasPos || !hasNeg) return;
 
-  if (depth >= MAX_DEPTH) {
+  if (depth >= maxDepth) {
     extractSegments(x0,y0,x1,y1,tl,tr,bl,br,out);
     return;
   }
@@ -144,13 +148,13 @@ function subdivide(
   const fmm = F(mx,my);
 
   // Bottom-left:  x=[x0,mx], y=[y0,my]
-  subdivide(F, x0,y0,mx,my,  fml,fmm,bl, fmb, depth+1, out);
+  subdivide(F, x0,y0,mx,my,  fml,fmm,bl, fmb, depth+1, maxDepth, out);
   // Bottom-right: x=[mx,x1], y=[y0,my]
-  subdivide(F, mx,y0,x1,my,  fmm,fmr,fmb,br,  depth+1, out);
+  subdivide(F, mx,y0,x1,my,  fmm,fmr,fmb,br,  depth+1, maxDepth, out);
   // Top-left:     x=[x0,mx], y=[my,y1]
-  subdivide(F, x0,my,mx,y1,  tl, fmt,fml,fmm, depth+1, out);
+  subdivide(F, x0,my,mx,y1,  tl, fmt,fml,fmm, depth+1, maxDepth, out);
   // Top-right:    x=[mx,x1], y=[my,y1]  ← FIXED: was (tr,fmr,fmt,fmm) WRONG
-  subdivide(F, mx,my,x1,y1,  fmt,tr, fmm,fmr, depth+1, out);
+  subdivide(F, mx,my,x1,y1,  fmt,tr, fmm,fmr, depth+1, maxDepth, out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,20 +247,24 @@ function chainSegments(segs: number[]): number[][] {
 function traceImplicit(
   raw: string,
   xMin:number, xMax:number, yMin:number, yMax:number,
+  coarseGrid: number,
+  maxDepth: number,
 ): number[] {
   const F = parseToF(raw);
   if (!F) return [];
 
   const segs: number[] = [];
-  const dx = (xMax-xMin)/COARSE_GRID;
-  const dy = (yMax-yMin)/COARSE_GRID;
+  const grid = Math.max(6, Math.floor(coarseGrid));
+  const depthLimit = Math.max(3, Math.floor(maxDepth));
+  const dx = (xMax-xMin)/grid;
+  const dy = (yMax-yMin)/grid;
 
-  for (let row=0; row<COARSE_GRID; row++) {
-    for (let col=0; col<COARSE_GRID; col++) {
+  for (let row=0; row<grid; row++) {
+    for (let col=0; col<grid; col++) {
       const x0=xMin+col*dx, x1=x0+dx;
       const y0=yMin+row*dy, y1=y0+dy;
       const tl=F(x0,y1), tr=F(x1,y1), bl=F(x0,y0), br=F(x1,y0);
-      subdivide(F,x0,y0,x1,y1,tl,tr,bl,br,0,segs);
+      subdivide(F,x0,y0,x1,y1,tl,tr,bl,br,0,depthLimit,segs);
     }
   }
 
@@ -277,9 +285,24 @@ function traceImplicit(
 // ─────────────────────────────────────────────────────────────────────────────
 
 self.onmessage = (e: MessageEvent) => {
-  const { id, raw, xMin, xMax, yMin, yMax } = e.data as {
-    id:string; raw:string; xMin:number; xMax:number; yMin:number; yMax:number;
+  const { id, raw, xMin, xMax, yMin, yMax, coarseGrid, maxDepth } = e.data as {
+    id:string;
+    raw:string;
+    xMin:number;
+    xMax:number;
+    yMin:number;
+    yMax:number;
+    coarseGrid?: number;
+    maxDepth?: number;
   };
-  const flat = new Float32Array(traceImplicit(raw, xMin, xMax, yMin, yMax));
+  const flat = new Float32Array(traceImplicit(
+    raw,
+    xMin,
+    xMax,
+    yMin,
+    yMax,
+    coarseGrid ?? DEFAULT_COARSE_GRID,
+    maxDepth ?? DEFAULT_MAX_DEPTH,
+  ));
   self.postMessage({ id, segments: flat }, { transfer: [flat.buffer] });
 };

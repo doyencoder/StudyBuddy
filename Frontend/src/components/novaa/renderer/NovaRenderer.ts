@@ -39,7 +39,7 @@
  */
 
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders';
-import { MathEvaluator, type CurveEvaluator } from './MathEvaluator';
+import { MathEvaluator, normalise, type CurveEvaluator, type ResidualFn } from './MathEvaluator';
 
 // Vite worker import — bundled as a separate chunk, loaded lazily
 // ?worker tells Vite to treat this as a Web Worker module
@@ -70,11 +70,24 @@ export interface EquationDescriptor {
   fromChat:  boolean;      // dashed line treatment
 }
 
+export interface CurveIntersection {
+  x: number;
+  y: number;
+  ids: string[];
+}
+
+export type ResampleQuality = 'draft' | 'full';
+
 /** One continuous plotted segment (no discontinuities). */
 interface CurveSegment {
   buffer: WebGLBuffer;
   vao:    WebGLVertexArrayObject;
   count:  number;
+  data:   Float32Array;
+  minX:   number;
+  maxX:   number;
+  minY:   number;
+  maxY:   number;
 }
 
 /** Internal per-equation data. */
@@ -83,8 +96,12 @@ interface CurveEntry {
   color:       [number, number, number, number];
   opacity:     number;
   fromChat:    boolean;
+  raw:         string;
   evaluators:  CurveEvaluator[];
+  residual:    ResidualFn | null;
+  sampleQuality: ResampleQuality;
   isImplicit:  boolean;   // true = rendered via marching squares worker
+  pendingJobId?: string;
   lastSampledScale:  number;
   lastSampledXMin:   number;
   lastSampledXMax:   number;
@@ -139,8 +156,55 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 // Curve sampling
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SAMPLE_COUNT = 2000;  // points per curve per visible range
-const SAMPLE_MARGIN = 2.0;  // sample 200% beyond visible so panning never hits curve ends
+interface ExplicitSamplingProfile {
+  marginMultiplier: number;
+  minSamples: number;
+  maxSamples: number;
+  pixelStep: number;
+}
+
+interface ImplicitTraceProfile {
+  xMarginMultiplier: number;
+  yMarginMultiplier: number;
+  coarseGrid: number;
+  maxDepth: number;
+}
+
+const EXPLICIT_SAMPLING: Record<ResampleQuality, ExplicitSamplingProfile> = {
+  draft: {
+    marginMultiplier: 0.55,
+    minSamples: 480,
+    maxSamples: 1800,
+    pixelStep: 3.2,
+  },
+  full: {
+    marginMultiplier: 1.2,
+    minSamples: 900,
+    maxSamples: 3600,
+    pixelStep: 1.35,
+  },
+};
+
+const RESAMPLE_EDGE_FRACTION = 0.18;
+
+function getImplicitTraceProfile(quality: ResampleQuality, vp: Viewport): ImplicitTraceProfile {
+  const span = Math.max(vp.width, vp.height);
+  if (quality === 'draft') {
+    return {
+      xMarginMultiplier: 0.35,
+      yMarginMultiplier: 0.25,
+      coarseGrid: Math.max(12, Math.min(16, Math.round(span / 120))),
+      maxDepth: 4,
+    };
+  }
+
+  return {
+    xMarginMultiplier: 1.0,
+    yMarginMultiplier: 0.75,
+    coarseGrid: Math.max(16, Math.min(22, Math.round(span / 90))),
+    maxDepth: 6,
+  };
+}
 
 /**
  * sampleCurve
@@ -161,15 +225,33 @@ function sampleCurve(
   xMax:  number,
   yMin:  number,
   yMax:  number,
+  pixelsPerUnit: number,
+  profile: ExplicitSamplingProfile,
 ): Float32Array[] {
   const segments: Float32Array[] = [];
   let current: number[] = [];
-  let prevY:    number | null = null;
-  let prevX:    number = xMin;
-  let prevNullX: number = xMin - (xMax - xMin) / SAMPLE_COUNT; // tracks last null x
-  const step    = (xMax - xMin) / SAMPLE_COUNT;
-  const yRange  = Math.abs(yMax - yMin);
-  const yBuffer = yRange * 4;
+  let prevY: number | null = null;
+  let prevX = xMin;
+  const xRange = Math.max(Math.abs(xMax - xMin), 1e-9);
+  const sampleSpanPx = Math.max(xRange * pixelsPerUnit, profile.minSamples);
+  const sampleCount = Math.max(
+    profile.minSamples,
+    Math.min(profile.maxSamples, Math.ceil(sampleSpanPx / profile.pixelStep)),
+  );
+  let prevNullX = xMin - xRange / sampleCount;
+  const step = xRange / sampleCount;
+  const yRange = Math.max(Math.abs(yMax - yMin), 1);
+  const yBuffer = yRange * 10;
+  const jumpThreshold = Math.max(yRange * 0.45, 6);
+  const steepSlopeThreshold = Math.max(yRange * 1.2, 14);
+
+  const isDrawable = (y: number | null): y is number => (
+    y !== null
+    && Number.isFinite(y)
+    && !Number.isNaN(y)
+    && y >= yMin - yBuffer
+    && y <= yMax + yBuffer
+  );
 
   const ITERS = 10; // bisection iterations → precision of step/1024
 
@@ -177,37 +259,89 @@ function sampleCurve(
   const bisectExit = (lo: number, hi: number): [number, number] | null => {
     let bestX = lo;
     let bestY = fn(lo);
-    if (bestY === null || !isFinite(bestY)) return null;
+    if (!isDrawable(bestY)) return null;
     for (let k = 0; k < ITERS; k++) {
       const mid = (lo + hi) / 2;
-      const y   = fn(mid);
-      if (y !== null && isFinite(y) && !isNaN(y)) { lo = mid; bestX = mid; bestY = y; }
-      else { hi = mid; }
+      const y = fn(mid);
+      if (isDrawable(y)) {
+        lo = mid;
+        bestX = mid;
+        bestY = y;
+      } else {
+        hi = mid;
+      }
     }
-    return [bestX, bestY as number];
+    return [bestX, bestY];
   };
 
   // null→valid: find the first valid point approaching the boundary from outside
   const bisectEntry = (lo: number, hi: number): [number, number] | null => {
     let bestX = hi;
     let bestY = fn(hi);
-    if (bestY === null || !isFinite(bestY as number)) return null;
+    if (!isDrawable(bestY)) return null;
     for (let k = 0; k < ITERS; k++) {
       const mid = (lo + hi) / 2;
-      const y   = fn(mid);
-      if (y !== null && isFinite(y) && !isNaN(y)) { hi = mid; bestX = mid; bestY = y; }
-      else { lo = mid; }
+      const y = fn(mid);
+      if (isDrawable(y)) {
+        hi = mid;
+        bestX = mid;
+        bestY = y;
+      } else {
+        lo = mid;
+      }
     }
-    return [bestX, bestY as number];
+    return [bestX, bestY];
   };
 
-  for (let i = 0; i <= SAMPLE_COUNT; i++) {
+  const bisectSteepEdge = (
+    loX: number,
+    hiX: number,
+    preferLo: boolean,
+  ): [number, number] | null => {
+    let leftX = loX;
+    let rightX = hiX;
+    let leftY = fn(leftX);
+    let rightY = fn(rightX);
+
+    if (!isDrawable(leftY) || !isDrawable(rightY)) return null;
+
+    for (let k = 0; k < ITERS; k++) {
+      const midX = (leftX + rightX) / 2;
+      const midY = fn(midX);
+      if (!isDrawable(midY)) {
+        if (preferLo) rightX = midX;
+        else leftX = midX;
+        continue;
+      }
+
+      const deltaLeft = Math.abs(midY - leftY);
+      const deltaRight = Math.abs(rightY - midY);
+      if (preferLo) {
+        if (deltaLeft <= deltaRight) {
+          leftX = midX;
+          leftY = midY;
+        } else {
+          rightX = midX;
+          rightY = midY;
+        }
+      } else if (deltaRight <= deltaLeft) {
+        rightX = midX;
+        rightY = midY;
+      } else {
+        leftX = midX;
+        leftY = midY;
+      }
+    }
+
+    return preferLo ? [leftX, leftY] : [rightX, rightY];
+  };
+
+  for (let i = 0; i <= sampleCount; i++) {
     const x = xMin + i * step;
     const y = fn(x);
 
     // ── Invalid point ────────────────────────────────────────────────────────
-    if (y === null || !isFinite(y) || isNaN(y)
-        || y < yMin - yBuffer || y > yMax + yBuffer) {
+    if (!isDrawable(y)) {
 
       // valid→null: bisect to find exact exit point before breaking segment
       if (current.length >= 2 && prevY !== null) {
@@ -222,17 +356,34 @@ function sampleCurve(
       }
 
       if (current.length >= 4) segments.push(new Float32Array(current));
-      current   = [];
+      current = [];
       prevNullX = x;
-      prevY     = null;
+      prevY = null;
       continue;
     }
 
     // ── Discontinuity: large jump — hard break, no bisection ────────────────
-    if (prevY !== null && Math.abs(y - prevY) > yRange * 0.6) {
-      if (current.length >= 4) segments.push(new Float32Array(current));
-      current = [];
-      // prevY stays non-null so next point doesn't trigger entry bisection
+    if (prevY !== null) {
+      const yJump = Math.abs(y - prevY);
+      const slope = yJump / Math.max(Math.abs(x - prevX), 1e-9);
+      const signChanged = Math.sign(y) !== Math.sign(prevY);
+      const largeEdge = Math.max(Math.abs(y), Math.abs(prevY)) > Math.max(4, yRange * 0.2);
+      const steepAsymptote = slope > steepSlopeThreshold && (signChanged || largeEdge);
+      if (yJump > jumpThreshold || steepAsymptote) {
+        const leftEdge = bisectSteepEdge(prevX, x, true);
+        if (leftEdge && current.length >= 2) {
+          const lastX = current[current.length - 2];
+          const lastY = current[current.length - 1];
+          if (Math.abs(leftEdge[0] - lastX) > step * 0.01 || Math.abs(leftEdge[1] - lastY) > 1e-9) {
+            current.push(leftEdge[0], leftEdge[1]);
+          }
+        }
+        if (current.length >= 4) segments.push(new Float32Array(current));
+        current = [];
+
+        const rightEdge = bisectSteepEdge(prevX, x, false);
+        if (rightEdge) current.push(rightEdge[0], rightEdge[1]);
+      }
     }
 
     // ── null→valid: bisect to find exact entry point ─────────────────────────
@@ -498,6 +649,34 @@ function createVAO(
   return { vao, buffer };
 }
 
+function getFloatArrayBounds(data: Float32Array): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+} {
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < data.length; i += 2) {
+    const x = data[i];
+    const y = data[i + 1];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+    return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+  }
+
+  return { minX, maxX, minY, maxY };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NovaRenderer
 // ─────────────────────────────────────────────────────────────────────────────
@@ -506,6 +685,7 @@ export class NovaRenderer {
   private gl!:       WebGL2RenderingContext;
   private program!:  WebGLProgram;
   private dpr:       number = 1;
+  private interactiveMode: boolean = false;
 
   // Uniform locations (cached for performance — lookup is slow)
   private uResolution!: WebGLUniformLocation;
@@ -528,10 +708,12 @@ export class NovaRenderer {
   // Math evaluator (caches compiled functions)
   private evaluator = new MathEvaluator();
 
-  // Web Worker for marching squares (implicit curves that can't be solved analytically)
-  private worker: Worker | null = null;
+  // Web Worker pool for marching squares (implicit curves that can't be solved analytically)
+  private workers: Worker[] = [];
+  private workerLoads: number[] = [];
   // Pending worker callbacks: job id → callback when segments arrive
   private workerCallbacks = new Map<string, (segs: Float32Array) => void>();
+  private jobWorkerIndex = new Map<string, number>();
 
   // Current viewport (CSS pixel values, DPR-independent)
   private viewport!: Viewport;
@@ -569,20 +751,34 @@ export class NovaRenderer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    // Spawn marching squares worker
+    // Spawn a small marching-squares worker pool so implicit traces can
+    // refine in parallel after zoom/pan settles.
     try {
-      this.worker = new MarchingSquaresWorker();
-      this.worker.onmessage = (e: MessageEvent) => {
-        const { id, segments } = e.data as { id: string; segments: Float32Array };
-        const cb = this.workerCallbacks.get(id);
-        if (cb) {
-          this.workerCallbacks.delete(id);
-          cb(segments);
-        }
-      };
+      const concurrency = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 4 : 4;
+      const workerCount = Math.max(2, Math.min(4, Math.floor(concurrency / 2) || 2));
+      for (let i = 0; i < workerCount; i++) {
+        const worker = new MarchingSquaresWorker();
+        worker.onmessage = (e: MessageEvent) => {
+          const { id, segments } = e.data as { id: string; segments: Float32Array };
+          const workerIndex = this.jobWorkerIndex.get(id);
+          if (workerIndex !== undefined) {
+            this.jobWorkerIndex.delete(id);
+            this.workerLoads[workerIndex] = Math.max(0, (this.workerLoads[workerIndex] ?? 1) - 1);
+          }
+
+          const cb = this.workerCallbacks.get(id);
+          if (cb) {
+            this.workerCallbacks.delete(id);
+            cb(segments);
+          }
+        };
+        this.workers.push(worker);
+        this.workerLoads.push(0);
+      }
     } catch {
       // Worker unavailable (e.g. in test env) — implicit curves won't render
-      this.worker = null;
+      this.workers = [];
+      this.workerLoads = [];
     }
 
     return true;
@@ -625,32 +821,51 @@ export class NovaRenderer {
   }
 
   /**
+   * Use a cheaper draw path while the user is actively panning or zooming.
+   * This keeps interaction responsive, then GraphCanvas switches back to
+   * the full multi-pass styling once the viewport settles.
+   */
+  setInteractiveMode(active: boolean): void {
+    this.interactiveMode = active;
+  }
+
+  /**
    * checkResample
    * Call after a zoom change. If scale has changed by more than 40% since
    * the last sample, re-evaluates all curve functions at the new scale.
    * (We don't resample on every zoom step — that would be too slow during
    * a pinch gesture. We wait for a significant change.)
    */
-  checkResample(): void {
+  checkResample(options: { quality?: ResampleQuality; onReady?: () => void } = {}): void {
     const vp = this.viewport;
+    const quality = options.quality ?? 'full';
+    const onReady = options.onReady;
     const xMin = (0          - vp.originX) / vp.scale;
     const xMax = (vp.width   - vp.originX) / vp.scale;
     const yMin = (vp.originY - vp.height)  / vp.scale;
     const yMax = (vp.originY - 0)          / vp.scale;
+    let didSyncResample = false;
 
     for (const [id, entry] of this.curves) {
-      if (entry.isImplicit) continue;  // implicit curves handled by worker, not resample
       const scaleDelta = Math.abs(vp.scale - entry.lastSampledScale)
                        / Math.max(entry.lastSampledScale, 1);
-      // Trigger resample when visible range is within 10% of sampled edges
+      const needsQualityUpgrade = quality === 'full' && entry.sampleQuality !== 'full';
+      // Trigger resample when visible range gets close to sampled edges.
       const xRange = xMax - xMin;
-      const rangeExtended = xMin < entry.lastSampledXMin + xRange * 0.1
-                         || xMax > entry.lastSampledXMax - xRange * 0.1;
+      const rangeExtended = xMin < entry.lastSampledXMin + xRange * RESAMPLE_EDGE_FRACTION
+                         || xMax > entry.lastSampledXMax - xRange * RESAMPLE_EDGE_FRACTION;
 
-      if (scaleDelta > 0.3 || rangeExtended) {
-        this.resampleCurve(id, entry, vp, xMin, xMax, yMin, yMax);
+      if (!(needsQualityUpgrade || scaleDelta > 0.3 || rangeExtended)) continue;
+
+      if (entry.isImplicit) {
+        this.requestImplicitTrace(id, entry, vp, xMin, xMax, yMin, yMax, quality, onReady);
+      } else {
+        this.resampleCurve(id, entry, vp, xMin, xMax, yMin, yMax, quality);
+        didSyncResample = true;
       }
     }
+
+    if (didSyncResample) onReady?.();
   }
 
   // ── Equation management ─────────────────────────────────────────────────────
@@ -667,9 +882,11 @@ export class NovaRenderer {
    *   → renders at GPU speed after the first ~10ms worker compute
    */
   upsertEquation(desc: EquationDescriptor, onReady?: () => void): void {
-    const evaluators = this.evaluator.getEvaluators(desc.raw);
-    const color      = cssVarToRGBA(desc.color, desc.fromChat ? 0.65 : 1.0);
-    const vp         = this.viewport ?? { originX: 0, originY: 0, scale: 60, width: 800, height: 600 };
+    const normalizedRaw = normalise(desc.raw);
+    const evaluators    = this.evaluator.getEvaluators(normalizedRaw);
+    const residual      = this.evaluator.getResidual(normalizedRaw);
+    const color         = cssVarToRGBA(desc.color, desc.fromChat ? 0.65 : 1.0);
+    const vp            = this.viewport ?? { originX: 0, originY: 0, scale: 60, width: 800, height: 600 };
 
     const xMin = (0        - vp.originX) / vp.scale;
     const xMax = (vp.width - vp.originX) / vp.scale;
@@ -681,17 +898,21 @@ export class NovaRenderer {
 
     if (evaluators.length > 0) {
       // ── Fast analytical path ──────────────────────────────────────────────
-      const margin   = (xMax - xMin) * SAMPLE_MARGIN;
+      const profile  = EXPLICIT_SAMPLING.full;
+      const margin   = (xMax - xMin) * profile.marginMultiplier;
       const segments = this.buildCurveSegments(
-        evaluators, xMin - margin, xMax + margin, yMin, yMax,
+        evaluators, xMin - margin, xMax + margin, yMin, yMax, vp.scale, 'full',
       );
 
       const entry: CurveEntry = {
         segments, color,
         opacity:          desc.fromChat ? 0.65 : 1.0,
         fromChat:         desc.fromChat,
+        raw:              normalizedRaw,
         isImplicit:       false,
         evaluators,
+        residual,
+        sampleQuality:    'full',
         lastSampledScale: vp.scale,
         lastSampledXMin:  xMin - margin,
         lastSampledXMax:  xMax + margin,
@@ -708,8 +929,11 @@ export class NovaRenderer {
         segments:         [],
         color, opacity:   desc.fromChat ? 0.65 : 1.0,
         fromChat:         desc.fromChat,
+        raw:              normalizedRaw,
         isImplicit:       true,
         evaluators:       [],
+        residual,
+        sampleQuality:    'full',
         lastSampledScale: vp.scale,
         lastSampledXMin:  xMin,
         lastSampledXMax:  xMax,
@@ -718,42 +942,7 @@ export class NovaRenderer {
       if (!this.curves.has(desc.id)) this.curveOrder.push(desc.id);
       this.curves.set(desc.id, placeholder);
 
-      if (!this.worker) return;  // worker unavailable — can't render
-
-      // Extend sampling range by SAMPLE_MARGIN so panning doesn't show gaps
-      const margin = (xMax - xMin) * SAMPLE_MARGIN;
-      const jobId  = `${desc.id}-${Date.now()}`;
-
-      this.workerCallbacks.set(jobId, (segsFlat: Float32Array) => {
-        const entry = this.curves.get(desc.id);
-        if (!entry) return;  // equation was removed while worker was computing
-
-        // Upload all segments to GPU as a single VBO
-        // (marching squares returns [x0,y0, x1,y1, ...] pairs — each pair is a segment)
-        this.freeSegments(entry.segments);
-        const newSegs = this.uploadImplicitSegments(segsFlat);
-        entry.segments          = newSegs;
-        entry.lastSampledScale  = vp.scale;
-        entry.lastSampledXMin   = xMin - margin;
-        entry.lastSampledXMax   = xMax + margin;
-
-        onReady?.();
-      });
-
-      // For implicit curves, extend x range for pan smoothness but keep y range tight.
-      // A large y range causes asymptotic curves (x*y=1) to draw far-off-screen
-      // branches that render as vertical artifacts near discontinuities.
-      const xMargin = (xMax - xMin) * SAMPLE_MARGIN;
-      const yMargin = (yMax - yMin) * 1.0;  // 100% y buffer — needed for y^(2/3)=x and hyperbolas
-
-      this.worker.postMessage({
-        id:   jobId,
-        raw:  desc.raw,
-        xMin: xMin - xMargin,
-        xMax: xMax + xMargin,
-        yMin: yMin - yMargin,
-        yMax: yMax + yMargin,
-      });
+      this.requestImplicitTrace(desc.id, placeholder, vp, xMin, xMax, yMin, yMax, 'full', onReady);
     }
   }
 
@@ -836,7 +1025,7 @@ export class NovaRenderer {
     gl.uniform1f(this.uDashed, 0.0);
 
     // ── Grid: minor then major ───────────────────────────────────────────────
-    if (this.minorGrid) {
+    if (!this.interactiveMode && this.minorGrid) {
       this.drawGeometry(this.minorGrid, [0.3, 0.35, 0.45, 0.3], gl.LINES);
     }
     if (this.majorGrid) {
@@ -846,7 +1035,9 @@ export class NovaRenderer {
     // ── Axes: 4-pass for visual ~2.5px thickness ─────────────────────────────
     const axisColor: [number,number,number,number] = [0.6, 0.65, 0.75, 0.7];
     if (this.axisLines) {
-      const axisOffsets = [[0,0],[0.5,0],[-0.5,0],[0,0.5]] as const;
+      const axisOffsets = this.interactiveMode
+        ? ([[0, 0]] as const)
+        : ([[0,0],[0.5,0],[-0.5,0],[0,0.5]] as const);
       for (const [ox, oy] of axisOffsets) {
         setOrigin(ox, oy);
         this.drawGeometry(this.axisLines, axisColor, gl.LINES);
@@ -863,9 +1054,13 @@ export class NovaRenderer {
 
     // ── Curves ───────────────────────────────────────────────────────────────
     // Normal curves: 6 passes → visually ~3px thick
-    const normalOffsets = [[0,0],[1.2,0],[-1.2,0],[0,1.2],[0,-1.2],[0.8,0.8]] as const;
+    const normalOffsets = this.interactiveMode
+      ? ([[0,0],[0.8,0],[0,0.8]] as const)
+      : ([[0,0],[1.2,0],[-1.2,0],[0,1.2],[0,-1.2],[0.8,0.8]] as const);
     // Hovered: 8 passes → visually ~4px thick
-    const hoverOffsets  = [[0,0],[1.5,0],[-1.5,0],[0,1.5],[0,-1.5],[1.0,1.0],[-1.0,1.0],[1.0,-1.0]] as const;
+    const hoverOffsets  = this.interactiveMode
+      ? ([[0,0],[1.0,0],[0,1.0]] as const)
+      : ([[0,0],[1.5,0],[-1.5,0],[0,1.5],[0,-1.5],[1.0,1.0],[-1.0,1.0],[1.0,-1.0]] as const);
 
     for (const id of this.curveOrder) {
       if (!visible.has(id)) continue;
@@ -878,7 +1073,7 @@ export class NovaRenderer {
 
       // Optional soft glow pass for hovered curve (drawn before main passes).
       // Always solid — a dashed glow looks fragmented and wrong.
-      if (isHovered) {
+      if (isHovered && !this.interactiveMode) {
         gl.uniform1f(this.uDashed, 0.0);
         setOrigin(0, 0);
         gl.uniform4fv(this.uColor, [r, g, b, a * 0.25]);
@@ -939,6 +1134,483 @@ export class NovaRenderer {
     return null;
   }
 
+  getCurveIntersections(
+    visible: Set<string>,
+    maxPoints: number = 120,
+  ): CurveIntersection[] {
+    if (!this.viewport) return [];
+
+    const { scale, originX, originY, width, height } = this.viewport;
+    const xMin = (0 - originX) / scale;
+    const xMax = (width - originX) / scale;
+    const yMin = (originY - height) / scale;
+    const yMax = (originY - 0) / scale;
+    const xTol = 6 / Math.max(scale, 1);
+    const yTol = 6 / Math.max(scale, 1);
+    const proximityTol = 4 / Math.max(scale, 1);
+    const tolSq = proximityTol * proximityTol;
+    const mergeRadiusPx = 10;
+    const mergeRadiusPxSq = mergeRadiusPx * mergeRadiusPx;
+    const sharedMergeRadiusPx = 18;
+    const sharedMergeRadiusPxSq = sharedMergeRadiusPx * sharedMergeRadiusPx;
+    const pairMergeRadiusPx = 14;
+    const pairMergeRadiusPxSq = pairMergeRadiusPx * pairMergeRadiusPx;
+    const xBuffer = Math.max((xMax - xMin) * 0.08, 16 / Math.max(scale, 1));
+    const yBuffer = Math.max((yMax - yMin) * 0.08, 16 / Math.max(scale, 1));
+    const cellSize = Math.max(24 / Math.max(scale, 1), Math.min((xMax - xMin) / 18, (yMax - yMin) / 18, 2.5));
+    const xBase = xMin - xBuffer;
+    const yBase = yMin - yBuffer;
+
+    type LineRecord = {
+      id: number;
+      curveId: string;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      minX: number;
+      maxX: number;
+      minY: number;
+      maxY: number;
+    };
+
+    const candidates = this.curveOrder
+      .filter((id) => visible.has(id))
+      .map((id) => [id, this.curves.get(id)] as const)
+      .filter(([, entry]) => !!entry && entry.segments.length > 0) as Array<[string, CurveEntry]>;
+    const entryById = new Map(candidates);
+    const pairCandidates = new Map<string, {
+      ids: [string, string];
+      points: Array<{ x: number; y: number }>;
+    }>();
+    const finalClusters: Array<CurveIntersection & { hitCount: number }> = [];
+    const lineRecords: LineRecord[] = [];
+    const buckets = new Map<string, number[]>();
+    const comparedPairs = new Set<string>();
+
+    const recordCandidate = (x: number, y: number, aId: string, bId: string) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (x < xMin - xBuffer || x > xMax + xBuffer) return;
+      if (y < yMin - yBuffer || y > yMax + yBuffer) return;
+      const ids = aId < bId ? [aId, bId] as [string, string] : [bId, aId] as [string, string];
+      const key = `${ids[0]}|${ids[1]}`;
+      const bucket = pairCandidates.get(key);
+      if (bucket) bucket.points.push({ x, y });
+      else pairCandidates.set(key, { ids, points: [{ x, y }] });
+    };
+
+    const addFinalPoint = (x: number, y: number, ids: string[]) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (x < xMin - xTol || x > xMax + xTol) return;
+      if (y < yMin - yTol || y > yMax + yTol) return;
+
+      let bestCluster: (CurveIntersection & { hitCount: number }) | null = null;
+      let bestDistSq = Number.POSITIVE_INFINITY;
+
+      for (const cluster of finalClusters) {
+        const dxPx = (cluster.x - x) * scale;
+        const dyPx = (cluster.y - y) * scale;
+        const distSq = dxPx * dxPx + dyPx * dyPx;
+        const sharesCurve = cluster.ids.some((id) => ids.includes(id));
+        const allowedDistSq = sharesCurve ? sharedMergeRadiusPxSq : mergeRadiusPxSq;
+        if (distSq > allowedDistSq || distSq >= bestDistSq) continue;
+        bestCluster = cluster;
+        bestDistSq = distSq;
+      }
+
+      if (!bestCluster) {
+        finalClusters.push({ x, y, ids: [...ids].sort(), hitCount: 1 });
+        return;
+      }
+
+      const combinedCount = bestCluster.hitCount + 1;
+      bestCluster.x = (bestCluster.x * bestCluster.hitCount + x) / combinedCount;
+      bestCluster.y = (bestCluster.y * bestCluster.hitCount + y) / combinedCount;
+      bestCluster.hitCount = combinedCount;
+      bestCluster.ids = [...new Set([...bestCluster.ids, ...ids])].sort();
+    };
+
+    const clusterPairPoints = (points: Array<{ x: number; y: number }>) => {
+      const clusters: Array<{ x: number; y: number; count: number }> = [];
+      for (const point of points) {
+        let best: { x: number; y: number; count: number } | null = null;
+        let bestDistSq = Number.POSITIVE_INFINITY;
+        for (const cluster of clusters) {
+          const dxPx = (cluster.x - point.x) * scale;
+          const dyPx = (cluster.y - point.y) * scale;
+          const distSq = dxPx * dxPx + dyPx * dyPx;
+          if (distSq > pairMergeRadiusPxSq || distSq >= bestDistSq) continue;
+          best = cluster;
+          bestDistSq = distSq;
+        }
+
+        if (!best) {
+          clusters.push({ x: point.x, y: point.y, count: 1 });
+          continue;
+        }
+
+        const nextCount = best.count + 1;
+        best.x = (best.x * best.count + point.x) / nextCount;
+        best.y = (best.y * best.count + point.y) / nextCount;
+        best.count = nextCount;
+      }
+
+      return clusters;
+    };
+
+    const scorePointForIds = (ids: string[], x: number, y: number) => {
+      let score = 0;
+      let matches = 0;
+      for (const id of ids) {
+        const residual = entryById.get(id)?.residual ?? null;
+        if (!residual) continue;
+        const value = residual(x, y);
+        if (value === null || !Number.isFinite(value)) continue;
+        score += value * value;
+        matches++;
+      }
+      return { score, matches };
+    };
+
+    const derivative = (
+      fn: ResidualFn,
+      x: number,
+      y: number,
+      dx: number,
+      dy: number,
+    ): number | null => {
+      const center = fn(x, y);
+      const forward = fn(x + dx, y + dy);
+      const backward = fn(x - dx, y - dy);
+      const step = Math.abs(dx) + Math.abs(dy);
+      if (step === 0) return null;
+
+      if (forward !== null && backward !== null) return (forward - backward) / (2 * step);
+      if (forward !== null && center !== null) return (forward - center) / step;
+      if (backward !== null && center !== null) return (center - backward) / step;
+      return null;
+    };
+
+    const snapCoordinate = (value: number, tolerance: number): number => {
+      if (Math.abs(value) < tolerance) return 0;
+      const rounded = Math.round(value);
+      if (Math.abs(value - rounded) < tolerance) return rounded;
+      const halfRounded = Math.round(value * 2) / 2;
+      if (Math.abs(value - halfRounded) < tolerance * 0.8) return halfRounded;
+      return value;
+    };
+
+    const snapIntersectionPoint = (ids: string[], x: number, y: number) => {
+      const snapTol = Math.min(0.05, Math.max(8 / Math.max(scale, 1), 0.006));
+      const xSnapped = snapCoordinate(x, snapTol);
+      const ySnapped = snapCoordinate(y, snapTol);
+      if (xSnapped === x && ySnapped === y) return { x, y };
+
+      const current = scorePointForIds(ids, x, y);
+      if (current.matches < 2) return { x, y };
+
+      const candidates = [
+        { x: xSnapped, y },
+        { x, y: ySnapped },
+        { x: xSnapped, y: ySnapped },
+      ];
+      let best = { x, y, score: current.score };
+
+      for (const candidate of candidates) {
+        const next = scorePointForIds(ids, candidate.x, candidate.y);
+        if (next.matches < 2) continue;
+        if (next.score <= best.score * 1.05 + 1e-12) {
+          best = { x: candidate.x, y: candidate.y, score: next.score };
+        }
+      }
+
+      return { x: best.x, y: best.y };
+    };
+
+    const refineIntersection = (aId: string, bId: string, seedX: number, seedY: number) => {
+      const aResidual = entryById.get(aId)?.residual ?? null;
+      const bResidual = entryById.get(bId)?.residual ?? null;
+      if (!aResidual || !bResidual) {
+        return { x: seedX, y: seedY };
+      }
+
+      let x = seedX;
+      let y = seedY;
+      let bestX = seedX;
+      let bestY = seedY;
+      let bestScore = Number.POSITIVE_INFINITY;
+      const snapTol = Math.min(0.05, Math.max(8 / Math.max(scale, 1), 0.006));
+
+      for (let iter = 0; iter < 18; iter++) {
+        const f = aResidual(x, y);
+        const g = bResidual(x, y);
+        if (f === null || g === null || !Number.isFinite(f) || !Number.isFinite(g)) break;
+
+        const score = f * f + g * g;
+        if (score < bestScore) {
+          bestScore = score;
+          bestX = x;
+          bestY = y;
+        }
+        if (score < 1e-20) break;
+
+        const h = Math.max(1e-5, 0.6 / Math.max(scale, 1), 1e-4 * Math.max(1, Math.abs(x), Math.abs(y)));
+        const fx = derivative(aResidual, x, y, h, 0) ?? 0;
+        const fy = derivative(aResidual, x, y, 0, h) ?? 0;
+        const gx = derivative(bResidual, x, y, h, 0) ?? 0;
+        const gy = derivative(bResidual, x, y, 0, h) ?? 0;
+
+        const jtrX = fx * f + gx * g;
+        const jtrY = fy * f + gy * g;
+        const damping = 1e-6 + Math.min(1, score) * 1e-2;
+        const a11 = fx * fx + gx * gx + damping;
+        const a12 = fx * fy + gx * gy;
+        const a22 = fy * fy + gy * gy + damping;
+        const det = a11 * a22 - a12 * a12;
+        if (!Number.isFinite(det) || Math.abs(det) < 1e-18) break;
+
+        const stepX = (-a22 * jtrX + a12 * jtrY) / det;
+        const stepY = (a12 * jtrX - a11 * jtrY) / det;
+        if (!Number.isFinite(stepX) || !Number.isFinite(stepY)) break;
+
+        let accepted = false;
+        for (const factor of [1, 0.5, 0.25, 0.1]) {
+          const nextX = x + stepX * factor;
+          const nextY = y + stepY * factor;
+          const nextF = aResidual(nextX, nextY);
+          const nextG = bResidual(nextX, nextY);
+          if (
+            nextF === null || nextG === null
+            || !Number.isFinite(nextF) || !Number.isFinite(nextG)
+          ) {
+            continue;
+          }
+
+          const nextScore = nextF * nextF + nextG * nextG;
+          if (nextScore > score * 1.0005 && nextScore > bestScore * 1.0005) continue;
+
+          x = nextX;
+          y = nextY;
+          accepted = true;
+          break;
+        }
+
+        if (!accepted) break;
+      }
+
+      bestX = snapCoordinate(bestX, snapTol);
+      bestY = snapCoordinate(bestY, snapTol);
+      return { x: bestX, y: bestY };
+    };
+
+    const pointToSegment = (
+      px: number,
+      py: number,
+      seg: LineRecord,
+    ): { x: number; y: number; distSq: number } => {
+      const dx = seg.x2 - seg.x1;
+      const dy = seg.y2 - seg.y1;
+      const lenSq = dx * dx + dy * dy;
+
+      if (lenSq < 1e-12) {
+        const distSq = (px - seg.x1) * (px - seg.x1) + (py - seg.y1) * (py - seg.y1);
+        return { x: seg.x1, y: seg.y1, distSq };
+      }
+
+      const t = Math.max(0, Math.min(1, ((px - seg.x1) * dx + (py - seg.y1) * dy) / lenSq));
+      const x = seg.x1 + dx * t;
+      const y = seg.y1 + dy * t;
+      const distSq = (px - x) * (px - x) + (py - y) * (py - y);
+      return { x, y, distSq };
+    };
+
+    const intersectSegments = (a: LineRecord, b: LineRecord): { x: number; y: number } | null => {
+      if (
+        a.maxX < b.minX - proximityTol || b.maxX < a.minX - proximityTol
+        || a.maxY < b.minY - proximityTol || b.maxY < a.minY - proximityTol
+      ) {
+        return null;
+      }
+
+      const rX = a.x2 - a.x1;
+      const rY = a.y2 - a.y1;
+      const sX = b.x2 - b.x1;
+      const sY = b.y2 - b.y1;
+      const denom = rX * sY - rY * sX;
+      const qpx = b.x1 - a.x1;
+      const qpy = b.y1 - a.y1;
+
+      if (Math.abs(denom) > 1e-12) {
+        const t = (qpx * sY - qpy * sX) / denom;
+        const u = (qpx * rY - qpy * rX) / denom;
+        const paramTol = 0.015;
+        if (
+          t >= -paramTol && t <= 1 + paramTol
+          && u >= -paramTol && u <= 1 + paramTol
+        ) {
+          return {
+            x: a.x1 + t * rX,
+            y: a.y1 + t * rY,
+          };
+        }
+      }
+
+      let best: { x: number; y: number; distSq: number } | null = null;
+      const candidatesToCheck = [
+        pointToSegment(a.x1, a.y1, b),
+        pointToSegment(a.x2, a.y2, b),
+        pointToSegment(b.x1, b.y1, a),
+        pointToSegment(b.x2, b.y2, a),
+      ];
+
+      for (const candidate of candidatesToCheck) {
+        if (candidate.distSq > tolSq) continue;
+        if (!best || candidate.distSq < best.distSq) best = candidate;
+      }
+
+      return best ? { x: best.x, y: best.y } : null;
+    };
+
+    let recordId = 0;
+    for (const [curveId, entry] of candidates) {
+      for (const segment of entry.segments) {
+        if (
+          segment.maxX < xMin - xBuffer || segment.minX > xMax + xBuffer
+          || segment.maxY < yMin - yBuffer || segment.minY > yMax + yBuffer
+        ) {
+          continue;
+        }
+
+        const data = segment.data;
+        for (let i = 0; i <= data.length - 4; i += 2) {
+          const x1 = data[i];
+          const y1 = data[i + 1];
+          const x2 = data[i + 2];
+          const y2 = data[i + 3];
+          if (
+            !Number.isFinite(x1) || !Number.isFinite(y1)
+            || !Number.isFinite(x2) || !Number.isFinite(y2)
+          ) {
+            continue;
+          }
+
+          const minSegX = Math.min(x1, x2);
+          const maxSegX = Math.max(x1, x2);
+          const minSegY = Math.min(y1, y2);
+          const maxSegY = Math.max(y1, y2);
+          if (
+            maxSegX < xMin - xBuffer || minSegX > xMax + xBuffer
+            || maxSegY < yMin - yBuffer || minSegY > yMax + yBuffer
+          ) {
+            continue;
+          }
+
+          const record: LineRecord = {
+            id: recordId++,
+            curveId,
+            x1,
+            y1,
+            x2,
+            y2,
+            minX: minSegX,
+            maxX: maxSegX,
+            minY: minSegY,
+            maxY: maxSegY,
+          };
+          lineRecords.push(record);
+
+          const colStart = Math.floor((minSegX - xBase) / cellSize);
+          const colEnd = Math.floor((maxSegX - xBase) / cellSize);
+          const rowStart = Math.floor((minSegY - yBase) / cellSize);
+          const rowEnd = Math.floor((maxSegY - yBase) / cellSize);
+          for (let col = colStart; col <= colEnd; col++) {
+            for (let row = rowStart; row <= rowEnd; row++) {
+              const key = `${col}:${row}`;
+              const bucket = buckets.get(key);
+              if (bucket) bucket.push(record.id);
+              else buckets.set(key, [record.id]);
+            }
+          }
+        }
+      }
+    }
+
+    outer:
+    for (const bucket of buckets.values()) {
+      if (bucket.length < 2) continue;
+      for (let i = 0; i < bucket.length; i++) {
+        const a = lineRecords[bucket[i]];
+        for (let j = i + 1; j < bucket.length; j++) {
+          const b = lineRecords[bucket[j]];
+          if (!a || !b || a.curveId === b.curveId) continue;
+
+          const pairKey = a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`;
+          if (comparedPairs.has(pairKey)) continue;
+          comparedPairs.add(pairKey);
+
+          const hit = intersectSegments(a, b);
+          if (!hit) continue;
+
+          recordCandidate(hit.x, hit.y, a.curveId, b.curveId);
+          if (pairCandidates.size >= maxPoints * 8) break outer;
+        }
+      }
+    }
+
+    for (const { ids, points } of pairCandidates.values()) {
+      const clusters = clusterPairPoints(points);
+      for (const cluster of clusters) {
+        const refined = refineIntersection(ids[0], ids[1], cluster.x, cluster.y);
+        const snapped = snapIntersectionPoint(ids, refined.x, refined.y);
+        addFinalPoint(snapped.x, snapped.y, ids);
+      }
+    }
+
+    const mergedClusters: Array<CurveIntersection & { hitCount: number }> = [];
+    for (const point of finalClusters) {
+      const snapped = snapIntersectionPoint(point.ids, point.x, point.y);
+
+      let bestCluster: (CurveIntersection & { hitCount: number }) | null = null;
+      let bestDistSq = Number.POSITIVE_INFINITY;
+      for (const cluster of mergedClusters) {
+        const dxPx = (cluster.x - snapped.x) * scale;
+        const dyPx = (cluster.y - snapped.y) * scale;
+        const distSq = dxPx * dxPx + dyPx * dyPx;
+        const sharesCurve = cluster.ids.some((id) => point.ids.includes(id));
+        const allowedDistSq = sharesCurve ? sharedMergeRadiusPxSq : mergeRadiusPxSq;
+        if (distSq > allowedDistSq || distSq >= bestDistSq) continue;
+        bestCluster = cluster;
+        bestDistSq = distSq;
+      }
+
+      if (!bestCluster) {
+        mergedClusters.push({
+          x: snapped.x,
+          y: snapped.y,
+          ids: [...point.ids].sort(),
+          hitCount: point.hitCount,
+        });
+        continue;
+      }
+
+      const combinedCount = bestCluster.hitCount + point.hitCount;
+      bestCluster.x = (bestCluster.x * bestCluster.hitCount + snapped.x * point.hitCount) / combinedCount;
+      bestCluster.y = (bestCluster.y * bestCluster.hitCount + snapped.y * point.hitCount) / combinedCount;
+      bestCluster.hitCount = combinedCount;
+      bestCluster.ids = [...new Set([...bestCluster.ids, ...point.ids])].sort();
+    }
+
+    return mergedClusters
+      .filter((point) => (
+        point.x >= xMin - xTol
+        && point.x <= xMax + xTol
+        && point.y >= yMin - yTol
+        && point.y <= yMax + yTol
+      ))
+      .slice(0, maxPoints)
+      .map(({ hitCount: _hitCount, ...point }) => point);
+  }
+
   /**
    * getCurveRightmostPoint
    * Scans from xRight inward (3 CSS pixels per step) and returns the
@@ -988,10 +1660,12 @@ export class NovaRenderer {
 
   destroy(): void {
     const { gl } = this;
-    // Terminate worker
-    this.worker?.terminate();
-    this.worker = null;
+    // Terminate workers
+    for (const worker of this.workers) worker.terminate();
+    this.workers = [];
+    this.workerLoads = [];
     this.workerCallbacks.clear();
+    this.jobWorkerIndex.clear();
     // Free all curve buffers
     for (const id of [...this.curves.keys()]) {
       this.freeCurveBuffers(id);
@@ -1022,15 +1696,24 @@ export class NovaRenderer {
     evaluators: CurveEvaluator[],
     xMin: number, xMax: number,
     yMin: number, yMax: number,
+    scale: number,
+    quality: ResampleQuality,
   ): CurveSegment[] {
     const { gl, program } = this;
     const segments: CurveSegment[] = [];
+    const profile = EXPLICIT_SAMPLING[quality];
 
     for (const ev of evaluators) {
-      const arrays = sampleCurve(ev.fn, xMin, xMax, yMin, yMax);
+      const arrays = sampleCurve(ev.fn, xMin, xMax, yMin, yMax, scale, profile);
       for (const data of arrays) {
         const { vao, buffer } = createVAO(gl, program, data, gl.STATIC_DRAW);
-        segments.push({ vao, buffer, count: data.length / 2 });
+        segments.push({
+          vao,
+          buffer,
+          count: data.length / 2,
+          data,
+          ...getFloatArrayBounds(data),
+        });
       }
     }
 
@@ -1056,7 +1739,13 @@ export class NovaRenderer {
       if (data.length < 4) return;
       const { vao, buffer } = createVAO(gl, program, data, gl.STATIC_DRAW);
       // Positive count — rendered with gl.LINE_STRIP (same as analytical curves)
-      segments.push({ vao, buffer, count: data.length / 2 });
+      segments.push({
+        vao,
+        buffer,
+        count: data.length / 2,
+        data,
+        ...getFloatArrayBounds(data),
+      });
     };
 
     // Split on NaN pairs
@@ -1082,18 +1771,88 @@ export class NovaRenderer {
     vp:    Viewport,
     xMin:  number, xMax:  number,
     yMin:  number, yMax:  number,
+    quality: ResampleQuality,
   ): void {
-    const margin = (xMax - xMin) * SAMPLE_MARGIN;
+    const profile = EXPLICIT_SAMPLING[quality];
+    const margin = (xMax - xMin) * profile.marginMultiplier;
     const sxMin  = xMin - margin;
     const sxMax  = xMax + margin;
 
     // Free old segment buffers
     this.freeSegments(entry.segments);
 
-    entry.segments          = this.buildCurveSegments(entry.evaluators, sxMin, sxMax, yMin, yMax);
+    entry.segments          = this.buildCurveSegments(entry.evaluators, sxMin, sxMax, yMin, yMax, vp.scale, quality);
+    entry.sampleQuality     = quality;
     entry.lastSampledScale  = vp.scale;
     entry.lastSampledXMin   = sxMin;
     entry.lastSampledXMax   = sxMax;
+  }
+
+  private pickWorkerIndex(): number {
+    if (!this.workers.length) return -1;
+
+    let bestIndex = 0;
+    let bestLoad = this.workerLoads[0] ?? 0;
+    for (let i = 1; i < this.workers.length; i++) {
+      const load = this.workerLoads[i] ?? 0;
+      if (load < bestLoad) {
+        bestLoad = load;
+        bestIndex = i;
+      }
+    }
+    return bestIndex;
+  }
+
+  private requestImplicitTrace(
+    id: string,
+    entry: CurveEntry,
+    vp: Viewport,
+    xMin: number, xMax: number,
+    yMin: number, yMax: number,
+    quality: ResampleQuality,
+    onReady?: () => void,
+  ): void {
+    const workerIndex = this.pickWorkerIndex();
+    if (workerIndex < 0) return;
+    const worker = this.workers[workerIndex];
+
+    const profile = getImplicitTraceProfile(quality, vp);
+    const xMargin = (xMax - xMin) * profile.xMarginMultiplier;
+    const yMargin = (yMax - yMin) * profile.yMarginMultiplier;
+    const sxMin = xMin - xMargin;
+    const sxMax = xMax + xMargin;
+    const syMin = yMin - yMargin;
+    const syMax = yMax + yMargin;
+    const jobId = `${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    entry.pendingJobId = jobId;
+    this.jobWorkerIndex.set(jobId, workerIndex);
+    this.workerLoads[workerIndex] = (this.workerLoads[workerIndex] ?? 0) + 1;
+    this.workerCallbacks.set(jobId, (segsFlat: Float32Array) => {
+      const liveEntry = this.curves.get(id);
+      if (!liveEntry || liveEntry.pendingJobId !== jobId) return;
+
+      this.freeSegments(liveEntry.segments);
+      liveEntry.segments = this.uploadImplicitSegments(segsFlat);
+      liveEntry.sampleQuality = quality;
+      liveEntry.lastSampledScale = vp.scale;
+      liveEntry.lastSampledXMin = sxMin;
+      liveEntry.lastSampledXMax = sxMax;
+      liveEntry.pendingJobId = undefined;
+
+      onReady?.();
+    });
+
+    worker.postMessage({
+      id: jobId,
+      raw: entry.raw,
+      xMin: sxMin,
+      xMax: sxMax,
+      yMin: syMin,
+      yMax: syMax,
+      coarseGrid: profile.coarseGrid,
+      maxDepth: profile.maxDepth,
+    });
   }
 
   /** Rebuild the three grid VBOs from current viewport. */

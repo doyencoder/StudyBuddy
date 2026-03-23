@@ -35,8 +35,8 @@ import {
   NovaRenderer,
   type Viewport,
   type EquationDescriptor,
+  type CurveIntersection,
   buildTickLabels,
-  type TickLabel,
 } from './renderer/NovaRenderer';
 import type { Equation } from './EquationsPanel';
 
@@ -59,6 +59,26 @@ interface GraphCanvasProps {
   onToolClick: (tool: 'tangent' | 'intersect' | 'area') => void;
 }
 
+type HoveredPoint = {
+  id: string;
+  mathX: number;
+  mathY: number;
+  screenX: number;
+  screenY: number;
+};
+
+const INTERSECTION_DOT_COLOR = 'hsl(var(--muted-foreground))';
+
+function formatCoordinate(value: number): string {
+  const snapped = Math.abs(value) < 0.05 ? 0 : value;
+  const rounded = Math.round(snapped * 10) / 10;
+  return (Object.is(rounded, -0) ? 0 : rounded).toFixed(1);
+}
+
+function getIntersectionKey(point: CurveIntersection, index: number): string {
+  return `${point.ids.join('|')}:${Math.round(point.x * 1e5)}:${Math.round(point.y * 1e5)}:${index}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GraphCanvas
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,19 +90,24 @@ export function GraphCanvas({
   const canvasRef    = React.useRef<HTMLCanvasElement>(null);
   const rendererRef  = React.useRef<NovaRenderer | null>(null);
   const rafRef       = React.useRef<number>(0);
+  const panFrameRef  = React.useRef<number>(0);
+  const pendingPanRef = React.useRef<{ x: number; y: number } | null>(null);
+  const interactionTimerRef = React.useRef<number>(0);
+  const intersectionTimerRef = React.useRef<number>(0);
+  const resampleTimerRef = React.useRef<number>(0);
+  const isInteractingRef = React.useRef(false);
 
   // ── UI State ──────────────────────────────────────────────────────────────
   const [cssSize,     setCssSize]     = React.useState({ w: 800, h: 600 });
   const [panOffset,   setPanOffset]   = React.useState({ x: 0, y: 0 });
   const [zoomIdx,     setZoomIdx]     = React.useState(DEFAULT_ZOOM_IDX);
-  const [tickLabels,  setTickLabels]  = React.useState<TickLabel[]>([]);
   const [gridDensity, setGridDensity] = React.useState(1.5);
   const [webGLFailed, setWebGLFailed] = React.useState(false);
   const [isDragging,  setIsDragging]  = React.useState(false);
   const [mousePos,    setMousePos]    = React.useState<{ x: number; y: number } | null>(null);
-  const [hoveredCurve, setHoveredCurve] = React.useState<{
-    id: string; mathX: number; mathY: number; screenX: number; screenY: number;
-  } | null>(null);
+  const [hoveredCurve, setHoveredCurve] = React.useState<HoveredPoint | null>(null);
+  const [intersections, setIntersections] = React.useState<CurveIntersection[]>([]);
+  const [hoveredIntersectionKey, setHoveredIntersectionKey] = React.useState<string | null>(null);
 
   // ── Refs that mirror state — ALWAYS current, safe in rAF closures ─────────
   // These are the single source of truth for scheduleRender and initAfterLayout.
@@ -92,6 +117,7 @@ export function GraphCanvas({
   const cssSizeRef      = React.useRef(cssSize);
   const gridDensityRef  = React.useRef(gridDensity);
   const hoveredIdRef    = React.useRef<string | undefined>(undefined);
+  const hoveredCurveRef = React.useRef<HoveredPoint | null>(null);
 
   // Sync refs with state every render (synchronous, before any effects)
   equationsRef.current   = equations;
@@ -99,8 +125,10 @@ export function GraphCanvas({
   zoomIdxRef.current     = zoomIdx;
   cssSizeRef.current     = cssSize;
   gridDensityRef.current = gridDensity;
+  hoveredCurveRef.current = hoveredCurve;
 
   const dragStart         = React.useRef<{ mx: number; my: number; px: number; py: number } | null>(null);
+  const didDragRef        = React.useRef(false);
   const lastPinchDist     = React.useRef<number | null>(null);
   const lastResampleScale = React.useRef(ZOOM_LEVELS[DEFAULT_ZOOM_IDX]);
   const prevEqIdsRef      = React.useRef(new Set<string>());
@@ -114,6 +142,11 @@ export function GraphCanvas({
     originX, originY, scale, width: cssSize.w, height: cssSize.h,
   }), [originX, originY, scale, cssSize]);
 
+  const tickLabels = React.useMemo(
+    () => buildTickLabels(viewport, gridDensity),
+    [gridDensity, viewport],
+  );
+
   // ── scheduleRender — reads ONLY refs, zero stale closure risk ─────────────
   const scheduleRender = React.useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -126,6 +159,17 @@ export function GraphCanvas({
       renderer.render(visible, hoveredIdRef.current);
     });
   }, []); // NO deps — intentional, uses refs only
+
+  const flushPanOffset = React.useCallback(() => {
+    if (panFrameRef.current) return;
+    panFrameRef.current = requestAnimationFrame(() => {
+      panFrameRef.current = 0;
+      const next = pendingPanRef.current;
+      if (!next) return;
+      pendingPanRef.current = null;
+      setPanOffset(next);
+    });
+  }, []);
 
   // ── populateRenderer — push all current state into a fresh renderer ───────
   // Called immediately after init so the canvas is never blank on navigation.
@@ -154,9 +198,6 @@ export function GraphCanvas({
         fromChat: !!eq.fromChat,
       } satisfies EquationDescriptor, () => scheduleRender());
     }
-
-    setTickLabels(buildTickLabels(vp, gridDensityRef.current));
-
     // Render immediately — don't wait for effects
     const visible = new Set(
       equationsRef.current.filter(e => e.visible).map(e => e.id)
@@ -165,6 +206,97 @@ export function GraphCanvas({
   }, []); // NO deps — uses refs only
 
   // ── WebGL init ────────────────────────────────────────────────────────────
+  const refreshIntersections = React.useCallback(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) {
+      setIntersections([]);
+      return;
+    }
+
+    const visible = new Set(
+      equationsRef.current.filter((eq) => eq.visible).map((eq) => eq.id),
+    );
+    if (visible.size < 2) {
+      setIntersections([]);
+      return;
+    }
+
+    setIntersections(renderer.getCurveIntersections(visible));
+  }, []);
+
+  const scheduleIntersectionRefresh = React.useCallback((delay: number = 140) => {
+    window.clearTimeout(intersectionTimerRef.current);
+    intersectionTimerRef.current = window.setTimeout(() => {
+      intersectionTimerRef.current = 0;
+      if (isInteractingRef.current) {
+        scheduleIntersectionRefresh(delay);
+        return;
+      }
+      refreshIntersections();
+    }, delay);
+  }, [refreshIntersections]);
+
+  const scheduleCurveRefresh = React.useCallback((fullDelay: number = 180) => {
+    window.clearTimeout(resampleTimerRef.current);
+
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    renderer.checkResample({
+      quality: 'draft',
+      onReady: scheduleRender,
+    });
+    scheduleRender();
+
+    resampleTimerRef.current = window.setTimeout(() => {
+      resampleTimerRef.current = 0;
+      if (isInteractingRef.current) return;
+
+      const liveRenderer = rendererRef.current;
+      if (!liveRenderer) return;
+
+      liveRenderer.checkResample({
+        quality: 'full',
+        onReady: () => {
+          scheduleRender();
+          scheduleIntersectionRefresh(120);
+        },
+      });
+      scheduleRender();
+    }, fullDelay);
+  }, [scheduleIntersectionRefresh, scheduleRender]);
+
+  const endInteraction = React.useCallback(() => {
+    if (!isInteractingRef.current) return;
+    isInteractingRef.current = false;
+
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    renderer.setInteractiveMode(false);
+    lastResampleScale.current = ZOOM_LEVELS[zoomIdxRef.current];
+    scheduleCurveRefresh(150);
+  }, [scheduleCurveRefresh]);
+
+  const scheduleInteractionSettle = React.useCallback((delay: number = 120) => {
+    window.clearTimeout(interactionTimerRef.current);
+    interactionTimerRef.current = window.setTimeout(() => {
+      interactionTimerRef.current = 0;
+      endInteraction();
+    }, delay);
+  }, [endInteraction]);
+
+  const beginInteraction = React.useCallback(() => {
+    window.clearTimeout(resampleTimerRef.current);
+    resampleTimerRef.current = 0;
+    if (!isInteractingRef.current) {
+      isInteractingRef.current = true;
+      rendererRef.current?.setInteractiveMode(true);
+      scheduleRender();
+    }
+    scheduleInteractionSettle(120);
+  }, [scheduleInteractionSettle, scheduleRender]);
+
   // requestAnimationFrame defers until layout is complete, so
   // getBoundingClientRect() always returns real dimensions even on
   // navigate-back, fresh mount, or slow route transitions.
@@ -212,6 +344,11 @@ export function GraphCanvas({
 
     return () => {
       cancelAnimationFrame(rafId);
+      cancelAnimationFrame(rafRef.current);
+      cancelAnimationFrame(panFrameRef.current);
+      window.clearTimeout(interactionTimerRef.current);
+      window.clearTimeout(intersectionTimerRef.current);
+      window.clearTimeout(resampleTimerRef.current);
       rendererRef.current?.destroy();
       rendererRef.current = null;
     };
@@ -253,12 +390,17 @@ export function GraphCanvas({
         color:    eq.color,
         visible:  eq.visible,
         fromChat: !!eq.fromChat,
-      } satisfies EquationDescriptor, () => scheduleRender());
+      } satisfies EquationDescriptor, () => {
+        scheduleRender();
+        scheduleIntersectionRefresh(120);
+      });
     }
 
     prevEqIdsRef.current = currentIds;
     scheduleRender();
-  }, [equations, scheduleRender]);
+    setHoveredIntersectionKey(null);
+    scheduleIntersectionRefresh(60);
+  }, [equations, scheduleIntersectionRefresh, scheduleRender]);
 
   // ── Sync viewport → renderer ──────────────────────────────────────────────
   React.useEffect(() => {
@@ -266,32 +408,41 @@ export function GraphCanvas({
     if (!renderer) return;
 
     renderer.setViewport(viewport);
-
-    // Always call checkResample — it checks internally whether pan/zoom
-    // has moved the view outside the sampled range. With SAMPLE_MARGIN=2.0
-    // this only does real work after panning ~200% of the canvas width.
-    renderer.checkResample();
-    lastResampleScale.current = scale;
-
-    setTickLabels(buildTickLabels(viewport, gridDensityRef.current));
     scheduleRender();
-  }, [viewport, scheduleRender]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    if (!isInteractingRef.current) {
+      lastResampleScale.current = scale;
+      setHoveredIntersectionKey(null);
+      scheduleCurveRefresh(180);
+    }
+  }, [viewport, scale, scheduleCurveRefresh, scheduleRender]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync grid density → renderer ──────────────────────────────────────────
   React.useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
     renderer.setGridDensity(gridDensity);
-    setTickLabels(buildTickLabels(viewport, gridDensity));
     scheduleRender();
   }, [gridDensity]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  React.useEffect(() => {
+    setHoveredCurve((prev) => {
+      if (!prev) return prev;
+      const screenX = originX + prev.mathX * scale;
+      const screenY = originY - prev.mathY * scale;
+      if (Math.abs(prev.screenX - screenX) < 0.5 && Math.abs(prev.screenY - screenY) < 0.5) {
+        return prev;
+      }
+      return { ...prev, screenX, screenY };
+    });
+  }, [originX, originY, scale]);
 
   // ── Re-render on hover change ─────────────────────────────────────────────
   // hoveredIdRef is updated BEFORE setHoveredCurve is called, so by the time
   // this effect fires and calls scheduleRender, the ref holds the correct id.
   React.useEffect(() => {
     scheduleRender();
-  }, [hoveredCurve, scheduleRender]);
+  }, [hoveredCurve?.id, scheduleRender]);
 
   // ── Block browser pinch/trackpad zoom at document level ───────────────────
   React.useEffect(() => {
@@ -308,15 +459,71 @@ export function GraphCanvas({
   }, []);
 
   // ── Coordinate helper ─────────────────────────────────────────────────────
-  const toMath = (sx: number, sy: number) => ({
-    mathX: (sx - originX) / scale,
-    mathY: (originY - sy) / scale,
-  });
+  const commitHover = React.useCallback((next: HoveredPoint | null) => {
+    const prev = hoveredCurveRef.current;
+    if (next === null) {
+      if (prev !== null || hoveredIdRef.current !== undefined) {
+        hoveredIdRef.current = undefined;
+        hoveredCurveRef.current = null;
+        setHoveredCurve(null);
+      }
+      return;
+    }
+
+    const unchanged = prev
+      && prev.id === next.id
+      && Math.abs(prev.screenX - next.screenX) < 0.5
+      && Math.abs(prev.screenY - next.screenY) < 0.5;
+    if (unchanged) return;
+
+    hoveredIdRef.current = next.id;
+    hoveredCurveRef.current = next;
+    setHoveredCurve(next);
+  }, []);
+
+  const probeHoverAt = React.useCallback((sx: number, sy: number) => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    const sz = cssSizeRef.current;
+    const po = panOffsetRef.current;
+    const sc = ZOOM_LEVELS[zoomIdxRef.current];
+    const ox = sz.w / 2 + po.x;
+    const oy = sz.h / 2 + po.y;
+    const mathX = (sx - ox) / sc;
+    const mathY = (oy - sy) / sc;
+    const threshold = 10;
+    let bestPoint: HoveredPoint | null = null;
+    let bestPixelDist = Number.POSITIVE_INFINITY;
+
+    for (const eq of equationsRef.current) {
+      if (!eq.visible) continue;
+      const y = renderer.getCurveYAtX(eq.id, mathX, mathY, threshold, sc);
+      if (y === null) continue;
+
+      const pixelDist = Math.abs(mathY - y) * sc;
+      if (pixelDist >= bestPixelDist) continue;
+
+      bestPixelDist = pixelDist;
+      bestPoint = {
+        id: eq.id,
+        mathX,
+        mathY: y,
+        screenX: ox + mathX * sc,
+        screenY: oy - y * sc,
+      };
+    }
+
+    commitHover(bestPoint);
+  }, [commitHover]);
 
   // ── Mouse events ──────────────────────────────────────────────────────────
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
+    didDragRef.current = false;
     dragStart.current = { mx: e.clientX, my: e.clientY, px: panOffset.x, py: panOffset.y };
+    setMousePos(null);
+    setHoveredIntersectionKey(null);
     setIsDragging(true);
   };
 
@@ -324,52 +531,48 @@ export function GraphCanvas({
     const rect = e.currentTarget.getBoundingClientRect();
     const sx   = e.clientX - rect.left;
     const sy   = e.clientY - rect.top;
-    setMousePos({ x: sx, y: sy });
 
     if (isDragging && dragStart.current) {
-      setPanOffset({
+      if (
+        Math.abs(e.clientX - dragStart.current.mx) > 3
+        || Math.abs(e.clientY - dragStart.current.my) > 3
+      ) {
+        didDragRef.current = true;
+      }
+      beginInteraction();
+      pendingPanRef.current = {
         x: dragStart.current.px + e.clientX - dragStart.current.mx,
         y: dragStart.current.py + e.clientY - dragStart.current.my,
-      });
+      };
+      flushPanOffset();
       return;
     }
 
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-
-    const { mathX, mathY } = toMath(sx, sy);
-    const THRESHOLD = 10;
-    let found = false;
-
-    for (const eq of equations) {
-      if (!eq.visible) continue;
-      const y = renderer.getCurveYAtX(eq.id, mathX, mathY, THRESHOLD, scale);
-      if (y !== null) {
-        // Update ref FIRST, then state — so the effect fires with correct ref
-        hoveredIdRef.current = eq.id;
-        setHoveredCurve({
-          id:      eq.id,
-          mathX,
-          mathY:   y,
-          screenX: originX + mathX * scale,
-          screenY: originY - y * scale,
-        });
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      hoveredIdRef.current = undefined;
-      setHoveredCurve(null);
-    }
+    setMousePos({ x: sx, y: sy });
   };
 
-  const handleMouseUp = () => { setIsDragging(false); dragStart.current = null; };
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    dragStart.current = null;
+    scheduleInteractionSettle(70);
+  };
   const handleMouseLeave = () => {
     handleMouseUp();
     setMousePos(null);
-    hoveredIdRef.current = undefined;
-    setHoveredCurve(null);
+    setHoveredIntersectionKey(null);
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (didDragRef.current) {
+      didDragRef.current = false;
+      return;
+    }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    setHoveredIntersectionKey(null);
+    probeHoverAt(sx, sy);
   };
 
   // ── Zoom towards a point (keeps math under cursor fixed) ──────────────────
@@ -399,11 +602,13 @@ export function GraphCanvas({
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
+    beginInteraction();
     zoomTowards(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1 : -1);
   };
 
   // ── Touch events ──────────────────────────────────────────────────────────
   const handleTouchStartReact = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    setHoveredIntersectionKey(null);
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -426,13 +631,16 @@ export function GraphCanvas({
       const rect  = canvasRef.current!.getBoundingClientRect();
       const cx    = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
       const cy    = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+      beginInteraction();
       if (ratio > 1.06)  { zoomTowards(cx, cy,  1); lastPinchDist.current = dist; }
       else if (ratio < 0.94) { zoomTowards(cx, cy, -1); lastPinchDist.current = dist; }
     } else if (e.touches.length === 1 && isDragging && dragStart.current) {
-      setPanOffset({
+      beginInteraction();
+      pendingPanRef.current = {
         x: dragStart.current.px + e.touches[0].clientX - dragStart.current.mx,
         y: dragStart.current.py + e.touches[0].clientY - dragStart.current.my,
-      });
+      };
+      flushPanOffset();
     }
   };
 
@@ -440,6 +648,7 @@ export function GraphCanvas({
     lastPinchDist.current = null;
     setIsDragging(false);
     dragStart.current = null;
+    scheduleInteractionSettle(90);
   };
 
   const resetView = () => { setPanOffset({ x: 0, y: 0 }); setZoomIdx(DEFAULT_ZOOM_IDX); };
@@ -450,6 +659,41 @@ export function GraphCanvas({
     const eq = equations.find(e => e.id === hoveredCurve.id);
     return eq ? `hsl(var(--${eq.color}))` : 'hsl(var(--primary))';
   }, [hoveredCurve, equations]);
+
+  const visibleIntersections = React.useMemo(() => (
+    intersections
+      .map((point, index) => {
+        const screenX = originX + point.x * scale;
+        const screenY = originY - point.y * scale;
+        return {
+          key: getIntersectionKey(point, index),
+          point,
+          screenX,
+          screenY,
+        };
+      })
+      .filter(({ screenX, screenY }) => (
+        screenX >= -12
+        && screenX <= cssSize.w + 12
+        && screenY >= -12
+        && screenY <= cssSize.h + 12
+      ))
+  ), [cssSize.h, cssSize.w, intersections, originX, originY, scale]);
+
+  const hoveredIntersection = React.useMemo(
+    () => visibleIntersections.find((item) => item.key === hoveredIntersectionKey) ?? null,
+    [hoveredIntersectionKey, visibleIntersections],
+  );
+
+  React.useEffect(() => {
+    if (!hoveredIntersectionKey) return;
+    if (visibleIntersections.some((item) => item.key === hoveredIntersectionKey)) return;
+    setHoveredIntersectionKey(null);
+  }, [hoveredIntersectionKey, visibleIntersections]);
+
+  const hoveredCurveLabel = hoveredCurve
+    ? `(${formatCoordinate(hoveredCurve.mathX)}, ${formatCoordinate(hoveredCurve.mathY)})`
+    : null;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -475,13 +719,14 @@ export function GraphCanvas({
             inset:       0,
             width:       '100%',
             height:      '100%',
-            cursor:      isDragging ? 'grabbing' : 'grab',
+            cursor:      'default',
             touchAction: 'none',
           }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
+          onClick={handleCanvasClick}
           onWheel={handleWheel}
           onTouchStart={handleTouchStartReact}
           onTouchMove={handleTouchMoveReact}
@@ -506,7 +751,63 @@ export function GraphCanvas({
           <span style={{ position: 'absolute', left: cssSize.w - 14, top: Math.max(12, Math.min(cssSize.h - 4, originY + 12)), fontSize: '10px', color: 'hsl(var(--muted-foreground))', fontFamily: 'var(--font-mono)' }}>x</span>
         </div>
 
-        {/* Hover dot + tooltip */}
+        {visibleIntersections.map(({ key, point, screenX, screenY }) => {
+          const isHovered = hoveredIntersectionKey === key;
+          const size = isHovered ? 9 : 7;
+          return (
+            <div
+              key={key}
+              onMouseEnter={() => setHoveredIntersectionKey(key)}
+              onMouseLeave={() => setHoveredIntersectionKey((current) => (current === key ? null : current))}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute',
+                left: screenX - size / 2,
+                top: screenY - size / 2,
+                width: size,
+                height: size,
+                borderRadius: '50%',
+                background: INTERSECTION_DOT_COLOR,
+                boxShadow: '0 0 0 2px hsl(var(--background))',
+                pointerEvents: 'auto',
+                zIndex: 9,
+                cursor: 'default',
+              }}
+              aria-label={`Intersection at ${formatCoordinate(point.x)}, ${formatCoordinate(point.y)}`}
+            />
+          );
+        })}
+
+        {hoveredIntersection && (
+          <div
+            style={{
+              position: 'absolute',
+              left: Math.min(cssSize.w - 12, hoveredIntersection.screenX + 12),
+              top: Math.max(10, hoveredIntersection.screenY - 32),
+              transform: 'translateY(-100%)',
+              pointerEvents: 'none',
+              zIndex: 10,
+            }}
+          >
+            <div
+              style={{
+                padding: '4px 8px',
+                borderRadius: 999,
+                background: 'rgba(20, 24, 32, 0.92)',
+                border: '1px solid rgba(148, 163, 184, 0.35)',
+                color: 'hsl(var(--foreground))',
+                fontSize: 11,
+                lineHeight: 1.2,
+                fontFamily: 'var(--font-mono)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              ({formatCoordinate(hoveredIntersection.point.x)}, {formatCoordinate(hoveredIntersection.point.y)})
+            </div>
+          </div>
+        )}
+
         {hoveredCurve && hoveredEqColor && (
           <div style={{ position: 'absolute', pointerEvents: 'none', zIndex: 10 }}>
             <div style={{
@@ -514,17 +815,27 @@ export function GraphCanvas({
               width: 10, height: 10, borderRadius: '50%', background: hoveredEqColor,
               boxShadow: `0 0 0 2px hsl(var(--background))`,
             }} />
-            <div style={{
-              position: 'absolute',
-              left: hoveredCurve.screenX + (hoveredCurve.screenX > cssSize.w - 120 ? -110 : 14),
-              top: Math.max(8, hoveredCurve.screenY - 22),
-              background: 'hsl(var(--popover))', border: '0.5px solid hsl(var(--border))',
-              borderRadius: 6, padding: '4px 8px', fontSize: 10,
-              fontFamily: 'var(--font-mono)', color: 'hsl(var(--muted-foreground))',
-              lineHeight: 1.6, whiteSpace: 'nowrap',
-            }}>
-              x: {hoveredCurve.mathX.toFixed(3)}<br />y: {hoveredCurve.mathY.toFixed(3)}
-            </div>
+            {hoveredCurveLabel && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: Math.min(cssSize.w - 12, hoveredCurve.screenX + 12),
+                  top: Math.max(10, hoveredCurve.screenY - 34),
+                  transform: 'translateY(-100%)',
+                  padding: '4px 8px',
+                  borderRadius: 999,
+                  background: 'rgba(20, 24, 32, 0.92)',
+                  border: `1px solid ${hoveredEqColor}`,
+                  color: 'hsl(var(--foreground))',
+                  fontSize: 11,
+                  lineHeight: 1.2,
+                  fontFamily: 'var(--font-mono)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {hoveredCurveLabel}
+              </div>
+            )}
           </div>
         )}
 
