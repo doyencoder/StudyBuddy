@@ -2605,7 +2605,11 @@ const ChatPage = () => {
                   intentHint: parsed.intent_hint ?? undefined,
                   attachments: (parsed.attachments ?? []).map((a: any) => ({
                     name: a.name,
-                    blobUrl: a.blob_url,
+                    // Prefer blob_name (host-agnostic) → rebuild proxy URL with current API_BASE
+                    // Falls back to stored blob_url for old messages that predate blob_name storage
+                    blobUrl: a.blob_name
+                      ? `${API_BASE}/upload/view-file?blob_name=${encodeURIComponent(a.blob_name)}`
+                      : a.blob_url,
                     fileType: a.file_type as "image" | "pdf" | "document",
                   })),
                   timestamp: new Date(m.timestamp),
@@ -3531,10 +3535,8 @@ const ChatPage = () => {
           ? {
               attachments: sentFiles.map((f) => ({
                 name: f.name,
-                blob_url: f.blobUrl,                          // ← CHANGE: real SAS (for OCR)
-                proxy_url: f.blobName                         // ← ADD: permanent proxy (for display)
-                  ? `${API_BASE}/upload/view-file?blob_name=${encodeURIComponent(f.blobName)}`
-                  : f.blobUrl,
+                blob_url: f.blobUrl,      // real SAS — used by backend for OCR
+                blob_name: f.blobName ?? "", // permanent path — saved to Cosmos, host-agnostic
                 file_type: f.fileType ?? getFileType(f.name),
               })),
             }

@@ -43,10 +43,10 @@ async def ensure_settings_container():
 # ── User Settings ─────────────────────────────────────────────────────────────
 
 DEFAULT_SETTINGS = {
-    "profile": {"full_name": "", "display_name": ""},
+    "profile": {"full_name": "", "display_name": "", "email": ""},
     "notifications": {
         "goal_reminders": False,
-        "quiz_reminders": False,
+        "long_term_goals_reminder": False,
         "study_streak_alerts": False,
     },
     "ai_preferences": {
@@ -202,3 +202,44 @@ async def update_plan(user_id: str, plan_id: str) -> Dict[str, Any]:
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         await container.upsert_item(body=item)
         return item
+
+async def record_checkin(user_id: str, daily_goals_total: int, daily_goals_done: int) -> None:
+    """Record that a user is active today and their daily goal completion status."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(SETTINGS_CONTAINER)
+        try:
+            item = await container.read_item(item=user_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            item = {
+                "id": user_id,
+                "user_id": user_id,
+                **DEFAULT_SETTINGS,
+                "connectors": [c.copy() for c in DEFAULT_CONNECTORS],
+                "current_plan": "free",
+            }
+        item["last_active_date"] = today
+        item["daily_goals_total"] = daily_goals_total
+        item["daily_goals_done"] = daily_goals_done
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await container.upsert_item(body=item)
+
+
+async def get_all_users_for_notifications() -> list:
+    """Return all settings docs that have an email address set."""
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(SETTINGS_CONTAINER)
+        query = (
+            "SELECT * FROM c WHERE "
+            "IS_DEFINED(c.profile) AND "
+            "IS_DEFINED(c.profile.email) AND "
+            "c.profile.email != ''"
+        )
+        results = []
+        async for item in container.query_items(
+            query=query, enable_cross_partition_query=True
+        ):
+            results.append(item)
+        return results

@@ -76,4 +76,5 @@ websockets==15.0.1
 yarl==1.22.0
 PyMuPDF
 Pillow
-
+apscheduler==3.10.4
+pytz==2024.1

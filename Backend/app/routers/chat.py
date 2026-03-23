@@ -618,7 +618,7 @@ async def chat_message(request: ChatRequest):
             "text": request.message,
             "intent_hint": request.intent_hint,
             "attachments": [
-                {"name": a.name, "blob_url": a.proxy_url or a.blob_url, "file_type": a.file_type}
+                {"name": a.name, "blob_name": a.blob_name, "blob_url": a.blob_url, "file_type": a.file_type}
                 for a in request.attachments
             ],
         })
@@ -633,7 +633,7 @@ async def chat_message(request: ChatRequest):
             "__type": "user_with_attachments",
             "text": request.message,
             "attachments": [
-                {"name": a.name, "blob_url": a.proxy_url or a.blob_url, "file_type": a.file_type}
+                {"name": a.name, "blob_name": a.blob_name, "blob_url": a.blob_url, "file_type": a.file_type}
                 for a in request.attachments
             ],
         })

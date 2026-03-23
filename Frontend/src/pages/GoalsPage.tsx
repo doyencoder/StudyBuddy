@@ -37,17 +37,16 @@ function getTodayStr(): string {
 function loadDailyGoals(): DailyGoal[] {
   try {
     const raw = localStorage.getItem(DAILY_GOALS_KEY);
-    if (!raw) return getDefaultDailyGoals();
+    if (!raw) return [];
     const stored: StoredDailyGoals = JSON.parse(raw);
     if (stored.date !== getTodayStr()) {
-      // New day → reset all goals to uncompleted
-      const resetGoals = stored.goals.map((g) => ({ ...g, completed: false }));
-      saveDailyGoals(resetGoals);
-      return resetGoals;
+      // New day → clear all goals (fresh start)
+      saveDailyGoals([]);
+      return [];
     }
     return stored.goals;
   } catch {
-    return getDefaultDailyGoals();
+    return [];
   }
 }
 
@@ -56,14 +55,6 @@ function saveDailyGoals(goals: DailyGoal[]) {
   localStorage.setItem(DAILY_GOALS_KEY, JSON.stringify(data));
 }
 
-function getDefaultDailyGoals(): DailyGoal[] {
-  return [
-    { id: "1", text: "Complete 2 quizzes on Biology", completed: false },
-    { id: "2", text: "Review flashcards for Chemistry", completed: false },
-    { id: "3", text: "Read chapter 5 of Physics textbook", completed: false },
-    { id: "4", text: "Practice 10 Math problems", completed: false },
-  ];
-}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -334,9 +325,19 @@ const GoalsPage = () => {
   // Persist daily goals to localStorage whenever they change
   useEffect(() => {
     saveDailyGoals(dailyGoals);
+    // Tell the backend the user is active and their daily goal status
+    // (used by the 9 PM notification scheduler)
+    const total = dailyGoals.length;
+    const done  = dailyGoals.filter((g) => g.completed).length;
+    fetch(`${API_BASE}/notifications/checkin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: USER_ID, daily_goals_total: total, daily_goals_done: done }),
+    }).catch(() => {/* non-critical, ignore errors */});
   }, [dailyGoals]);
 
   // Midnight reset check — runs every minute
+  // At midnight: all previous day's goals are cleared (empty slate for the new day)
   useEffect(() => {
     const interval = setInterval(() => {
       const stored = localStorage.getItem(DAILY_GOALS_KEY);
@@ -344,9 +345,11 @@ const GoalsPage = () => {
         try {
           const data: StoredDailyGoals = JSON.parse(stored);
           if (data.date !== getTodayStr()) {
-            const reset = data.goals.map((g) => ({ ...g, completed: false }));
-            setDailyGoals(reset);
-            toast.info("Daily goals have been reset for today!");
+            // New day — wipe the list entirely so the user starts fresh
+            const empty: DailyGoal[] = [];
+            saveDailyGoals(empty);
+            setDailyGoals(empty);
+            toast.info("It's a new day! Your daily goals have been cleared. Add new ones for today 🌅");
           }
         } catch {
           /* ignore */

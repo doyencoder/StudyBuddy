@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
-  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon,
+  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -29,11 +29,12 @@ type SettingsTab = "general" | "account" | "billing" | "connectors";
 interface Profile {
   full_name: string;
   display_name: string;
+  email: string;
 }
 
 interface Notifications {
   goal_reminders: boolean;
-  quiz_reminders: boolean;
+  long_term_goals_reminder: boolean;
   study_streak_alerts: boolean;
 }
 
@@ -177,8 +178,8 @@ const SettingsPage = () => {
   }, []); // ← runs once on mount, never needs to re-register
 
   const [settings, setSettings] = useState<UserSettings>({
-    profile: { full_name: "", display_name: "" },
-    notifications: { goal_reminders: false, quiz_reminders: false, study_streak_alerts: false },
+    profile: { full_name: "", display_name: "", email: "" },
+    notifications: { goal_reminders: false, long_term_goals_reminder: false, study_streak_alerts: false },
     ai_preferences: { simplified_explanations: true, auto_generate_flashcards: false },
     appearance: { color_mode: "auto", chat_font: "default", voice: "buttery" },
   });
@@ -202,8 +203,8 @@ const SettingsPage = () => {
         const data = await res.json();
         const appearance = data.appearance || { color_mode: "auto", chat_font: "default", voice: "buttery" };
         setSettings({
-          profile: data.profile || { full_name: "", display_name: "" },
-          notifications: data.notifications || { goal_reminders: false, quiz_reminders: false, study_streak_alerts: false },
+          profile: data.profile || { full_name: "", display_name: "", email: "" },
+          notifications: data.notifications || { goal_reminders: false, long_term_goals_reminder: false, study_streak_alerts: false },
           ai_preferences: data.ai_preferences || { simplified_explanations: true, auto_generate_flashcards: false },
           appearance,
         });
@@ -261,14 +262,15 @@ const SettingsPage = () => {
   }, [fetchSettings, fetchAccount, fetchBilling, fetchConnectors]);
 
   // ── Save Settings ────────────────────────────────────────────────────────
-  // Debounced 600ms — batches rapid clicks into a single API call, no toast
+  // Shows "Saving…" immediately on any change, debounces the actual API call 800ms.
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const saveSettings = useCallback((updates: Partial<UserSettings>) => {
+    // Show indicator immediately — no 600ms lag before the dot appears
+    setSaving(true);
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
-      setSaving(true);
       try {
         await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
           method: "PUT",
@@ -280,13 +282,40 @@ const SettingsPage = () => {
       } finally {
         setSaving(false);
       }
-    }, 600);
+    }, 800);
   }, []);
 
   // ── Connector Toggle ─────────────────────────────────────────────────────
 
-  const handleConnectorToggle = async (_connectorId: string, _connected: boolean) => {
-    toast.info("Connector integrations coming soon!");
+  const handleConnectorToggle = async (connectorId: string, connected: boolean) => {
+    const action = connected ? "disconnect" : "connect";
+    // Optimistic update
+    setConnectors((prev) =>
+      prev.map((c) =>
+        c.id === connectorId
+          ? { ...c, connected: !connected, connected_at: !connected ? new Date().toISOString() : null }
+          : c
+      )
+    );
+    try {
+      const res = await fetch(`${API_BASE}/settings/connectors/toggle?user_id=${USER_ID}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connector_id: connectorId, action }),
+      });
+      if (!res.ok) throw new Error("Toggle failed");
+      const data = await res.json();
+      const label = data.connector?.name || connectorId;
+      toast.success(action === "connect" ? `${label} connected!` : `${label} disconnected.`);
+    } catch {
+      // Revert optimistic update
+      setConnectors((prev) =>
+        prev.map((c) =>
+          c.id === connectorId ? { ...c, connected, connected_at: connected ? new Date().toISOString() : null } : c
+        )
+      );
+      toast.error("Could not update connector. Please try again.");
+    }
   };
 
   // ── Plan Upgrade ─────────────────────────────────────────────────────────
@@ -580,6 +609,7 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
                   value={settings.profile.full_name}
                   onChange={(e) => updateProfile("full_name", e.target.value)}
                   onBlur={() => saveSettings({ profile: settings.profile })}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); saveSettings({ profile: settings.profile }); } }}
                   placeholder="Your name"
                   className="bg-background border-border"
                 />
@@ -593,10 +623,40 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
                 value={settings.profile.display_name}
                 onChange={(e) => updateProfile("display_name", e.target.value)}
                 onBlur={() => saveSettings({ profile: settings.profile })}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); saveSettings({ profile: settings.profile }); } }}
                 placeholder="Display name"
                 className="bg-background border-border"
               />
             </div>
+          </div>
+          {/* Email field — full width below */}
+          <div className="mt-4">
+            <Label className="text-sm text-muted-foreground mb-2 block">Email address</Label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  type="email"
+                  value={settings.profile.email ?? ""}
+                  onChange={(e) => updateProfile("email", e.target.value)}
+                  onBlur={() => saveSettings({ profile: settings.profile })}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); saveSettings({ profile: settings.profile }); } }}
+                  placeholder="you@example.com"
+                  className="bg-background border-border pl-9"
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-border shrink-0"
+                onClick={() => saveSettings({ profile: settings.profile })}
+              >
+                Save
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              Used for goal reminders, weekly updates, and streak alerts. Press Enter or click Save.
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -605,12 +665,27 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
       <Card className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-base text-foreground">Notifications</CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            Emails are sent to the address in your profile. Make sure it's set above.
+          </p>
         </CardHeader>
         <CardContent className="space-y-4">
           {([
-            { field: "goal_reminders" as const, label: "Goal reminders", desc: "Get notified about daily goals" },
-            { field: "quiz_reminders" as const, label: "Quiz reminders", desc: "Reminder to practice quizzes" },
-            { field: "study_streak_alerts" as const, label: "Study streak alerts", desc: "Don't break your streak!" },
+            {
+              field: "goal_reminders" as const,
+              label: "Daily goals reminder",
+              desc: "Email at 9 PM if daily goals aren't complete",
+            },
+            {
+              field: "long_term_goals_reminder" as const,
+              label: "Long-term goals reminder",
+              desc: "Weekly email with progress on your long-term goals",
+            },
+            {
+              field: "study_streak_alerts" as const,
+              label: "Study streak alerts",
+              desc: "Email at 9 PM if you haven't visited today",
+            },
           ]).map((item) => (
             <div key={item.field} className="flex items-center justify-between">
               <div>
@@ -619,7 +694,13 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
               </div>
               <Switch
                 checked={settings.notifications[item.field]}
-                onCheckedChange={(v) => updateNotification(item.field, v)}
+                onCheckedChange={(v) => {
+                  if (v && !settings.profile.email) {
+                    toast.error("Please add your email address in the Profile section first.");
+                    return;
+                  }
+                  updateNotification(item.field, v);
+                }}
                 className="data-[state=checked]:bg-primary"
               />
             </div>

@@ -72,9 +72,14 @@ async def _print_cors_info():
     except Exception as e:
         print(f"[startup] Sessions container init error (non-fatal): {e}")
 
+    # Start the notification scheduler (APScheduler — 9 PM goal reminders, weekly goals)
+    try:
+        from app.routers.notifications import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        print(f"[startup] Notification scheduler error (non-fatal): {e}")
+
     # Ensure Azure AI Search index exists before any request hits it.
-    # Without this, conversation_has_documents() crashes on a brand-new
-    # search service because it queries an index that doesn't exist yet.
     try:
         from app.services.search_service import create_index_if_not_exists
         create_index_if_not_exists()
@@ -95,6 +100,7 @@ from app.routers.goals import router as goals_router
 from app.routers.settings import router as settings_router
 from app.routers.sessions import router as sessions_router
 from app.routers.graph import router as graph_router
+from app.routers.notifications import router as notifications_router
 app.include_router(chat_router)
 app.include_router(quiz_router)
 app.include_router(diagrams_router)
@@ -103,6 +109,16 @@ app.include_router(goals_router)
 app.include_router(settings_router)
 app.include_router(sessions_router)
 app.include_router(graph_router)
+app.include_router(notifications_router)
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    try:
+        from app.routers.notifications import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
 
 
 @app.get("/health")

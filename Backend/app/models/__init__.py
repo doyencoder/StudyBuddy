@@ -19,6 +19,7 @@ class ChatAttachment(BaseModel):
     name: str
     blob_url: str
     proxy_url: str = ""
+    blob_name: str = ""   # permanent blob path — used to rebuild proxy URL on any host
     file_type: str  # "image" | "pdf" | "document"
 
 class ChatRequest(BaseModel):
@@ -247,7 +248,7 @@ class GoalsListResponse(BaseModel):
 
 class NotificationSettings(BaseModel):
     goal_reminders: bool = False
-    quiz_reminders: bool = False
+    long_term_goals_reminder: bool = False
     study_streak_alerts: bool = False
 
 
@@ -265,6 +266,7 @@ class AppearanceSettings(BaseModel):
 class ProfileSettings(BaseModel):
     full_name: str = ""
     display_name: str = ""
+    email: str = ""
 
 
 class UserSettings(BaseModel):
