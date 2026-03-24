@@ -21,6 +21,21 @@
 
 import { parse, compile } from 'mathjs';
 
+export type RelationOperator = '=' | '<' | '>' | '<=' | '>=';
+export type InequalityOperator = '<' | '>' | '<=' | '>=';
+
+export function detectRelationOperator(raw: string): RelationOperator | null {
+  const cleaned = raw.replace(/≤/g, '<=').replace(/≥/g, '>=');
+  const match = cleaned.match(/<=|>=|=|<|>/);
+  return (match?.[0] as RelationOperator | undefined) ?? null;
+}
+
+export function isInequalityOperator(
+  op: RelationOperator | null,
+): op is InequalityOperator {
+  return op === '<' || op === '>' || op === '<=' || op === '>=';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,7 +71,7 @@ export interface CurveEvaluator {
  */
 export function normalise(raw: string): string {
   let s = raw.trim();
-  const functionNames = ['arcsin', 'arccos', 'arctan', 'sqrt', 'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'ln', 'log', 'exp', 'abs'];
+  const functionNames = ['atan2', 'arcsin', 'arccos', 'arctan', 'sqrt', 'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'ln', 'log', 'exp', 'abs'];
   const functionPattern = functionNames.join('|');
   const constantNames = ['pi', 'e', 'theta', 'alpha', 'beta', 'gamma', 'delta', 'epsilon', 'lambda', 'mu', 'sigma', 'omega'];
   const constantPattern = constantNames.join('|');
@@ -64,6 +79,18 @@ export function normalise(raw: string): string {
 
   // Nova only supports x/y variables, so fold them aggressively to lowercase.
   s = s.replace(/X/g, 'x').replace(/Y/g, 'y');
+  s = s.replace(/≤/g, '<=').replace(/≥/g, '>=');
+
+  // Convert inequalities to their decision boundary for evaluators/residuals.
+  // The renderer keeps the original operator separately and uses it for fill.
+  s = s.replace(/<=|>=|<|>/g, '=');
+
+  // Polar equations r = f(theta) are traced as implicit x/y curves.
+  if (!/[xy]/i.test(s) && /\br\b/i.test(s) && /\btheta\b/i.test(s)) {
+    s = s
+      .replace(/\btheta\b/gi, 'atan2(y, x)')
+      .replace(/\br\b/gi, 'sqrt(x^2 + y^2)');
+  }
 
   for (const fn of functionNames) {
     s = s.replace(new RegExp(`\\b${fn}\\b`, 'gi'), fn);

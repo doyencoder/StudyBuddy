@@ -74,6 +74,11 @@
     --novaa-curve-13: 230 80% 65%;   /* indigo                               */
     --novaa-curve-14: 320 75% 65%;   /* rose                                 */
     --novaa-curve-15: 155 70% 52%;   /* mint                                 */
+    --novaa-curve-16: 8   90% 64%;   /* scarlet                              */
+    --novaa-curve-17: 204 88% 63%;   /* sky blue                             */
+    --novaa-curve-18: 84  72% 52%;   /* chartreuse                           */
+    --novaa-curve-19: 286 58% 66%;   /* plum                                 */
+    --novaa-curve-20: 18  88% 64%;   /* coral                                */
     --novaa-grid:    220 15% 30%;    /* subtle but visible grid lines        */
     --novaa-surface: 230 15% 7%;     /* canvas background                    */
   }
@@ -143,6 +148,11 @@
     --novaa-curve-13: 230 72% 50%;
     --novaa-curve-14: 320 68% 50%;
     --novaa-curve-15: 155 62% 38%;
+    --novaa-curve-16: 8   78% 50%;
+    --novaa-curve-17: 204 74% 48%;
+    --novaa-curve-18: 84  58% 40%;
+    --novaa-curve-19: 286 48% 50%;
+    --novaa-curve-20: 18  78% 52%;
     --novaa-grid:    220 14% 60%;    /* darker = visible on light background */
     --novaa-surface: 220 20% 97%;
   }

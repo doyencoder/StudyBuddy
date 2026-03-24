@@ -221,7 +221,10 @@ export function GraphCanvas({
       return;
     }
 
-    setIntersections(renderer.getCurveIntersections(visible));
+    renderer.requestCurveIntersections(visible, (points) => {
+      if (isInteractingRef.current) return;
+      setIntersections(points);
+    });
   }, []);
 
   const scheduleIntersectionRefresh = React.useCallback((delay: number = 140) => {

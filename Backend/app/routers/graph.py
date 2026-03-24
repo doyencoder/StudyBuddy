@@ -38,7 +38,19 @@ use sensible defaults (e.g. for hyperbola use a=3, b=2).
 
 Rules for equations:
 - Use mathjs-compatible syntax: x^2, sqrt(x), sin(x), cos(x), abs(x), pi, e
-- Never use implicit form in "equations" — always y = f(x)
+- Prefer "y = f(x)" in "equations", but for curves like rotated ellipses where
+  that split is impractical, you may return a single implicit equation that Nova can trace.
+- For generic ellipse requests, default to a centered ellipse. Use:
+    equations: ["y = 2 * sqrt(1 - x^2 / 9)", "y = -2 * sqrt(1 - x^2 / 9)"]
+    display_equation: "x^2/9 + y^2/4 = 1"
+- For a generic rotated ellipse, use a concrete angle like pi/6 and concrete axis lengths.
+  Example:
+    equations: ["((x*cos(pi/6) + y*sin(pi/6))^2)/9 + ((y*cos(pi/6) - x*sin(pi/6))^2)/4 = 1"]
+    display_equation: "((x*cos(pi/6) + y*sin(pi/6))^2)/9 + ((y*cos(pi/6) - x*sin(pi/6))^2)/4 = 1"
+- For generic parabola requests, default to a clean quadratic like y = x^2.
+  Do NOT use projectile-motion formulas such as -4.9*x^2/... unless the user
+  explicitly asks for a physics trajectory or gives those numbers.
+- The display_equation must describe the SAME graph as the equations list.
 - For ellipse x^2/a^2 + y^2/b^2 = 1:
     equations: ["y = b * sqrt(1 - x^2 / a^2)", "y = -b * sqrt(1 - x^2 / a^2)"]
     display_equation: "x^2/a^2 + y^2/b^2 = 1"
@@ -77,6 +89,64 @@ Output: {
 }
 
 Return ONLY the JSON. No markdown, no backticks, no explanation."""
+
+
+def _looks_like_explicit_math(text: str) -> bool:
+    tokens = ("=", "^", "sqrt", "sin", "cos", "tan", "cot", "log", "ln", "(", ")")
+    return any(token in text for token in tokens)
+
+
+def _default_rotated_ellipse() -> dict:
+    equation = "((x*cos(pi/6) + y*sin(pi/6))^2)/9 + ((y*cos(pi/6) - x*sin(pi/6))^2)/4 = 1"
+    return {
+        "equations": [equation],
+        "display_equation": equation,
+        "label": "Rotated ellipse",
+        "x_range": [-4.5, 4.5],
+    }
+
+
+def _postprocess_graph_result(user_input: str, result: dict) -> dict:
+    text = user_input.strip().lower()
+    if _looks_like_explicit_math(text):
+        return result
+
+    if "ellipse" in text:
+        if any(word in text for word in ("rotated", "tilted", "angle")):
+            return _default_rotated_ellipse()
+        vertical = "vertical" in text
+        if vertical:
+            return {
+                "equations": ["y = 3 * sqrt(1 - x^2 / 4)", "y = -3 * sqrt(1 - x^2 / 4)"],
+                "display_equation": "x^2/4 + y^2/9 = 1",
+                "label": "Ellipse",
+                "x_range": [-3, 3],
+            }
+        return {
+            "equations": ["y = 2 * sqrt(1 - x^2 / 9)", "y = -2 * sqrt(1 - x^2 / 9)"],
+            "display_equation": "x^2/9 + y^2/4 = 1",
+            "label": "Ellipse",
+            "x_range": [-4, 4],
+        }
+
+    if "parabola" in text:
+        opens_down = "down" in text or "downward" in text
+        return {
+            "equations": ["y = -x^2" if opens_down else "y = x^2"],
+            "display_equation": "y = -x^2" if opens_down else "y = x^2",
+            "label": "Parabola",
+            "x_range": [-5, 5],
+        }
+
+    if "circle" in text:
+        return {
+            "equations": ["y = sqrt(1 - x^2)", "y = -sqrt(1 - x^2)"],
+            "display_equation": "x^2 + y^2 = 1",
+            "label": "Unit circle",
+            "x_range": [-1.5, 1.5],
+        }
+
+    return result
 
 
 async def _call_azure(user_input: str) -> dict:
@@ -124,6 +194,7 @@ async def parse_graph_input(request: GraphParseRequest):
             result = await _call_gemini(request.input)
         else:
             result = await _call_azure(request.input)
+        result = _postprocess_graph_result(request.input, result)
 
         return GraphParseResponse(
             equations=result.get("equations", []),

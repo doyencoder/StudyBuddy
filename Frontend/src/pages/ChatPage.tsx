@@ -25,6 +25,11 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
+import {
+  extractGraphableEquations,
+  normalizeEquationForNova,
+  normalizeEscapedMathDelimiters,
+} from "@/lib/novaMath";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAppearance } from "@/contexts/AppearanceContext";
@@ -327,14 +332,8 @@ function applyInline(text: string, onEquationClick?: (eq: string) => void): Reac
   // Matches y = f(x) written in plain text (not LaTeX).
   // The character whitelist deliberately excludes \ so LaTeX like \( y = \sin(x) \)
   // does NOT produce a chip — only clean plain-text equations like y = sin(x) do.
-  const EQ_PATTERN = /(?:y|f\(x\))\s*=\s*[-\d\sx^+\-*/().sincotaqrlgepb]{3,60}/gi;
-  const normalized = text
-    // Collapse repeated escaped delimiters like \\\(...\\\) -> \(...\)
-    .replace(/\\{2,}(?=[()\[\]])/g, "\\")
-    .replace(/\\\s+\(/g, "\\(")
-    .replace(/\\\s+\[/g, "\\[")
-    .replace(/\\\s+\)/g, "\\)")
-    .replace(/\\\s+\]/g, "\\]");
+  void onEquationClick;
+  const normalized = normalizeEscapedMathDelimiters(text);
 
   // Split on markdown links, math, bold, italic, code — links and $$ must come first
   return normalized.split(/(\[[^\]]+\]\(https?:\/\/[^)]+\)|\$\$[^$]+\$\$|\$[^$\r\n]+\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((part, i) => {
@@ -378,30 +377,6 @@ function applyInline(text: string, onEquationClick?: (eq: string) => void): Reac
           {part.slice(1, -1)}
         </code>
       );
-    if (onEquationClick && EQ_PATTERN.test(part)) {
-      EQ_PATTERN.lastIndex = 0;
-      const nodes: React.ReactNode[] = [];
-      let lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = EQ_PATTERN.exec(part)) !== null) {
-        if (match.index > lastIndex) nodes.push(part.slice(lastIndex, match.index));
-        const eqText = match[0].trim();
-        nodes.push(
-          <button
-            key={`eq-${i}-${match.index}`}
-            onClick={() => onEquationClick(eqText)}
-            className="inline-flex items-center gap-1 mx-0.5 px-2 py-0.5 rounded bg-primary/10 text-primary text-xs font-mono border border-primary/20 hover:bg-primary/20 transition-colors cursor-pointer"
-            title="Click to plot in Novaa"
-          >
-            <TrendingUp className="w-3 h-3 shrink-0" />
-            {eqText}
-          </button>
-        );
-        lastIndex = match.index + match[0].length;
-      }
-      if (lastIndex < part.length) nodes.push(part.slice(lastIndex));
-      return nodes;
-    }
     return [part];
   });
 }
@@ -544,12 +519,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
 function renderMarkdown(text: string, onEquationClick?: (eq: string) => void) {
   // Some model responses contain double-escaped math delimiters like `\\(`.
   // Normalize them so inline/display KaTeX parsing works consistently.
-  const normalizedText = text
-    .replace(/\\{2,}(?=[()\[\]])/g, "\\")
-    .replace(/\\\s+\(/g, "\\(")
-    .replace(/\\\s+\[/g, "\\[")
-    .replace(/\\\s+\)/g, "\\)")
-    .replace(/\\\s+\]/g, "\\]");
+  const normalizedText = normalizeEscapedMathDelimiters(text);
 
   const lines = normalizedText.split("\n");
   const elements: React.ReactNode[] = [];
@@ -764,6 +734,26 @@ function renderMarkdown(text: string, onEquationClick?: (eq: string) => void) {
     );
     i++;
   }
+
+  const extractedEquations = onEquationClick ? extractGraphableEquations(normalizedText) : [];
+  if (extractedEquations.length) {
+    elements.push(
+      <div key="nova-chips" className="mt-3 flex flex-wrap gap-2">
+        {extractedEquations.map((eq) => (
+          <button
+            key={eq}
+            onClick={() => onEquationClick?.(eq)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/10 text-primary text-xs font-mono border border-primary/25 hover:bg-primary/20 active:scale-95 transition-all cursor-pointer"
+            title="Click to plot in Nova"
+          >
+            <TrendingUp className="w-3 h-3 shrink-0" />
+            {eq}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   return elements;
 }
 
@@ -2379,7 +2369,9 @@ const ChatPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const handleEquationClick = (eq: string) => {
-    navigate("/novaa", { state: { equation: eq } });
+    const normalizedEquation = normalizeEquationForNova(eq);
+    if (!normalizedEquation) return;
+    navigate("/novaa", { state: { equation: normalizedEquation } });
   };
   const [searchParams] = useSearchParams();
 

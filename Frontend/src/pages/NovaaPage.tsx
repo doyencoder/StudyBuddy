@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { useSidebar } from "@/components/ui/sidebar";
 import { EquationsPanel, type Equation } from "@/components/novaa/EquationsPanel";
 import { GraphCanvas } from "@/components/novaa/GraphCanvas";
+import { canonicalEquationKey, normalizeEquationForNova } from "@/lib/novaMath";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -10,7 +11,7 @@ import { GraphCanvas } from "@/components/novaa/GraphCanvas";
 
 // Four maximally distinct hues: blue, red/coral, green, magenta.
 // Cycled when adding new equations.
-// 15 perceptually distinct colors — hues spread evenly around the wheel at
+// 20 perceptually distinct colors — hues spread evenly around the wheel at
 // high saturation so they stay vivid on both dark and light backgrounds.
 // CSS variable names map to tokens defined in index.css.
 const CURVE_COLORS = [
@@ -29,13 +30,18 @@ const CURVE_COLORS = [
   "novaa-curve-13",  // indigo      230°
   "novaa-curve-14",  // rose        320°
   "novaa-curve-15",  // mint        155°
+  "novaa-curve-16",  // scarlet      10°
+  "novaa-curve-17",  // sky         200°
+  "novaa-curve-18",  // chartreuse   82°
+  "novaa-curve-19",  // plum        285°
+  "novaa-curve-20",  // coral        18°
 ] as const;
 
 const STORAGE_KEY = "novaa_equations";
 
 const MIN_PANEL_WIDTH     = 140;  // px — minimum equations panel width
 const MAX_PANEL_WIDTH     = 380;  // px — maximum equations panel width
-const DEFAULT_PANEL_WIDTH = 220;  // px — default equations panel width
+const DEFAULT_PANEL_WIDTH = 280;  // px — default equations panel width
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Session storage helpers
@@ -46,7 +52,14 @@ const DEFAULT_PANEL_WIDTH = 220;  // px — default equations panel width
 function loadEquations(): Equation[] {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const parsed = raw ? JSON.parse(raw) as Equation[] : [];
+    const seen = new Set<string>();
+    return parsed.filter((eq) => {
+      const key = canonicalEquationKey(eq.expression);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   } catch {
     return [];
   }
@@ -64,7 +77,7 @@ function saveEquations(eqs: Equation[]) {
 // nextColor
 // Returns the first color in CURVE_COLORS not already used by any existing
 // equation or group. This guarantees every new equation/group gets a
-// visually distinct color (up to 4; after that it cycles).
+// visually distinct color (up to 20; after that it cycles).
 // Each group counts as one color slot even if it has multiple y= halves.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -89,7 +102,7 @@ function nextColor(existing: Equation[]): string {
     if (!usedColors.has(c)) return c;
   }
 
-  // All 4 slots used — cycle based on how many distinct objects are plotted
+  // All palette slots used — cycle based on how many distinct objects are plotted
   return CURVE_COLORS[usedColors.size % CURVE_COLORS.length];
 }
 
@@ -98,7 +111,7 @@ function nextColor(existing: Equation[]): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NovaaPage = () => {
-  const { state: sidebarState } = useSidebar();
+  const { state: sidebarState, setOpen, setOpenMobile, isMobile } = useSidebar();
   const location                = useLocation();
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -110,7 +123,7 @@ const NovaaPage = () => {
 
   // When the AppSidebar is fully expanded (text labels visible), collapse the
   // equations panel to icon-only mode to preserve canvas space.
-  const equationsPanelCollapsed = sidebarState === "expanded";
+  const equationsPanelCollapsed = !isMobile && sidebarState === "expanded";
 
   // ── Wrapped setEquations that also persists to sessionStorage ──────────────
   const setEquations = React.useCallback(
@@ -123,6 +136,16 @@ const NovaaPage = () => {
     },
     [],
   );
+
+  React.useEffect(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+      return;
+    }
+    if (sidebarState === "expanded") {
+      setOpen(false);
+    }
+  }, [isMobile, setOpen, setOpenMobile, sidebarState]);
 
   // ── Handle equation arriving from ChatPage via React Router state ──────────
   // ChatPage sets location.state = { equation: "y = x^2" } (or equations: [...])
@@ -138,13 +161,18 @@ const NovaaPage = () => {
       const updated = [...prev];
       const color   = nextColor(updated);
       const groupId = incoming.length > 1 ? `group_${Date.now()}` : undefined;
+      const existingKeys = new Set(updated.map((eq) => canonicalEquationKey(eq.expression)));
 
       incoming.forEach((expr) => {
+        const normalizedExpr = normalizeEquationForNova(expr);
+        if (!normalizedExpr) return;
+        const canonicalKey = canonicalEquationKey(normalizedExpr);
         // Skip duplicates
-        if (updated.some((e) => e.expression === expr)) return;
+        if (!canonicalKey || existingKeys.has(canonicalKey)) return;
+        existingKeys.add(canonicalKey);
         updated.push({
           id:       String(Date.now() + Math.random()),
-          expression: expr,
+          expression: normalizedExpr,
           color,
           visible:  true,
           fromChat: true,
@@ -180,14 +208,19 @@ const NovaaPage = () => {
       const updated = [...prev];
       const color   = nextColor(updated);
       const gid     = groupId ?? (exprs.length > 1 ? `group_${Date.now()}` : undefined);
+      const existingKeys = new Set(updated.map((eq) => canonicalEquationKey(eq.expression)));
 
       exprs.forEach((expr, idx) => {
+        const normalizedExpr = normalizeEquationForNova(expr);
+        if (!normalizedExpr) return;
+        const canonicalKey = canonicalEquationKey(normalizedExpr);
         // Skip exact duplicates
-        if (updated.some((e) => e.expression === expr)) return;
+        if (!canonicalKey || existingKeys.has(canonicalKey)) return;
+        existingKeys.add(canonicalKey);
 
         updated.push({
           id:         String(Date.now() + Math.random()),
-          expression: expr,
+          expression: normalizedExpr,
           // Only the first equation of a group carries the displayExpression
           displayExpression: idx === 0 ? displayExpression : undefined,
           color,
@@ -214,13 +247,22 @@ const NovaaPage = () => {
   // When an equation is edited, clear its displayExpression (it no longer
   // matches the implicit form) so the panel shows the new raw expression.
   const handleEdit = (id: string, newExpr: string) =>
-    setEquations((prev) =>
-      prev.map((eq) =>
+    setEquations((prev) => {
+      const normalizedExpr = normalizeEquationForNova(newExpr);
+      if (!normalizedExpr) return prev;
+
+      const editedKey = canonicalEquationKey(normalizedExpr);
+      if (!editedKey) return prev;
+      if (prev.some((eq) => eq.id !== id && canonicalEquationKey(eq.expression) === editedKey)) {
+        return prev;
+      }
+
+      return prev.map((eq) =>
         eq.id === id
-          ? { ...eq, expression: newExpr, displayExpression: undefined, groupId: undefined }
+          ? { ...eq, expression: normalizedExpr, displayExpression: undefined, groupId: undefined }
           : eq,
-      ),
-    );
+      );
+    });
 
   // ── Quick tool buttons (Tangent / Intersection / Area) ────────────────────
   // Clicking an active tool deactivates it (toggle behaviour).
@@ -256,13 +298,17 @@ const NovaaPage = () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-1 overflow-hidden" style={{ height: "100%" }}>
+    <div className="flex flex-1 min-h-0 flex-col overflow-hidden md:flex-row" style={{ height: "100%" }}>
 
       {/* ── Equations panel (left column) ─────────────────────────────────── */}
       {/* Width is controlled here; EquationsPanel itself uses w-full. */}
       <div
-        className="relative flex shrink-0"
-        style={{ width: equationsPanelCollapsed ? 40 : panelWidth }}
+        className="relative order-2 flex w-full shrink-0 md:order-1 md:w-auto"
+        style={
+          isMobile
+            ? { height: "min(42dvh, 360px)" }
+            : { width: equationsPanelCollapsed ? 40 : panelWidth }
+        }
       >
         <EquationsPanel
           isCollapsed={equationsPanelCollapsed}
@@ -274,7 +320,7 @@ const NovaaPage = () => {
         />
 
         {/* Drag handle — only visible when panel is expanded */}
-        {!equationsPanelCollapsed && (
+        {!isMobile && !equationsPanelCollapsed && (
           <div
             onMouseDown={handleResizeMouseDown}
             className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize z-10 hover:bg-primary/30 active:bg-primary/50 transition-colors"
@@ -284,7 +330,7 @@ const NovaaPage = () => {
 
       {/* ── Graph canvas (right, fills remaining space) ───────────────────── */}
       {/* No padding or wrapper box — canvas starts immediately after the panel */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="order-1 flex min-h-[45dvh] min-w-0 flex-1 flex-col overflow-hidden md:order-2 md:min-h-0">
         <GraphCanvas
           equations={equations}
           newFromChat={newFromChat}

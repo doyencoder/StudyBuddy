@@ -1,7 +1,7 @@
 import * as React from "react";
 import {
-  Eye, EyeOff, Trash2, Plus, MessageSquare,
-  Check, X, Sparkles, Calculator, Loader2,
+  Trash2, Plus, MessageSquare,
+  Sparkles, Calculator, Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { API_BASE } from "@/config/api";
+import { normalizeEquationForNova } from "@/lib/novaMath";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
@@ -64,6 +65,11 @@ const colorDotStyle: Record<string, React.CSSProperties> = {
   "novaa-curve-13": { backgroundColor: "hsl(var(--novaa-curve-13))" },
   "novaa-curve-14": { backgroundColor: "hsl(var(--novaa-curve-14))" },
   "novaa-curve-15": { backgroundColor: "hsl(var(--novaa-curve-15))" },
+  "novaa-curve-16": { backgroundColor: "hsl(var(--novaa-curve-16))" },
+  "novaa-curve-17": { backgroundColor: "hsl(var(--novaa-curve-17))" },
+  "novaa-curve-18": { backgroundColor: "hsl(var(--novaa-curve-18))" },
+  "novaa-curve-19": { backgroundColor: "hsl(var(--novaa-curve-19))" },
+  "novaa-curve-20": { backgroundColor: "hsl(var(--novaa-curve-20))" },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,7 +83,11 @@ function latexifyExpr(s: string): string {
     (_, inner) => `\\sqrt{${latexifyExpr(inner)}}`,
   );
   // abs(x) → |x|
-  s = s.replace(/abs\(([^()]+)\)/g, "\\left|$1\\right|");
+  s = s.replace(/abs\(([^()]+)\)/g, (_, inner) => `\\left|${latexifyExpr(inner)}\\right|`);
+  s = s.replace(
+    /\b(pi|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|omega)\s*\/\s*([\w.]+)/gi,
+    (_, n, d) => `\\frac{${n}}{${d}}`,
+  );
   // Trig / log functions
   s = s
     .replace(/\bsin\b/g, "\\sin")
@@ -103,8 +113,21 @@ function latexifyExpr(s: string): string {
   for (const [word, latex] of Object.entries(GREEK)) {
     s = s.replace(new RegExp(`\\b${word}\\b`, "gi"), latex);
   }
+  s = s.replace(
+    /(^|[^\\])frac(pi|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|omega)(\d+(?:\.\d+)?)/gi,
+    (_, prefix, constant, denominator) =>
+      `${prefix}\\frac{${GREEK[constant.toLowerCase()] ?? constant}}{${denominator}}`,
+  );
+  // Exponents first so x^2/9 becomes x^{2}/9 instead of x^{2/9}
+  s = s.replace(/\^(\d+)/g, "^{$1}");
+  s = s.replace(/\^\(([^)]+)\)/g, "^{$1}");
   // Fractions: multiple passes handles nested cases
   for (let pass = 0; pass < 4; pass++) {
+    // powered variable / term  → \frac{x^{2}}{9}
+    s = s.replace(
+      /(^|[^\\a-zA-Z])([a-zA-Z](?:\^\{[^{}]+\})?)\s*\/\s*([\w.]+)/g,
+      (_, prefix, n, d) => `${prefix}\\frac{${n}}{${d}}`,
+    );
     // (a) / (b)
     s = s.replace(
       /\(([^()]+)\)\s*\/\s*\(([^()]+)\)/g,
@@ -126,9 +149,6 @@ function latexifyExpr(s: string): string {
       (_, n, d) => `\\frac{${n}}{${d}}`,
     );
   }
-  // Exponents:  x^2 → x^{2},   x^(expr) → x^{expr}
-  s = s.replace(/\^(\d+)/g, "^{$1}");
-  s = s.replace(/\^\(([^)]+)\)/g, "^{$1}");
   // Multiplication: * → ·  (cdot, not ×)
   s = s.replace(/\s*\*\s*/g, " \\cdot ");
   // Clean up extra spaces
@@ -136,8 +156,35 @@ function latexifyExpr(s: string): string {
   return s;
 }
 
+function normalizeAIError(raw: string): string {
+  const text = raw.trim();
+  const lower = text.toLowerCase();
+
+  if (!text) {
+    return "Ask for a graph or equation, like 'y = x^2', 'ellipse', or 'sine wave'.";
+  }
+
+  if (
+    lower.includes("content filtered")
+    || lower.includes("responsibleaipolicyviolation")
+    || lower.includes("filtered due to")
+  ) {
+    return "That request can’t be turned into a graph here. Try a math prompt like 'unit circle' or 'y = sin(x)'.";
+  }
+
+  if (lower.includes("could not parse ai response") || lower.includes("parse")) {
+    return "I couldn’t turn that into a graph. Try a direct equation or graph request like 'parabola' or 'y = 2x + 1'.";
+  }
+
+  if (lower.includes("i can only graph math equations")) {
+    return "Ask for something graphable, like 'ellipse', 'parabola', 'unit circle', or 'y = x^2'.";
+  }
+
+  return "Nova AI works best with graph requests. Try 'sine wave', 'parabola', or a direct equation like 'y = x^2'.";
+}
+
 function toLatex(raw: string): string {
-  const s = raw.trim();
+  const s = normalizeEquationForNova(raw);
   // Explicit: "y = expr"  or  "f(x) = expr"
   const prefixMatch = s.match(/^(y|f\(x\))\s*=\s*/i);
   if (prefixMatch) {
@@ -151,16 +198,27 @@ function toLatex(raw: string): string {
   return latexifyExpr(s);
 }
 
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function renderKatex(raw: string): string {
   if (!raw.trim()) return "";
   try {
-    return katex.renderToString(toLatex(raw), {
+    const html = katex.renderToString(toLatex(raw), {
       throwOnError: false,
       displayMode: false,
       output: "html",
     });
+    if (html.includes("katex-error")) {
+      return `<span class="font-mono text-xs">${escapeHtml(normalizeEquationForNova(raw))}</span>`;
+    }
+    return html;
   } catch {
-    return `<span class="font-mono text-xs">${raw}</span>`;
+    return `<span class="font-mono text-xs">${escapeHtml(normalizeEquationForNova(raw))}</span>`;
   }
 }
 
@@ -350,6 +408,9 @@ function MathQuillInput({
   const spanRef   = React.useRef<HTMLSpanElement>(null);
   const mqRef     = React.useRef<MQMathField | null>(null);
   const lastVal   = React.useRef("");
+  const [fallbackValue, setFallbackValue] = React.useState(() =>
+    initialLatex ? latexToMathjs(initialLatex) : "",
+  );
 
   // Keep latest callbacks in refs so MathQuill handlers never capture stale closures.
   const onSubmitRef  = React.useRef(onSubmit);
@@ -358,6 +419,20 @@ function MathQuillInput({
   onSubmitRef.current  = onSubmit;
   onChangeRef.current  = onChange;
   onEmptyRef.current   = onEmpty;
+
+  React.useEffect(() => {
+    setFallbackValue(initialLatex ? latexToMathjs(initialLatex) : "");
+  }, [initialLatex]);
+
+  const submitFallback = React.useCallback(() => {
+    const value = fallbackValue.trim();
+    if (!value) return;
+    onSubmitRef.current(value);
+    setFallbackValue("");
+    lastVal.current = "";
+    onChangeRef.current("");
+    onEmptyRef.current?.();
+  }, [fallbackValue]);
 
   // Expose a clear() method via an imperative handle so the parent can
   // clear the MathQuill field visually after a successful submit.
@@ -407,14 +482,28 @@ function MathQuillInput({
   // If MQ hasn't loaded yet, show a plain input as fallback
   if (!mq) {
     return (
-      <span
+      <input
+        value={fallbackValue}
+        onChange={(event) => {
+          const next = event.target.value;
+          setFallbackValue(next);
+          lastVal.current = next;
+          onChangeRef.current(next);
+          if (!next.trim()) onEmptyRef.current?.();
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          submitFallback();
+        }}
+        placeholder={placeholder}
+        disabled={disabled}
+        spellCheck={false}
         className={cn(
-          "flex-1 min-w-0 flex items-center px-2 text-xs text-muted-foreground",
+          "flex-1 min-w-0 bg-transparent text-xs font-mono text-foreground outline-none placeholder:text-muted-foreground/60",
           className,
         )}
-      >
-        Loading…
-      </span>
+      />
     );
   }
 
@@ -492,6 +581,13 @@ export function EquationsPanel({
   const [mqValue,    setMqValue]    = React.useState("");   // live mathjs from MathQuill field
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  useMathQuill();
+
+  React.useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [error]);
 
   // The value to submit depends on mode
   const submitValue = isAIMode ? inputValue : mqValue;
@@ -536,11 +632,11 @@ export function EquationsPanel({
         const data = await res.json();
 
         if (data.error) {
-          setError(data.error);
+          setError(normalizeAIError(String(data.error)));
           return;
         }
         if (!data.equations || data.equations.length === 0) {
-          setError("I can only graph math equations. Try: 'sine wave', 'parabola', or 'unit circle'.");
+          setError(normalizeAIError("I can only graph math equations."));
           return;
         }
 
@@ -557,7 +653,7 @@ export function EquationsPanel({
         );
         setInputValue("");
       } catch {
-        setError("Something went wrong. Please try again.");
+        setError("I couldn’t reach Nova AI right now. Try again with a graph request like 'ellipse' or 'y = x^2'.");
       } finally {
         setIsLoading(false);
       }
@@ -581,17 +677,17 @@ export function EquationsPanel({
   }
 
   return (
-    <div className="flex flex-col w-full h-full bg-card border-r border-border">
+    <div className="flex flex-col w-full h-full bg-card/95 border-t border-border/80 backdrop-blur-sm md:border-r md:border-t-0">
       {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-3 h-10 border-b border-border shrink-0">
-        <span className="text-xs font-semibold text-foreground uppercase tracking-wider">
+      <div className="flex items-center justify-between px-3.5 h-11 border-b border-border/70 shrink-0 bg-background/25">
+        <span className="text-[11px] font-semibold text-foreground uppercase tracking-[0.18em]">
           Equations
         </span>
-        <span className="text-xs text-muted-foreground">{equations.length}</span>
+        <span className="text-[11px] text-muted-foreground tabular-nums">{equations.length}</span>
       </div>
 
       {/* ── Equation list ───────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto py-1.5 px-2 space-y-0.5">
+      <div className="flex-1 overflow-y-auto py-2.5 px-2.5 space-y-1.5">
         {groupEquations(regularEquations).map((group) => (
           <EquationGroupRow
             key={group[0].id}
@@ -605,16 +701,16 @@ export function EquationsPanel({
         {chatEquations.length > 0 && (
           <>
             {/* Divider with "from chat" label */}
-            <div className="flex items-center gap-1.5 py-1 px-1">
-              <div className="h-px flex-1 bg-border" />
+            <div className="flex items-center gap-2 py-1.5 px-1">
+              <div className="h-px flex-1 bg-border/70" />
               <Badge
                 variant="outline"
-                className="text-[9px] px-1 py-0 h-3.5 border-dashed text-muted-foreground gap-1"
+                className="text-[9px] px-1.5 py-0 h-4 border-dashed text-muted-foreground gap-1 bg-background/60"
               >
                 <MessageSquare className="w-2 h-2" />
                 from chat
               </Badge>
-              <div className="h-px flex-1 bg-border" />
+              <div className="h-px flex-1 bg-border/70" />
             </div>
             {groupEquations(chatEquations).map((group) => (
               <EquationGroupRow
@@ -630,7 +726,7 @@ export function EquationsPanel({
         )}
 
         {equations.length === 0 && (
-          <p className="text-xs text-muted-foreground text-center py-6 leading-relaxed px-2">
+          <p className="text-xs text-muted-foreground text-center py-8 leading-relaxed px-3">
             No equations yet.
             <br />
             Add one below.
@@ -639,14 +735,14 @@ export function EquationsPanel({
       </div>
 
       {/* ── Input section ───────────────────────────────────────────────────── */}
-      <div className="border-t border-border shrink-0 bg-muted/20">
+      <div className="border-t border-border/70 shrink-0 bg-background/35">
 
         {/* Math / AI mode toggle */}
-        <div className="flex items-center gap-1 px-2 pt-2 pb-1">
+        <div className="flex items-center gap-1.5 px-2.5 pt-2.5 pb-1.5">
           <button
             onClick={() => setIsAIMode(false)}
             className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors flex-1 justify-center",
+              "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors flex-1 justify-center",
               !isAIMode
                 ? "bg-background text-foreground border border-border shadow-sm font-medium"
                 : "text-muted-foreground hover:text-foreground",
@@ -658,7 +754,7 @@ export function EquationsPanel({
           <button
             onClick={() => setIsAIMode(true)}
             className={cn(
-              "flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors flex-1 justify-center",
+              "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors flex-1 justify-center",
               isAIMode
                 ? "bg-primary/10 text-primary border border-primary/20 shadow-sm font-medium"
                 : "text-muted-foreground hover:text-foreground",
@@ -669,9 +765,9 @@ export function EquationsPanel({
           </button>
         </div>
 
-        <div className="px-2 pb-2 space-y-1">
+        <div className="px-2.5 pb-2.5 space-y-1.5">
           {/* Input row: MathQuillInput (Math) or plain input (AI) */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             {isAIMode ? (
               // AI mode: plain text input, no math interception
               <input
@@ -679,19 +775,20 @@ export function EquationsPanel({
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
                 placeholder="Describe the graph..."
-                className="flex-1 min-w-0 h-8 px-2 text-xs font-mono rounded-md border bg-primary/5 border-primary/30 outline-none focus:border-primary/50 transition-colors"
+                className="flex-1 min-w-0 h-9 px-3 text-xs font-mono rounded-lg border bg-primary/5 border-primary/25 outline-none focus:border-primary/50 transition-colors"
                 disabled={isLoading}
                 spellCheck={false}
               />
             ) : (
               // Math mode: MathQuill rich math editor
-              <div className="flex-1 min-w-0 min-h-[32px] flex items-center rounded-md border bg-background/50 border-border/60 focus-within:border-primary/50 transition-colors px-2 py-1 overflow-x-auto">
+              <div className="flex-1 min-w-0 min-h-[38px] flex items-center rounded-lg border bg-background/70 border-border/60 focus-within:border-primary/50 transition-colors px-2.5 py-1.5 overflow-x-auto shadow-sm">
                 <MathQuillInput
                   onChange={(val) => setMqValue(val)}
                   onEmpty={() => setMqValue("")}
                   onSubmit={handleSubmit}
                   placeholder="y = x^2"
                   disabled={isLoading}
+                  initialLatex={mqValue}
                   autoFocus={false}
                 />
               </div>
@@ -703,7 +800,7 @@ export function EquationsPanel({
               size="icon"
               variant="ghost"
               onClick={() => handleSubmit()}
-              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-primary"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-primary hover:bg-background/70 rounded-lg"
               disabled={!submitValue.trim() || isLoading}
             >
               {isLoading
@@ -715,13 +812,20 @@ export function EquationsPanel({
 
           {/* Shortcut hint — Math mode only */}
           {!isAIMode && !mqValue && (
-            <p className="text-[10px] text-muted-foreground/60 leading-tight px-0.5">
+            <p className="text-[10px] text-muted-foreground/65 leading-tight px-0.5">
               type ^ for exponent · / for fraction · pi, theta, sqrt auto-render
             </p>
           )}
 
           {error && (
-            <p className="text-[10px] text-destructive leading-tight">{error}</p>
+            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 shadow-sm">
+              <p className="text-[10px] font-medium text-destructive leading-tight">
+                Nova AI only handles graph and equation requests.
+              </p>
+              <p className="mt-1 text-[10px] text-muted-foreground leading-tight">
+                {error}
+              </p>
+            </div>
           )}
         </div>
       </div>
@@ -760,19 +864,19 @@ function EquationGroupRow({
 
   // Show ONE pretty display equation if the group has one (e.g. "x^2/9 + y^2/4 = 1")
   // rather than showing the two sqrt halves separately
-  const hasDisplay = !!primary.displayExpression && group.length > 1;
+  const hasDisplay = !!primary.displayExpression;
 
   return (
     <div
       className={cn(
-        "group flex items-start gap-1.5 px-2 py-1.5 rounded-md transition-colors hover:bg-background/70",
-        isFromChat && "border border-dashed border-primary/15",
+        "group flex items-start gap-2 px-2.5 py-2 rounded-lg border border-border/35 bg-background/35 transition-colors hover:bg-background/65 hover:border-border/55",
+        isFromChat && "bg-primary/[0.035] border-primary/20",
         !allVisible && "opacity-40",
       )}
     >
       {/* Colour dot — click to toggle visibility */}
       <div
-        className="w-2 h-2 rounded-full shrink-0 mt-[5px] transition-transform group-hover:scale-110 cursor-pointer"
+        className="w-2.5 h-2.5 rounded-full shrink-0 mt-[6px] transition-transform group-hover:scale-110 cursor-pointer"
         style={colorDotStyle[primary.color] ?? { backgroundColor: "hsl(var(--primary))" }}
         onClick={handleToggleGroup}
         title={allVisible ? "Hide" : "Show"}
@@ -801,18 +905,11 @@ function EquationGroupRow({
         )}
       </div>
 
-      {/* Actions: eye + trash — appear on hover */}
-      <div className="flex items-center gap-0 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5">
-        <button
-          onClick={handleToggleGroup}
-          className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
-          title={allVisible ? "Hide" : "Show"}
-        >
-          {allVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-        </button>
+      {/* Actions: delete — appear on hover */}
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5">
         <button
           onClick={handleDeleteGroup}
-          className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+          className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
           title="Delete"
         >
           <Trash2 className="w-3 h-3" />
@@ -837,6 +934,7 @@ function EditableEquation({
 }) {
   const [isEditing, setIsEditing] = React.useState(false);
   const editValueRef = React.useRef(equation.expression);
+  const editorRef = React.useRef<HTMLDivElement>(null);
 
   const startEdit = () => {
     editValueRef.current = equation.expression;
@@ -855,30 +953,48 @@ function EditableEquation({
     setIsEditing(false);
   };
 
+  React.useEffect(() => {
+    if (!isEditing) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (editorRef.current?.contains(event.target as Node)) return;
+      cancelEdit();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelEdit();
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isEditing]);
+
   if (isEditing) {
     return (
-      <div className="flex items-center gap-1">
-        <div className="flex-1 min-w-0 min-h-[24px] flex items-center rounded border bg-muted/50 border-border px-1.5 py-0.5 overflow-x-auto focus-within:border-primary/50">
+      <div
+        ref={editorRef}
+        className="flex-1 min-w-0 min-h-[34px] flex items-center rounded-lg border bg-background/85 border-primary/30 px-2 py-1 overflow-x-auto shadow-sm focus-within:border-primary/55"
+      >
           <MathQuillInput
             onChange={(val) => { editValueRef.current = val; }}
             onSubmit={commitEdit}
             initialLatex={equation.expression}
             autoFocus
           />
-        </div>
-        <button onClick={commitEdit} className="text-primary shrink-0">
-          <Check className="w-3 h-3" />
-        </button>
-        <button onClick={cancelEdit} className="text-muted-foreground shrink-0">
-          <X className="w-3 h-3" />
-        </button>
       </div>
     );
   }
 
   return (
     <div
-      className="cursor-text hover:bg-muted/30 rounded px-1 py-0.5 transition-colors overflow-hidden"
+      className="cursor-text hover:bg-muted/25 rounded-md px-1.5 py-1 transition-colors overflow-hidden"
       onClick={startEdit}
       title="Click to edit"
       dangerouslySetInnerHTML={{ __html: renderKatex(equation.expression) }}

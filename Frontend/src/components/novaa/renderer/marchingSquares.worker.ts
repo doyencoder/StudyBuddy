@@ -26,12 +26,16 @@ function buildFn(expr: string): ((x: number, y: number) => number) | null {
     let js = expr
       .replace(/([a-zA-Z0-9])\s*\.\s*([a-zA-Z])/g, '$1*$2')
       .replace(/\^/g, '**')
+      .replace(/\batan2\b/g,  'Math.atan2')
       .replace(/\bsqrt\b/g,   'Math.sqrt')
       .replace(/\babs\b/g,    'Math.abs')
       .replace(/\bsign\b/g,   'Math.sign')
       .replace(/\bsin\b/g,    'Math.sin')
       .replace(/\bcos\b/g,    'Math.cos')
       .replace(/\btan\b/g,    'Math.tan')
+      .replace(/\bcot\b/g,    '_cot')
+      .replace(/\bsec\b/g,    '_sec')
+      .replace(/\bcsc\b/g,    '_csc')
       .replace(/\bln\b/g,     'Math.log')
       .replace(/\blog\b/g,    'Math.log10')
       .replace(/\bexp\b/g,    'Math.exp')
@@ -50,6 +54,9 @@ function buildFn(expr: string): ((x: number, y: number) => number) | null {
         if(Number.isInteger(e))return b**e;
         return b<0?-(Math.abs(b)**e):Math.abs(b)**e;
       };
+      const _cot=(v)=>1/Math.tan(v);
+      const _sec=(v)=>1/Math.cos(v);
+      const _csc=(v)=>1/Math.sin(v);
     `;
     // Replace x** and y** with _spow so x^(2/3) works for x<0
     js = js

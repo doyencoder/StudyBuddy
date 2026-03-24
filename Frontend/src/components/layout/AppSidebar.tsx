@@ -75,12 +75,30 @@ interface Conversation {
 }
 
 const AppSidebar = () => {
-  const { state, toggleSidebar, isMobile, setOpenMobile } = useSidebar();
+  const { state, toggleSidebar, isMobile, setOpenMobile, setOpen } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
 
-  const closeOnMobile = () => { if (isMobile) setOpenMobile(false); };
+  const closeOnMobile = () => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  };
+
+  const handleNavClick = (url: string) => {
+    closeOnMobile();
+    if (isMobile) return;
+    if (url === "/novaa") {
+      // Close only when navigating into Nova from another page.
+      // If already on Nova, keep/open sidebar on click.
+      if (location.pathname !== "/novaa") {
+        setOpen(false);
+      } else {
+        setOpen(true);
+      }
+    }
+  };
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isAnyTyping, setIsAnyTyping] = useState(false);
@@ -344,7 +362,7 @@ const AppSidebar = () => {
                             <SidebarMenuButton asChild>
                               <NavLink
                                 to={item.url} end
-                                onClick={closeOnMobile}
+                                onClick={() => handleNavClick(item.url)}
                                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
                                   isActive
                                     ? "bg-primary/15 text-primary glow-blue-sm"
