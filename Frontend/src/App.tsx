@@ -9,6 +9,7 @@ import AppLayout from "@/components/layout/AppLayout";
 import DashboardPage from "@/pages/DashboardPage";
 import ChatPage from "@/pages/ChatPage";
 import QuizzesPage from "@/pages/QuizzesPage";
+import FlashcardsPage from "@/pages/FlashcardsPage";
 import GoalsPage from "@/pages/GoalsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import ImagesPage from "@/pages/ImagesPage";
@@ -33,6 +34,7 @@ const App = () => (
                 <Route path="/dashboard" element={<DashboardPage />} />
                 <Route path="/images" element={<ImagesPage />} />
                 <Route path="/quizzes" element={<QuizzesPage />} />
+                <Route path="/flashcards" element={<FlashcardsPage />} />
                 <Route path="/goals" element={<GoalsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/nova" element={<NovaPage />} />   {/* ← NEW */}

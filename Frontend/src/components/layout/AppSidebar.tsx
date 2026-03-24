@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   ClipboardList,
+  Layers,
   Target,
   Settings,
   Plus,
@@ -62,6 +63,7 @@ const menuItems = [
   { title: "Chat",      url: "/chat",      icon: MessageSquare },
   { title: "Images",    url: "/images",    icon: ImageIcon },
   { title: "My Quizzes",url: "/quizzes",   icon: ClipboardList },
+  { title: "Flashcards",url: "/flashcards",icon: Layers },
   { title: "Goals",     url: "/goals",     icon: Target },
   { title: "Nova",      url: "/nova",     icon: BarChart2 },
   { title: "Settings",  url: "/settings",  icon: Settings },
@@ -306,6 +308,19 @@ const AppSidebar = () => {
     setRenameValue(conv.title);
   };
 
+  const handleGenerateFlashcards = async (conv: Conversation) => {
+    navigate("/flashcards", {
+      state: {
+        flashcardGeneration: {
+          conversationId: conv.conversation_id,
+          title: conv.title,
+          requestId: Date.now(),
+        },
+      },
+    });
+    closeOnMobile();
+  };
+
   const cancelRename = () => { setRenamingId(null); setRenameValue(""); };
 
   const commitRename = async (conversationId: string) => {
@@ -538,7 +553,7 @@ const AppSidebar = () => {
                                         <MoreHorizontal className="w-3.5 h-3.5" />
                                       </button>
                                     </DropdownMenuTrigger>
-                                    <DropdownMenuContent side="right" align="start" className="w-40">
+                                    <DropdownMenuContent side="right" align="start" className="w-48">
                                       <DropdownMenuItem onClick={() => handleStarToggle(chat)}>
                                         <Star className="w-3.5 h-3.5 mr-2" />
                                         {chat.starred ? "Unstar" : "Star"}
@@ -546,6 +561,10 @@ const AppSidebar = () => {
                                       <DropdownMenuItem onClick={() => startRename(chat)}>
                                         <Pencil className="w-3.5 h-3.5 mr-2" />
                                         Rename
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => handleGenerateFlashcards(chat)}>
+                                        <Layers className="w-3.5 h-3.5 mr-2" />
+                                        Generate Flashcards
                                       </DropdownMenuItem>
                                       <DropdownMenuSeparator />
                                       <DropdownMenuItem

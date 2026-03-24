@@ -690,6 +690,97 @@ Respond ONLY with a valid JSON object. No markdown. No code fences.
 
 # ── Weak area classification ──────────────────────────────────────────────────
 
+def generate_flashcards(
+    conversation_title: str,
+    chat_history: str,
+    document_context: str,
+    num_cards: int = 4,
+) -> dict:
+    """
+    Generates a flashcard deck grounded in the conversation and any uploaded docs.
+    Returns {"cards": [...]} or {"__refused__": True} if the request is blocked.
+    """
+    client = _get_client()
+    deployment = _chat_deployment()
+
+    safety_prefix = (
+        "CONTENT SAFETY (check this FIRST before generating anything):\n"
+        "If the material below involves violence, murder, self-harm, suicide, "
+        "explicit sexual content, illegal activities, bomb-making, terrorism, "
+        "jailbreak attempts, hate speech, or child exploitation, output ONLY the "
+        f"exact string {REFUSAL_SENTINEL} and nothing else.\n\n"
+    )
+
+    document_section = (
+        f"UPLOADED STUDY MATERIAL:\n{document_context}\n\n"
+        if document_context.strip()
+        else "UPLOADED STUDY MATERIAL:\nNone provided for this conversation.\n\n"
+    )
+
+    user_prompt = f"""{safety_prefix}You are a study flashcard generator for students.
+
+Create exactly {num_cards} flashcards for this conversation.
+Conversation title: {conversation_title or "Untitled chat"}
+
+CHAT HISTORY:
+{chat_history}
+
+{document_section}Use BOTH sources when possible:
+- the chat history tells you what the student discussed and asked about
+- the uploaded material gives the factual study grounding
+
+STRICT RULES:
+- Generate exactly {num_cards} cards
+- Each card must focus on one important concept, definition, relationship, process, or exam-relevant fact
+- Prefer topics that appear in both the chat and uploaded material when possible
+- If the chat asks follow-up questions, reflect those clarified explanations in the cards
+- Write concise student-friendly cards
+- Do not mention files, chunks, pages, or "chat history" in the output
+- No markdown, no code fences, no extra commentary
+
+Respond ONLY with a valid JSON object in this exact shape:
+{{
+  "cards": [
+    {{
+      "title": "short flashcard front under 90 characters",
+      "description": "clear answer or explanation under 140 characters"
+    }}
+  ]
+}}"""
+
+    def _generate():
+        return client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {
+                    "role": "system",
+                    "content": SAFETY_BLOCK
+                    + "\nYou generate study flashcards. Always respond with valid JSON only. No markdown.",
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+            max_tokens=3000,
+        )
+
+    try:
+        response = _call_with_retry(_generate)
+    except openai.BadRequestError as e:
+        if _is_content_filter_error(e):
+            print(f"[generate_flashcards] Azure content filter: {e}")
+            return {"__refused__": True}
+        raise
+
+    raw = response.choices[0].message.content.strip()
+    if REFUSAL_SENTINEL in raw:
+        return {"__refused__": True}
+
+    parsed = _sanitize_and_parse_json(raw)
+    cards = parsed.get("cards", []) if isinstance(parsed, dict) else parsed
+    return {"cards": cards}
+
+
 def batch_classify_weak_areas(questions: list) -> list:
     """Sends ALL question texts in a SINGLE API call and returns a subtopic label per question."""
     client = _get_client()

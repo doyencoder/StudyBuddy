@@ -121,6 +121,31 @@ class QuizHistoryResponse(BaseModel):
 
 # ── Diagrams ──────────────────────────────────────────────────────────────────
 
+class FlashcardItem(BaseModel):
+    id: str
+    title: str
+    description: str
+
+
+class FlashcardsGenerateRequest(BaseModel):
+    user_id: str
+    conversation_id: str
+
+
+class FlashcardDeckResponse(BaseModel):
+    deck_id: str
+    conversation_id: str
+    conversation_title: str = ""
+    card_count: int
+    created_at: str
+    updated_at: str
+    cards: List[FlashcardItem]
+
+
+class FlashcardsListResponse(BaseModel):
+    flashcards: List[FlashcardDeckResponse]
+
+
 class DiagramGenerateRequest(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None   # optional — if None, uses general knowledge

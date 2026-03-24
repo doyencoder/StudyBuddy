@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 from azure.cosmos.aio import CosmosClient
+from azure.cosmos import PartitionKey
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from dotenv import load_dotenv
 
@@ -15,6 +16,7 @@ load_dotenv()
 DB_NAME = os.getenv("AZURE_COSMOS_DB_NAME", "studybuddy")
 CONVERSATIONS_CONTAINER = "conversations"
 DIAGRAMS_CONTAINER = "diagrams"
+FLASHCARDS_CONTAINER = "flashcards"
 
 
 # ── Client helper ─────────────────────────────────────────────────────────────
@@ -29,6 +31,20 @@ def _get_client() -> CosmosClient:
     if not connection_string:
         raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set in .env")
     return CosmosClient.from_connection_string(connection_string)
+
+
+async def ensure_flashcards_container() -> None:
+    """Create the flashcards container if it does not already exist."""
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        try:
+            await db.create_container_if_not_exists(
+                id=FLASHCARDS_CONTAINER,
+                partition_key=PartitionKey(path="/user_id"),
+            )
+            print(f"[flashcards] Container '{FLASHCARDS_CONTAINER}' ready.")
+        except Exception as e:
+            print(f"[flashcards] Container check error (non-fatal): {e}")
 
 
 # ── Public Functions ──────────────────────────────────────────────────────────
@@ -186,15 +202,30 @@ async def get_conversation_full(conversation_id: str) -> Dict[str, Any]:
                 results.append(item)
 
             if not results:
-                return {"messages": [], "pending_intent": None}
+                return {
+                    "conversation_id": conversation_id,
+                    "title": "",
+                    "messages": [],
+                    "pending_intent": None,
+                }
 
             doc = results[0]
             messages = doc.get("messages", [])
             messages.sort(key=lambda m: m.get("timestamp", ""))
-            return {"messages": messages, "pending_intent": doc.get("pending_intent")}
+            return {
+                "conversation_id": doc.get("conversation_id", conversation_id),
+                "title": doc.get("title", ""),
+                "messages": messages,
+                "pending_intent": doc.get("pending_intent"),
+            }
 
         except CosmosResourceNotFoundError:
-            return {"messages": [], "pending_intent": None}
+            return {
+                "conversation_id": conversation_id,
+                "title": "",
+                "messages": [],
+                "pending_intent": None,
+            }
 
 
 async def update_message_json(
@@ -618,3 +649,86 @@ async def delete_diagram(diagram_id: str, user_id: str) -> None:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(DIAGRAMS_CONTAINER)
         await container.delete_item(item=diagram_id, partition_key=user_id)
+
+
+async def save_flashcard_deck(
+    user_id: str,
+    conversation_id: str,
+    conversation_title: str,
+    cards: list,
+) -> Dict[str, Any]:
+    """
+    Upserts one flashcard deck per conversation.
+    Regenerating flashcards for the same chat replaces the prior deck.
+    """
+    deck_id = f"flashcards::{conversation_id}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(FLASHCARDS_CONTAINER)
+
+        created_at = now_iso
+        try:
+            existing = await container.read_item(item=deck_id, partition_key=user_id)
+            created_at = existing.get("created_at", now_iso)
+        except CosmosResourceNotFoundError:
+            pass
+
+        document = {
+            "id": deck_id,
+            "deck_id": deck_id,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "conversation_title": conversation_title,
+            "created_at": created_at,
+            "updated_at": now_iso,
+            "card_count": len(cards),
+            "cards": cards,
+        }
+
+        await container.upsert_item(body=document)
+        return document
+
+
+async def list_flashcard_decks(user_id: str) -> List[Dict[str, Any]]:
+    """Returns all flashcard decks for a user, newest first."""
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(FLASHCARDS_CONTAINER)
+
+        query = (
+            "SELECT c.deck_id, c.conversation_id, c.conversation_title, c.card_count, "
+            "c.created_at, c.updated_at, c.cards "
+            "FROM c WHERE c.user_id = @user_id "
+            "ORDER BY c.updated_at DESC"
+        )
+        parameters = [{"name": "@user_id", "value": user_id}]
+
+        results = []
+        async for item in container.query_items(query=query, parameters=parameters):
+            results.append(item)
+
+        return results
+
+
+async def get_flashcard_deck(user_id: str, conversation_id: str) -> Dict[str, Any]:
+    """Fetches the flashcard deck for a conversation."""
+    deck_id = f"flashcards::{conversation_id}"
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(FLASHCARDS_CONTAINER)
+        return await container.read_item(item=deck_id, partition_key=user_id)
+
+
+async def delete_flashcard_deck(user_id: str, conversation_id: str) -> bool:
+    """Deletes the saved flashcards for a conversation."""
+    deck_id = f"flashcards::{conversation_id}"
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(FLASHCARDS_CONTAINER)
+        try:
+            await container.delete_item(item=deck_id, partition_key=user_id)
+            return True
+        except CosmosResourceNotFoundError:
+            return False

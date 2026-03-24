@@ -6,10 +6,75 @@
 // queue sequentially when the browser fires the "online" event.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { getAllSyncQueue, removeSyncQueueItem, type SyncQueueItem } from "./offlineStore";
+import { cacheAPIResponse, getAllSyncQueue, removeSyncQueueItem, type SyncQueueItem } from "./offlineStore";
+import { API_BASE } from "@/config/api";
 import { toast } from "sonner";
 
 let isSyncing = false;
+
+function emitFlashcardSyncStarted(item: SyncQueueItem): void {
+  if (item.type !== "flashcard_generate") return;
+  try {
+    const payload = JSON.parse(item.body || "{}");
+    const conversationId = String(payload.conversation_id || "").trim();
+    if (!conversationId) return;
+    window.dispatchEvent(
+      new CustomEvent("flashcards-generation-started", {
+        detail: {
+          requestId: Number(item.id ?? Date.now()),
+          conversationId,
+          title: String(payload.title || "Flashcards"),
+        },
+      }),
+    );
+  } catch {
+    // Ignore malformed queue payloads.
+  }
+}
+
+function emitFlashcardSyncFailed(item: SyncQueueItem): void {
+  if (item.type !== "flashcard_generate") return;
+  try {
+    const payload = JSON.parse(item.body || "{}");
+    const conversationId = String(payload.conversation_id || "").trim();
+    if (!conversationId) return;
+    window.dispatchEvent(
+      new CustomEvent("flashcards-generation-failed", {
+        detail: { conversationId },
+      }),
+    );
+  } catch {
+    // Ignore malformed queue payloads.
+  }
+}
+
+async function refreshFlashcardsAfterSync(item: SyncQueueItem): Promise<void> {
+  try {
+    let userId = "";
+
+    if (item.type === "flashcard_generate") {
+      const payload = JSON.parse(item.body || "{}");
+      userId = String(payload.user_id || "").trim();
+    } else if (item.type === "flashcard_delete") {
+      userId = new URL(item.url).searchParams.get("user_id") || "";
+    } else {
+      return;
+    }
+
+    if (!userId) return;
+
+    const listUrl = `${API_BASE}/flashcards?user_id=${encodeURIComponent(userId)}`;
+    const response = await fetch(listUrl);
+    if (!response.ok) return;
+
+    const data = await response.json();
+    const cacheKey = new URL(listUrl).pathname + new URL(listUrl).search;
+    await cacheAPIResponse(cacheKey, data);
+    window.dispatchEvent(new CustomEvent("flashcards-updated"));
+  } catch {
+    // Cache refresh is best-effort only.
+  }
+}
 
 /**
  * Process all pending items in the sync queue, one at a time.
@@ -32,6 +97,8 @@ export async function processSyncQueue(): Promise<number> {
 
     for (const item of items) {
       try {
+        emitFlashcardSyncStarted(item);
+
         const response = await fetch(item.url, {
           method: item.method,
           headers: { "Content-Type": "application/json" },
@@ -41,14 +108,17 @@ export async function processSyncQueue(): Promise<number> {
         if (response.ok || response.status === 409) {
           // 409 = conflict (e.g. goal already exists) — treat as success
           await removeSyncQueueItem(item.id!);
+          await refreshFlashcardsAfterSync(item);
           processed++;
         } else {
           // Server error — leave in queue for next attempt
+          emitFlashcardSyncFailed(item);
           console.warn(`[SyncQueue] Failed to sync item ${item.id}: HTTP ${response.status}`);
           failed++;
         }
       } catch (err) {
         // Network error — stop processing, we're probably offline again
+        emitFlashcardSyncFailed(item);
         console.warn(`[SyncQueue] Network error syncing item ${item.id}:`, err);
         failed++;
         break;
