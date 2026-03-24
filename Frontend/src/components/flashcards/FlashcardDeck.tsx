@@ -18,14 +18,6 @@ interface FlashcardDeckProps {
 
 type VisibleCardSlot = "center" | "left" | "right" | "back";
 
-type TransitionPhase = "retreat" | "settle";
-
-interface DeckTransition {
-  prevOrder: number[];
-  nextOrder: number[];
-  phase: TransitionPhase;
-}
-
 function buildVisibleStack(cardOrder: number[]) {
   const total = cardOrder.length;
   if (total === 0) return [] as Array<{ cardIndex: number; slot: VisibleCardSlot }>;
@@ -64,100 +56,51 @@ export function FlashcardDeck({
   const [cardOrder, setCardOrder] = useState(cards.map((_, index) => index));
   const [isHovered, setIsHovered] = useState(false);
   const [isCycling, setIsCycling] = useState(false);
-  const [transition, setTransition] = useState<DeckTransition | null>(null);
-  const cycleTimeoutsRef = useRef<number[]>([]);
+  const [retreatingCardIndex, setRetreatingCardIndex] = useState<number | null>(null);
+  const reorderTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     setCardOrder(cards.map((_, index) => index));
     setIsCycling(false);
-    setTransition(null);
+    setRetreatingCardIndex(null);
   }, [cards]);
 
   useEffect(() => {
     return () => {
-      cycleTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      cycleTimeoutsRef.current = [];
+      if (reorderTimeoutRef.current !== null) {
+        window.clearTimeout(reorderTimeoutRef.current);
+      }
     };
   }, []);
 
   const handleCardClick = () => {
     if (cards.length <= 1 || isCycling) return;
 
-    const prevOrder = [...cardOrder];
+    const outgoingIndex = cardOrder[0];
     const nextOrder = [...cardOrder];
     const first = nextOrder.shift();
     if (first !== undefined) nextOrder.push(first);
 
     setIsCycling(true);
-    setTransition({ prevOrder, nextOrder, phase: "retreat" });
+    setRetreatingCardIndex(outgoingIndex);
 
-    const settleTimeout = window.setTimeout(() => {
+    reorderTimeoutRef.current = window.setTimeout(() => {
       setCardOrder(nextOrder);
-      setTransition({ prevOrder, nextOrder, phase: "settle" });
-    }, 220);
-
-    const finishTimeout = window.setTimeout(() => {
+      setRetreatingCardIndex(null);
       setIsCycling(false);
-      setTransition(null);
-      cycleTimeoutsRef.current = [];
-    }, 700);
-
-    cycleTimeoutsRef.current = [settleTimeout, finishTimeout];
+      reorderTimeoutRef.current = null;
+    }, 220);
   };
 
   const currentVisibleCards = buildVisibleStack(cardOrder);
-  const transitionPrevVisibleCards = transition
-    ? buildVisibleStack(transition.prevOrder)
-    : [];
-  const transitionNextVisibleCards = transition
-    ? buildVisibleStack(transition.nextOrder)
-    : [];
-
-  const visibleCards = transition
-    ? Array.from(
-        new Map(
-          [...transitionPrevVisibleCards, ...transitionNextVisibleCards].map((item) => [
-            item.cardIndex,
-            item,
-          ]),
-        ).values(),
-      )
-    : currentVisibleCards;
-
-  const currentSlotMap = new Map(
-    currentVisibleCards.map((item) => [item.cardIndex, item.slot]),
-  );
-  const prevSlotMap = new Map(
-    transitionPrevVisibleCards.map((item) => [item.cardIndex, item.slot]),
-  );
-  const nextSlotMap = new Map(
-    transitionNextVisibleCards.map((item) => [item.cardIndex, item.slot]),
-  );
-
-  const getSlotForCard = (cardIndex: number) => {
-    if (!transition) {
-      return currentSlotMap.get(cardIndex) ?? "back";
-    }
-
-    if (transition.phase === "retreat") {
-      const outgoingIndex = transition.prevOrder[0];
-      const incomingIndex = transition.nextOrder[0];
-
-      if (cardIndex === outgoingIndex) return "retreat";
-      if (cardIndex === incomingIndex) return "incoming";
-      return nextSlotMap.get(cardIndex) ?? prevSlotMap.get(cardIndex) ?? "back";
-    }
-
-    return nextSlotMap.get(cardIndex) ?? "back";
-  };
+  const currentSlotMap = new Map(currentVisibleCards.map((item) => [item.cardIndex, item.slot]));
 
   const handleDelete = () => {
-    if (isCycling) return;
     onDelete?.(id);
   };
 
   const badgeCount = cards.length;
-  const deleteVisible = isHovered && !isCycling;
+  const deleteVisible = isHovered;
 
   return (
     <div
@@ -169,9 +112,12 @@ export function FlashcardDeck({
         className="relative h-[20rem] w-full"
         style={{ isolation: "isolate" }}
       >
-        {visibleCards.map(({ cardIndex }) => {
+        {currentVisibleCards.map(({ cardIndex }) => {
           const card = cards[cardIndex];
-          const slot = getSlotForCard(cardIndex);
+          const slot =
+            retreatingCardIndex === cardIndex
+              ? "retreat"
+              : currentSlotMap.get(cardIndex) ?? "back";
 
           return (
             <FlashcardCard
