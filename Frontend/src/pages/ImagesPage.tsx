@@ -16,6 +16,8 @@ import {
 import { toast } from "sonner";
 import mermaid from "mermaid";
 import { API_BASE } from "@/config/api";
+import { offlineFetch } from "@/lib/offlineFetch";
+import { addToSyncQueue } from "@/lib/offlineStore";
 
 // Ensure mermaid is initialized regardless of which page loads first
 mermaid.initialize({
@@ -98,6 +100,14 @@ const DiagramPreview = ({ item }: { item: DiagramItem }) => {
 
   // ── Real AI-generated image ───────────────────────────────────────────────
   if (item.type === "image") {
+    if (error) {
+      return (
+        <div className="aspect-video bg-secondary/50 rounded-t-xl overflow-hidden flex flex-col items-center justify-center gap-2 text-muted-foreground/60">
+          <ImageIcon className="w-8 h-8" />
+          <span className="text-xs">Available when online</span>
+        </div>
+      );
+    }
     return (
       <div className="aspect-video bg-secondary/50 rounded-t-xl overflow-hidden">
         {item.image_url ? (
@@ -198,6 +208,24 @@ const DiagramModal = ({
 
   const handleImageDownload = async () => {
     if (!item.image_url) return;
+    // When offline, try fetching the image directly (SW may have it cached)
+    // instead of going through the backend proxy which won't be available
+    if (!navigator.onLine) {
+      try {
+        const res = await fetch(item.image_url);
+        if (!res.ok) throw new Error("not cached");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${item.topic.replace(/\s+/g, "_")}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        toast.error("Image not cached — download available when online");
+      }
+      return;
+    }
     try {
       const res = await fetch(
         `${API_BASE}/diagrams/download-image?url=${encodeURIComponent(item.image_url)}&filename=${encodeURIComponent(item.topic.replace(/\s+/g, "_"))}.png`
@@ -447,12 +475,10 @@ const ImagesPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/diagrams/history?user_id=${USER_ID}`);
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      const data = await res.json();
+      const { data } = await offlineFetch(`${API_BASE}/diagrams/history?user_id=${USER_ID}`);
       setDiagrams(data.diagrams || []);
     } catch (err: any) {
-      setError("Could not load diagrams. Is the backend running?");
+      setError(err.message === "offline_no_cache" ? "You're offline with no cached data" : "Could not load diagrams. Is the backend running?");
     } finally {
       setLoading(false);
     }
@@ -472,6 +498,11 @@ const ImagesPage = () => {
     // Instant UI removal
     setDiagrams((prev) => prev.filter((d) => d.diagram_id !== diagramId));
     if (selectedDiagram?.diagram_id === diagramId) setSelectedDiagram(null);
+
+    if (!navigator.onLine) {
+      addToSyncQueue({ type: "diagram_delete", url: `${API_BASE}/diagrams/${diagramId}?user_id=${USER_ID}`, method: "DELETE", body: "", createdAt: new Date().toISOString() }).catch(() => {});
+      return;
+    }
 
     // Fire-and-forget backend call
     fetch(`${API_BASE}/diagrams/${diagramId}?user_id=${USER_ID}`, { method: "DELETE" })

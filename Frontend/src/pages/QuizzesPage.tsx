@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle, Clock, Trash2 } from "lucide-react";
+import { ClipboardList, ChevronRight, ArrowLeft, CheckCircle2, XCircle, Clock, Trash2, RefreshCw, WifiOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { API_BASE } from "@/config/api";
+import { offlineFetch } from "@/lib/offlineFetch";
+import { cacheQuizDetail, getCachedQuizDetail, addToSyncQueue, type CachedQuizDetail } from "@/lib/offlineStore";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
 const USER_ID = "student-001";
 
@@ -81,17 +84,45 @@ const QuizzesPage = () => {
   // ── Delete state ───────────────────────────────────────────────────────────
   const [deleteTarget, setDeleteTarget] = useState<QuizSummary | null>(null);
   const [isDeleting, setIsDeleting]     = useState(false);
+  const { isOnline } = useOnlineStatus();
 
-  // ── Fetch lightweight list on mount ───────────────────────────────────────
+  // ── Offline retake state ──────────────────────────────────────────────────
+  const [retakeQuiz, setRetakeQuiz] = useState<CachedQuizDetail | null>(null);
+  const [retakeAnswers, setRetakeAnswers] = useState<(number | null)[]>([]);
+  const [retakeCurrentQ, setRetakeCurrentQ] = useState(0);
+  const [retakeSubmitted, setRetakeSubmitted] = useState(false);
+  const [retakeResults, setRetakeResults] = useState<{ correct: boolean; selected: number; correctIdx: number }[]>([]);
+  const [retakeTimeLeft, setRetakeTimeLeft] = useState<number | null>(null);
+  const [retakeTimedOut, setRetakeTimedOut] = useState(false);
+
+  // ── Fetch lightweight list on mount (offline-aware) ────────────────────────
   useEffect(() => {
     const fetchQuizzes = async () => {
       try {
-        const response = await fetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`);
-        if (!response.ok) throw new Error(`Server error: ${response.status}`);
-        const data = await response.json();
-        setQuizzes(data.quizzes.map(mapSummary));
+        const { data } = await offlineFetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`);
+        const quizList = data.quizzes || [];
+        setQuizzes(quizList.map(mapSummary));
+
+        // Auto-cache first 20 submitted quizzes for offline retake
+        // The history endpoint already returns results with correct_index
+        const toCacheList = quizList
+          .filter((q: any) => q.submitted && q.results && q.results.length > 0)
+          .slice(0, 20);
+        for (const q of toCacheList) {
+          cacheQuizDetail({
+            quiz_id: q.quiz_id,
+            topic: q.topic,
+            questions: q.results.map((r: any) => ({
+              question: r.question,
+              options: r.options,
+              correct_index: r.correct_index,
+              explanation: r.explanation,
+            })),
+            cachedAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
       } catch (err: any) {
-        setError(err.message);
+        setError(err.message === "offline_no_cache" ? "You're offline with no cached data" : err.message);
       } finally {
         setLoading(false);
       }
@@ -104,11 +135,9 @@ const QuizzesPage = () => {
     setDetailLoading(true);
     setDetailError(null);
     try {
-      const response = await fetch(
+      const { data: q } = await offlineFetch(
         `${API_BASE}/quiz/${summary.id}?user_id=${USER_ID}`
       );
-      if (!response.ok) throw new Error(`Server error: ${response.status}`);
-      const q = await response.json();
 
       const questions: QuizQuestion[] = (q.results ?? []).map((r: any) => ({
         question:    r.question,
@@ -117,6 +146,21 @@ const QuizzesPage = () => {
         correct:     r.correct_index,
         explanation: r.explanation,
       }));
+
+      // Cache the full quiz detail for offline retake (includes correct_index)
+      if (questions.length > 0) {
+        cacheQuizDetail({
+          quiz_id: summary.id,
+          topic: summary.topic,
+          questions: questions.map(qq => ({
+            question: qq.question,
+            options: qq.options,
+            correct_index: qq.correct,
+            explanation: qq.explanation,
+          })),
+          cachedAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
 
       setSelectedQuiz({
         ...summary,
@@ -131,6 +175,65 @@ const QuizzesPage = () => {
     }
   };
 
+  // ── Start offline retake ──────────────────────────────────────────────────
+  const handleStartRetake = async (quizId: string, topic: string) => {
+    const cached = await getCachedQuizDetail(quizId);
+    if (!cached) {
+      toast.error("Quiz not cached for offline retake. View it online first.");
+      return;
+    }
+    setRetakeQuiz(cached);
+    setRetakeAnswers(Array(cached.questions.length).fill(null));
+    setRetakeCurrentQ(0);
+    setRetakeSubmitted(false);
+    setRetakeResults([]);
+    setRetakeTimedOut(false);
+    setRetakeTimeLeft(cached.timer_seconds ?? null);
+    setSelectedQuiz(null); // close detail view
+  };
+
+  // ── Retake timer tick ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!retakeQuiz || retakeSubmitted || retakeTimeLeft === null || retakeTimeLeft <= 0) return;
+    const id = setTimeout(() => setRetakeTimeLeft(t => t !== null ? t - 1 : null), 1000);
+    return () => clearTimeout(id);
+  }, [retakeTimeLeft, retakeQuiz, retakeSubmitted]);
+
+  // ── Auto-submit retake when timer hits 0 ──────────────────────────────────
+  useEffect(() => {
+    if (!retakeQuiz || retakeTimeLeft !== 0 || retakeSubmitted) return;
+    setRetakeTimedOut(true);
+    handleRetakeSubmit(retakeAnswers.map(a => a === null ? 0 : a));
+  }, [retakeTimeLeft]);
+
+  // ── Client-side grading for retake ────────────────────────────────────────
+  const handleRetakeSubmit = async (finalAnswers?: (number | null)[]) => {
+    if (!retakeQuiz) return;
+    const answers = (finalAnswers ?? retakeAnswers).map(a => a ?? 0);
+    const unansweredSet = new Set(
+      retakeAnswers.map((a, i) => a === null ? i : -1).filter(i => i >= 0)
+    );
+
+    const results = retakeQuiz.questions.map((q, i) => ({
+      correct: answers[i] === q.correct_index && !unansweredSet.has(i),
+      selected: answers[i],
+      correctIdx: q.correct_index,
+    }));
+
+    setRetakeResults(results);
+    setRetakeSubmitted(true);
+
+    // Queue submission for sync when back online
+    const correctCount = results.filter(r => r.correct).length;
+    if (!navigator.onLine) {
+      toast.success(`📡 Retake complete! Score: ${correctCount}/${results.length}`, {
+        description: "Results will sync when you're back online",
+      });
+    } else {
+      toast.success(`Retake complete! Score: ${correctCount}/${results.length}`);
+    }
+  };
+
   // ── Confirm and execute delete ────────────────────────────────────────────
   const handleDeleteConfirm = async () => {
     if (!deleteTarget) return;
@@ -138,6 +241,11 @@ const QuizzesPage = () => {
     // Optimistic removal — remove from list immediately so UI feels instant
     setQuizzes((prev) => prev.filter((q) => q.id !== deleteTarget.id));
     setDeleteTarget(null);
+    if (!navigator.onLine) {
+      addToSyncQueue({ type: "quiz_delete", url: `${API_BASE}/quiz/${deleteTarget.id}?user_id=${USER_ID}`, method: "DELETE", body: "", createdAt: new Date().toISOString() }).catch(() => {});
+      setIsDeleting(false);
+      return;
+    }
     try {
       const response = await fetch(
         `${API_BASE}/quiz/${deleteTarget.id}?user_id=${USER_ID}`,
@@ -158,6 +266,119 @@ const QuizzesPage = () => {
       setIsDeleting(false);
     }
   };
+  // ── Offline Retake UI ─────────────────────────────────────────────────────
+  if (retakeQuiz) {
+    if (retakeSubmitted) {
+      const correctCount = retakeResults.filter(r => r.correct).length;
+      const totalQ = retakeQuiz.questions.length;
+      const accuracy = Math.round((correctCount / totalQ) * 100);
+      return (
+        <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4">
+          <Button variant="ghost" onClick={() => setRetakeQuiz(null)} className="gap-2 text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-4 h-4" /> Back to Quizzes
+          </Button>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-bold text-foreground">Retake: {retakeQuiz.topic}</h2>
+              {!isOnline && <Badge variant="outline" className="border-amber-500/30 text-amber-400 bg-amber-500/10 text-[10px]"><WifiOff className="w-3 h-3 mr-1" />Offline</Badge>}
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Score: {correctCount}/{totalQ} • Accuracy: {accuracy}%
+            </p>
+          </div>
+          <div className="space-y-4">
+            {retakeQuiz.questions.map((q, i) => {
+              const r = retakeResults[i];
+              return (
+                <Card key={i} className="bg-card border-border">
+                  <CardContent className="p-5 space-y-3">
+                    <div className="flex items-start gap-2">
+                      {r.correct
+                        ? <CheckCircle2 className="w-5 h-5 text-success mt-0.5 shrink-0" />
+                        : <XCircle className="w-5 h-5 text-destructive mt-0.5 shrink-0" />}
+                      <p className="text-sm font-medium text-foreground">{q.question}</p>
+                    </div>
+                    <div className="grid gap-2 ml-7">
+                      {q.options.map((opt, oi) => (
+                        <div key={oi} className={`text-sm px-3 py-2 rounded-lg border ${
+                          oi === q.correct_index ? "border-success/40 bg-success/10 text-success"
+                          : oi === r.selected && !r.correct ? "border-destructive/40 bg-destructive/10 text-destructive"
+                          : "border-border text-muted-foreground"
+                        }`}>{opt}</div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground ml-7 bg-secondary/50 p-3 rounded-lg">💡 {q.explanation}</p>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Active retake quiz (answering) ────────────────────────────────────
+    const question = retakeQuiz.questions[retakeCurrentQ];
+    const totalQ = retakeQuiz.questions.length;
+    const allAnswered = retakeAnswers.every(a => a !== null);
+    return (
+      <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4">
+        <div className="flex items-center justify-between">
+          <Button variant="ghost" onClick={() => setRetakeQuiz(null)} className="gap-2 text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-4 h-4" /> Cancel Retake
+          </Button>
+          <div className="flex items-center gap-3">
+            {!isOnline && <Badge variant="outline" className="border-amber-500/30 text-amber-400 bg-amber-500/10 text-[10px]"><WifiOff className="w-3 h-3 mr-1" />Offline</Badge>}
+            {retakeTimeLeft !== null && (
+              <Badge variant={retakeTimeLeft < 10 ? "destructive" : "secondary"} className="font-mono text-sm px-3">
+                <Clock className="w-3 h-3 mr-1" />{Math.floor(retakeTimeLeft / 60)}:{(retakeTimeLeft % 60).toString().padStart(2, "0")}
+              </Badge>
+            )}
+          </div>
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-foreground">Retake: {retakeQuiz.topic}</h2>
+          <p className="text-sm text-muted-foreground">Question {retakeCurrentQ + 1} of {totalQ}</p>
+        </div>
+        {/* Progress bar */}
+        <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+          <div className="h-full bg-primary rounded-full transition-all duration-300"
+            style={{ width: `${((retakeCurrentQ + 1) / totalQ) * 100}%` }} />
+        </div>
+        <Card className="bg-card border-border">
+          <CardContent className="p-5 space-y-4">
+            <p className="text-sm font-medium text-foreground">{question.question}</p>
+            <div className="grid gap-2">
+              {question.options.map((opt, oi) => (
+                <button key={oi}
+                  className={`text-left text-sm px-4 py-3 rounded-lg border transition-all ${
+                    retakeAnswers[retakeCurrentQ] === oi
+                      ? "border-primary bg-primary/15 text-foreground"
+                      : "border-border text-muted-foreground hover:border-primary/50 hover:bg-primary/5"
+                  }`}
+                  onClick={() => setRetakeAnswers(prev => { const n = [...prev]; n[retakeCurrentQ] = oi; return n; })}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-between pt-2">
+              <Button variant="ghost" size="sm" disabled={retakeCurrentQ === 0}
+                onClick={() => setRetakeCurrentQ(p => p - 1)}>← Previous</Button>
+              {retakeCurrentQ < totalQ - 1 ? (
+                <Button size="sm" disabled={retakeAnswers[retakeCurrentQ] === null}
+                  onClick={() => setRetakeCurrentQ(p => p + 1)}>Next →</Button>
+              ) : (
+                <Button size="sm" disabled={!allAnswered}
+                  onClick={() => handleRetakeSubmit()}>Submit</Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   if (detailLoading) {
     return (
       <div className="p-4 md:p-6 overflow-y-auto h-full space-y-4 animate-pulse">
@@ -234,14 +455,24 @@ const QuizzesPage = () => {
           >
             <ArrowLeft className="w-4 h-4" /> Back to Quizzes
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setDeleteTarget(selectedQuiz)}
-            className="gap-2 text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10"
-          >
-            <Trash2 className="w-4 h-4" /> Delete Quiz
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleStartRetake(selectedQuiz.id, selectedQuiz.topic)}
+              className="gap-2 text-primary hover:text-primary hover:bg-primary/10 border-primary/30"
+            >
+              <RefreshCw className="w-4 h-4" /> Retake Quiz
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setDeleteTarget(selectedQuiz)}
+              className="gap-2 text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10"
+            >
+              <Trash2 className="w-4 h-4" /> Delete Quiz
+            </Button>
+          </div>
         </div>
 
         <div>

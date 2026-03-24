@@ -4,6 +4,7 @@ import AppSidebar from "./AppSidebar";
 import AppHeader from "./AppHeader";
 import { Outlet } from "react-router-dom";
 import { API_BASE } from "@/config/api";
+import { OfflineBanner } from "@/components/OfflineBanner";
 
 // ── Heartbeat: fires every 60s while the tab is active and focused ────────────
 const USER_ID = "student-001";
@@ -13,6 +14,7 @@ function useStudyHeartbeat() {
 
   const sendBeat = () => {
     if (document.visibilityState !== "visible") return;
+    if (!navigator.onLine) return; // skip when offline — prevents 500 spam
     fetch(`${API_BASE}/sessions/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -47,6 +49,7 @@ const AppLayout = () => {
       <div className="flex w-full overflow-hidden" style={{ height: "100dvh" }}>
         <AppSidebar />
         <div className="flex-1 flex flex-col min-w-0" style={{ height: "100dvh" }}>
+          <OfflineBanner />
           <AppHeader />
           <main className="flex-1 flex flex-col overflow-hidden">
             <Outlet />

@@ -1,0 +1,18 @@
+{
+  "name": "Study Buddy - AI Learning Assistant",
+  "short_name": "StudyBuddy",
+  "description": "AI-powered offline-capable learning assistant for students",
+  "start_url": "/chat",
+  "display": "standalone",
+  "background_color": "#0f0f1a",
+  "theme_color": "#6366f1",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ],
+  "categories": ["education", "productivity"]
+}

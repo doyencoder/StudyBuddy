@@ -1,7 +1,7 @@
 import * as React from "react";
 import {
   Trash2, Plus, MessageSquare,
-  Sparkles, Calculator, Loader2,
+  Sparkles, Calculator, Loader2, WifiOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -169,11 +169,11 @@ function normalizeAIError(raw: string): string {
     || lower.includes("responsibleaipolicyviolation")
     || lower.includes("filtered due to")
   ) {
-    return "That request can’t be turned into a graph here. Try a math prompt like 'unit circle' or 'y = sin(x)'.";
+    return "That request can't be turned into a graph here. Try a math prompt like 'unit circle' or 'y = sin(x)'.";
   }
 
   if (lower.includes("could not parse ai response") || lower.includes("parse")) {
-    return "I couldn’t turn that into a graph. Try a direct equation or graph request like 'parabola' or 'y = 2x + 1'.";
+    return "I couldn't turn that into a graph. Try a direct equation or graph request like 'parabola' or 'y = 2x + 1'.";
   }
 
   if (lower.includes("i can only graph math equations")) {
@@ -291,8 +291,6 @@ function latexToMathjs(latex: string): string {
   }
 
   // Add implicit parens for function calls not followed by (
-  // e.g. "sin x" → "sin(x)",  "cos 2x" → "cos(2x)",  "sin x + 1" → "sin(x)"
-  // Matches: fn followed by space then a token (variable, number, or paren group)
   for (const fn of FNS) {
     s = s.replace(
       new RegExp(`\\b${fn}\\s+([a-zA-Z0-9_]+|\\([^)]*\\))`, "g"),
@@ -434,11 +432,6 @@ function MathQuillInput({
     onEmptyRef.current?.();
   }, [fallbackValue]);
 
-  // Expose a clear() method via an imperative handle so the parent can
-  // clear the MathQuill field visually after a successful submit.
-  // We store it on the span element so the parent can call spanRef.current?.__mqClear?.()
-  // without needing React.forwardRef complexity.
-
   // Init MathField once MQ is loaded
   React.useEffect(() => {
     if (!mq || !spanRef.current || mqRef.current) return;
@@ -479,7 +472,7 @@ function MathQuillInput({
     };
   }, [mq]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // If MQ hasn't loaded yet, show a plain input as fallback
+  // If MQ hasn't loaded yet (CDN offline or first load), show a working plain input
   if (!mq) {
     return (
       <input
@@ -581,6 +574,19 @@ export function EquationsPanel({
   const [mqValue,    setMqValue]    = React.useState("");   // live mathjs from MathQuill field
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Reactive online status (navigator.onLine alone doesn't trigger re-renders)
+  const [online, setOnline] = React.useState(navigator.onLine);
+  React.useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => { setOnline(false); setIsAIMode(false); }; // auto-switch to Math
+    window.addEventListener("online", on);
+    window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
+
+  // Prefetch MathQuill CDN scripts on mount so they're ready when the user
+  // navigates to Nova — avoids the "Loading…" flash on first visit.
   useMathQuill();
 
   React.useEffect(() => {
@@ -613,9 +619,6 @@ export function EquationsPanel({
   };
 
   // ── Submit handler (both Math and AI modes) ────────────────────────────────
-  // valueOverride: used by MathQuill's enter handler to pass the live lastVal
-  // directly, bypassing React state timing (edited fires setMqValue but React
-  // may not have re-rendered before enter fires).
   const handleSubmit = async (valueOverride?: string) => {
     const trimmed = (valueOverride ?? submitValue).trim();
     if (!trimmed) return;
@@ -653,7 +656,7 @@ export function EquationsPanel({
         );
         setInputValue("");
       } catch {
-        setError("I couldn’t reach Nova AI right now. Try again with a graph request like 'ellipse' or 'y = x^2'.");
+        setError("I couldn't reach Nova AI right now. Try again with a graph request like 'ellipse' or 'y = x^2'.");
       } finally {
         setIsLoading(false);
       }
@@ -662,8 +665,6 @@ export function EquationsPanel({
       onAddEquations([trimmed], "");
       setInputValue("");
       setMqValue("");
-      // Note: MathQuill field is cleared visually by the enter handler itself.
-      // If submitted via + button, we rely on setMqValue("") to disable the button.
     }
   };
 
@@ -752,15 +753,19 @@ export function EquationsPanel({
             Math
           </button>
           <button
-            onClick={() => setIsAIMode(true)}
+            onClick={() => { if (online) setIsAIMode(true); }}
+            disabled={!online}
             className={cn(
               "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs transition-colors flex-1 justify-center",
-              isAIMode
-                ? "bg-primary/10 text-primary border border-primary/20 shadow-sm font-medium"
-                : "text-muted-foreground hover:text-foreground",
+              !online
+                ? "text-muted-foreground/40 cursor-not-allowed"
+                : isAIMode
+                  ? "bg-primary/10 text-primary border border-primary/20 shadow-sm font-medium"
+                  : "text-muted-foreground hover:text-foreground",
             )}
+            title={!online ? "AI mode requires internet" : undefined}
           >
-            <Sparkles className="w-3 h-3" />
+            {!online ? <WifiOff className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
             AI
           </button>
         </div>
@@ -835,9 +840,6 @@ export function EquationsPanel({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EquationGroupRow
-// Renders one "group" of equations (could be 1 standalone or 2 halves of an ellipse).
-// If the group has a displayExpression, shows that ONE pretty implicit form.
-// Otherwise shows each equation individually.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function EquationGroupRow({
@@ -856,14 +858,9 @@ function EquationGroupRow({
   const primary   = group[0];
   const allVisible = group.every((eq) => eq.visible);
 
-  // Delete all equations in the group at once
   const handleDeleteGroup = () => group.forEach((eq) => onDelete(eq.id));
-
-  // Toggle visibility for all in the group at once
   const handleToggleGroup = () => group.forEach((eq) => onToggleVisibility(eq.id));
 
-  // Show ONE pretty display equation if the group has one (e.g. "x^2/9 + y^2/4 = 1")
-  // rather than showing the two sqrt halves separately
   const hasDisplay = !!primary.displayExpression;
 
   return (
@@ -874,7 +871,6 @@ function EquationGroupRow({
         !allVisible && "opacity-40",
       )}
     >
-      {/* Colour dot — click to toggle visibility */}
       <div
         className="w-2.5 h-2.5 rounded-full shrink-0 mt-[6px] transition-transform group-hover:scale-110 cursor-pointer"
         style={colorDotStyle[primary.color] ?? { backgroundColor: "hsl(var(--primary))" }}
@@ -882,30 +878,22 @@ function EquationGroupRow({
         title={allVisible ? "Hide" : "Show"}
       />
 
-      {/* Equation display area */}
       <div className="flex-1 min-w-0 overflow-hidden">
         {hasDisplay ? (
-          // Show the single clean implicit form
           <EditableEquation
             equation={{ ...primary, expression: primary.displayExpression! }}
             onEdit={(_id, val) => {
-              // Delete all non-primary group members — the edited equation
-              // will have groupId cleared by handleEdit, so it stands alone.
-              // The MathEvaluator handles y² forms internally (two evaluators
-              // per CurveEntry), so we don't need two separate equations anymore.
               group.slice(1).forEach((eq) => onDelete(eq.id));
               onEdit(primary.id, val);
             }}
           />
         ) : (
-          // Show each equation in the group individually
           group.map((eq) => (
             <EditableEquation key={eq.id} equation={eq} onEdit={onEdit} />
           ))
         )}
       </div>
 
-      {/* Actions: delete — appear on hover */}
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5">
         <button
           onClick={handleDeleteGroup}
@@ -921,8 +909,6 @@ function EquationGroupRow({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EditableEquation
-// Shows a KaTeX-rendered equation. Click anywhere on it to enter edit mode.
-// Pressing Enter or clicking away commits the edit; Escape cancels.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function EditableEquation({

@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from "@/contexts/AppearanceContext";
+import { offlineFetch } from "@/lib/offlineFetch";
+import { addToSyncQueue } from "@/lib/offlineStore";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -199,29 +202,27 @@ const SettingsPage = () => {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // ── Fetch Settings ───────────────────────────────────────────────────────
+  // ── Fetch Settings (offline-aware) ──────────────────────────────────────
+
+  const { isOnline } = useOnlineStatus();
 
   const fetchSettings = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`);
-      if (res.ok) {
-        const data = await res.json();
-        const appearance = data.appearance || { color_mode: "auto", chat_font: "default", voice: "buttery" };
-        setSettings({
-          profile: data.profile || { full_name: "", display_name: "", email: "" },
-          notifications: data.notifications || { goal_reminders: false, long_term_goals_reminder: false, study_streak_alerts: false },
-          ai_preferences: data.ai_preferences || { simplified_explanations: true, auto_generate_flashcards: false },
-          appearance,
-        });
-        // Sync AppearanceContext so the theme/font/voice apply immediately
-        setColorMode(appearance.color_mode as ColorMode);
-        setChatFont(appearance.chat_font as ChatFont);
-        setVoice(appearance.voice as VoiceSetting);
+      const { data } = await offlineFetch(`${API_BASE}/settings/?user_id=${USER_ID}`);
+      const appearance = data.appearance || { color_mode: "auto", chat_font: "default", voice: "buttery" };
+      setSettings({
+        profile: data.profile || { full_name: "", display_name: "", email: "" },
+        notifications: data.notifications || { goal_reminders: false, long_term_goals_reminder: false, study_streak_alerts: false },
+        ai_preferences: data.ai_preferences || { simplified_explanations: true, auto_generate_flashcards: false },
+        appearance,
+      });
+      setColorMode(appearance.color_mode as ColorMode);
+      setChatFont(appearance.chat_font as ChatFont);
+      setVoice(appearance.voice as VoiceSetting);
         // Hydrate curriculum fields (null-safe — existing users won't have these)
         setCurriculumBoard(data.curriculum_board ?? null);
         setCurriculumGrade(data.curriculum_grade ?? null);
         setCurriculumEnabled(data.curriculum_enabled ?? false);
-      }
     } catch (err) {
       console.error("Failed to fetch settings:", err);
     }
@@ -229,8 +230,8 @@ const SettingsPage = () => {
 
   const fetchAccount = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/settings/account?user_id=${USER_ID}`);
-      if (res.ok) setAccount(await res.json());
+      const { data } = await offlineFetch(`${API_BASE}/settings/account?user_id=${USER_ID}`);
+      setAccount(data);
     } catch (err) {
       console.error("Failed to fetch account:", err);
     }
@@ -238,12 +239,9 @@ const SettingsPage = () => {
 
   const fetchBilling = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/settings/billing?user_id=${USER_ID}`);
-      if (res.ok) {
-        const data = await res.json();
-        setBillingPlans(data.plans);
-        setCurrentPlan(data.current_plan);
-      }
+      const { data } = await offlineFetch(`${API_BASE}/settings/billing?user_id=${USER_ID}`);
+      setBillingPlans(data.plans);
+      setCurrentPlan(data.current_plan);
     } catch (err) {
       console.error("Failed to fetch billing:", err);
     }
@@ -251,11 +249,8 @@ const SettingsPage = () => {
 
   const fetchConnectors = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/settings/connectors?user_id=${USER_ID}`);
-      if (res.ok) {
-        const data = await res.json();
-        setConnectors(data.connectors);
-      }
+      const { data } = await offlineFetch(`${API_BASE}/settings/connectors?user_id=${USER_ID}`);
+      setConnectors(data.connectors);
     } catch (err) {
       console.error("Failed to fetch connectors:", err);
     }
@@ -287,7 +282,17 @@ const SettingsPage = () => {
           body: JSON.stringify(updates),
         });
       } catch {
-        // silent — change is already reflected in local state
+        // Offline — queue for later sync
+        addToSyncQueue({
+          type: "settings_save",
+          url: `${API_BASE}/settings/?user_id=${USER_ID}`,
+          method: "PUT",
+          body: JSON.stringify(updates),
+          createdAt: new Date().toISOString(),
+        }).catch(() => {});
+        if (!navigator.onLine) {
+          toast.info("Settings saved locally — will sync when online", { duration: 2000 });
+        }
       } finally {
         setSaving(false);
       }

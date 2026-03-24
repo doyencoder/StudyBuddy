@@ -3,7 +3,7 @@ import {
   BookOpen, Target, ClipboardList, TrendingUp, TrendingDown, Flame,
   ChevronRight, Zap, AlertTriangle,
   Brain, Sparkles, CalendarDays, ChevronDown, ChevronUp, Clock,
-  Save, Loader2, CheckCircle2, Gauge,
+  Save, Loader2, CheckCircle2, Gauge, WifiOff,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer,
@@ -20,6 +20,10 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import { offlineFetch } from "@/lib/offlineFetch";
+import { addToSyncQueue } from "@/lib/offlineStore";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { formatCachedTime } from "@/lib/offlineStore";
 
 // ─── colour aliases — V0 uses --chart-1/2/3, this project uses --primary/--accent
 // We resolve them here as inline-style strings so nothing else needs changing.
@@ -479,36 +483,42 @@ const DashboardPage = () => {
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([1]));
   const [goalSaved, setGoalSaved]       = useState(false);
 
-  // ── Fetches ─────────────────────────────────────────────────────────────────
+  // ── Offline awareness ──────────────────────────────────────────────────────
+  const { isOnline } = useOnlineStatus();
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+
+  // ── Fetches (offline-aware) ─────────────────────────────────────────────────
   useEffect(() => {
-    fetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setDismissedTopics(d.dismissed_topics || [])).catch(() => {});
+    offlineFetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`)
+      .then(({ data: d }) => d && setDismissedTopics(d.dismissed_topics || []))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/settings/?user_id=${USER_ID}`)
-      .then(r => r.ok ? r.json() : null).then(d => d && setDisplayName(d.profile?.display_name || "")).catch(() => {});
+    offlineFetch(`${API_BASE}/settings/?user_id=${USER_ID}`)
+      .then(({ data: d }) => d && setDisplayName(d.profile?.display_name || ""))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`)
-      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-      .then(d => setQuizzes(d.quizzes || []))
+    offlineFetch(`${API_BASE}/quiz/history?user_id=${USER_ID}`)
+      .then(({ data: d, fromCache, cachedAt: ct }) => {
+        setQuizzes(d.quizzes || []);
+        if (fromCache && ct) setCachedAt(ct);
+      })
       .catch(() => toast.error("Could not load dashboard data. Is the backend running?"))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/sessions/weekly?user_id=${USER_ID}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => d && setWeeklyMinutes(d.total_minutes))
+    offlineFetch(`${API_BASE}/sessions/weekly?user_id=${USER_ID}`)
+      .then(({ data: d }) => d && setWeeklyMinutes(d.total_minutes))
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/goals/?user_id=${USER_ID}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
+    offlineFetch(`${API_BASE}/goals/?user_id=${USER_ID}`)
+      .then(({ data: d }) => {
         if (d) {
           const items = Array.isArray(d) ? d : d.goals || [];
           setGoals(items.map((g: any) => ({ goal_id: g.goal_id || g.id || "", title: g.title || "", progress: g.progress ?? 0 })));
@@ -526,6 +536,24 @@ const DashboardPage = () => {
   const handleGeneratePlan = async () => {
     if (!improveTopic.trim()) { toast.error("Please enter a topic."); return; }
     if (improveWeeks < 1 || improveWeeks > 52) { toast.error("Weeks must be between 1 and 52."); return; }
+
+    // Offline: skip LLM plan generation, queue a basic goal directly
+    if (!navigator.onLine) {
+      const startDate = new Date().toISOString().slice(0, 10);
+      const endDate = new Date(Date.now() + improveWeeks * 7 * 86400000).toISOString().slice(0, 10);
+      const weeklyPlan = Array.from({ length: improveWeeks }, (_, i) => {
+        const ws = new Date(Date.now() + i * 7 * 86400000);
+        const we = new Date(ws.getTime() + 6 * 86400000);
+        return { week_number: i + 1, start_date: ws.toISOString().slice(0, 10), end_date: we.toISOString().slice(0, 10), tasks: [`Study: ${improveTopic.trim()}`], estimate_hours: 8 };
+      });
+      const goalBody = JSON.stringify({ user_id: USER_ID, title: `Improve: ${improveTopic.trim()}`, start_date: startDate, end_date: endDate, weekly_plan: weeklyPlan, progress: 0, reminder: null });
+      await addToSyncQueue({ type: "goal_create", url: `${API_BASE}/goals/`, method: "POST", body: goalBody, createdAt: new Date().toISOString() });
+      setGoalSaved(true);
+      toast.success("📡 Goal queued — will be created when you're back online");
+      setImproveDialogOpen(false);
+      return;
+    }
+
     setImproveStep("generating");
     try {
       const res = await fetch(`${API_BASE}/study_plans/generate`, {
@@ -540,10 +568,19 @@ const DashboardPage = () => {
   const handleSaveAsGoal = async () => {
     if (!generatedPlan) return;
     setImproveStep("saving-goal");
+    const goalBody = JSON.stringify({ user_id: USER_ID, title: generatedPlan.title, start_date: generatedPlan.start_date, end_date: generatedPlan.end_date, weekly_plan: generatedPlan.weeks, progress: 0, reminder: null });
+    if (!navigator.onLine) {
+      // Queue for sync when back online
+      await addToSyncQueue({ type: "goal_create", url: `${API_BASE}/goals/`, method: "POST", body: goalBody, createdAt: new Date().toISOString() });
+      setGoalSaved(true);
+      toast.success("📡 Goal queued — will be created when you're back online");
+      setImproveStep("ask-remove");
+      return;
+    }
     try {
       const r = await fetch(`${API_BASE}/goals/`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: USER_ID, title: generatedPlan.title, start_date: generatedPlan.start_date, end_date: generatedPlan.end_date, weekly_plan: generatedPlan.weeks, progress: 0, reminder: null }),
+        body: goalBody,
       });
       if (!r.ok) throw new Error("Failed to save goal");
       setGoalSaved(true); toast.success("Study plan saved as a goal!"); setImproveStep("ask-remove");
@@ -571,10 +608,31 @@ const DashboardPage = () => {
   const avgScore      = useMemo(() => !submittedQuizzes.length ? 0 : Math.round(submittedQuizzes.reduce((a, q) => a + (q.score ?? 0), 0) / submittedQuizzes.length), [submittedQuizzes]);
   const uniqueTopics  = useMemo(() => new Set(quizzes.map(q => q.topic)).size, [quizzes]);
   const studyStreak   = useMemo(() => {
-    if (!quizzes.length) return 0;
-    const days = new Set(quizzes.map(q => new Date(q.created_at).toISOString().split("T")[0]));
-    let streak = 0; const today = new Date();
-    for (let i = 0; i < 365; i++) { const d = new Date(today); d.setDate(today.getDate() - i); if (days.has(d.toISOString().split("T")[0])) streak++; else if (i > 0) break; }
+    // Build set of local-date strings (YYYY-MM-DD) with quiz activity
+    const days = new Set<string>();
+    for (const q of quizzes) {
+      const d = new Date(q.created_at);
+      // Use local date string to avoid UTC timezone mismatch
+      const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      days.add(localDate);
+    }
+    // Always count today as active (user is viewing the dashboard right now)
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    days.add(todayStr);
+
+    // Count consecutive days backwards from today
+    let streak = 0;
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (days.has(dateStr)) {
+        streak++;
+      } else {
+        break; // streak broken
+      }
+    }
     return streak;
   }, [quizzes]);
   const thisWeekCount = useMemo(() => { const w = new Date(); w.setDate(w.getDate() - 7); return quizzes.filter(q => new Date(q.created_at) >= w).length; }, [quizzes]);
@@ -835,6 +893,12 @@ if (loading) {
                 Welcome back{displayName ? `, ${displayName}` : ""}!
               </h1>
               <p className="mt-1 text-muted-foreground">Track your learning journey and improve every day.</p>
+              {cachedAt && !isOnline && (
+                <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-400/80">
+                  <WifiOff className="h-3 w-3" />
+                  <span>Offline · Last synced {formatCachedTime(cachedAt)}</span>
+                </div>
+              )}
             </div>
             {weeklyMinutes !== null && (
               <div className="flex items-center gap-2 mt-1 md:flex-col md:items-end md:gap-1">

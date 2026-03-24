@@ -18,6 +18,7 @@ import {
   ChevronUp,
   Search,
   Maximize2, ZoomIn, ZoomOut, X,TrendingUp,
+  WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +35,8 @@ import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAppearance } from "@/contexts/AppearanceContext";
 import CelebrationOverlay from "@/components/CelebrationOverlay";
+import { cacheConversation, getCachedConversation } from "@/lib/offlineStore";
+import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
 mermaid.initialize({
@@ -2286,6 +2289,7 @@ function WelcomeScreen({ onSuggestion, onStarterPrompt }: WelcomeScreenProps) {
 const ChatPage = () => {
   const { language } = useLanguage();
   const { voice } = useAppearance();
+  const { isOnline } = useOnlineStatus();
   // ── Per-conversation state map ──────────────────────────────────────────────
   // Keyed by conversation ID (or NEW_CONV_KEY for an unsaved new chat).
   // SSE handlers always write into their own slot, so switching convs never
@@ -2442,11 +2446,53 @@ const ChatPage = () => {
     }));
 
     const loadHistory = async () => {
+      let data: any = null;
+
+      // Try network first, fall back to IndexedDB cache
       try {
         const res = await fetch(`${API_BASE}/chat/history/${urlConversationId}`);
-        if (!res.ok) return;
-        const data = await res.json();
+        if (!res.ok) throw new Error("fetch failed");
+        data = await res.json();
+        // Cache for offline browsing (non-blocking)
+        cacheConversation({
+          conversation_id: urlConversationId,
+          messages: data.messages,
+          cachedAt: new Date().toISOString(),
+        }).catch(() => {});
+      } catch {
+        // Offline or network error — try cache
+        try {
+          const cached = await getCachedConversation(urlConversationId);
+          if (cached) {
+            data = { messages: cached.messages };
+          } else {
+            // Not cached — show inline message instead of blank screen
+            updateConv(urlConversationId, () => ({
+              messages: [
+                INITIAL_MESSAGES[0],
+                {
+                  id: "offline-notice",
+                  role: "assistant" as const,
+                  content: "📡 This conversation isn't available offline. Open it once while connected to cache it for offline viewing.",
+                  timestamp: new Date(),
+                },
+              ],
+              isTyping: false, isReadingDoc: false, isSearchingWeb: false,
+              regeneratingMsgId: null, retakingMsgId: null,
+            }));
+            setIsLoadingHistory(false);
+            lastLoadedId.current = urlConversationId;
+            loadedConvIds.current.add(urlConversationId);
+            return;
+          }
+        } catch {
+          toast.error("Could not load conversation history.");
+          setIsLoadingHistory(false);
+          return;
+        }
+      }
 
+      try {
         const loadedMessages: Message[] = data.messages.map((m: any) => {
           let parsed: any = null;
           if (
@@ -2979,6 +3025,26 @@ const ChatPage = () => {
   // ── Quiz helpers ────────────────────────────────────────────────────────────
   const handleQuizComplete = (messageId: string, updatedQuizData: QuizData) => {
     if (!activeConvId) return;
+
+    // Cache quiz for offline retake (results contain correct_index)
+    if (updatedQuizData.results && updatedQuizData.results.length > 0) {
+      import("@/lib/offlineStore").then(({ cacheQuizDetail }) => {
+        cacheQuizDetail({
+          quiz_id: updatedQuizData.quiz_id,
+          topic: updatedQuizData.topic,
+          questions: updatedQuizData.results!.map(r => ({
+            question: r.question,
+            options: r.options,
+            correct_index: r.correct_index,
+            explanation: r.explanation,
+          })),
+          timer_seconds: updatedQuizData.timer_seconds,
+          num_questions: updatedQuizData.num_questions,
+          cachedAt: new Date().toISOString(),
+        }).catch(() => {});
+      });
+    }
+
     updateConv(activeConvId, (s) => ({
       ...s,
       messages: s.messages.map((m) => {
@@ -4606,6 +4672,7 @@ const ChatPage = () => {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
+                      if (!isOnline) return;
                       if (!input.trim() && !attachedFiles.some((f) => f.status === "ready")) return;
                       sendMessage();
                     }
@@ -4627,10 +4694,10 @@ const ChatPage = () => {
                       <DropdownMenuItem
                         onClick={() => fileInputRef.current?.click()}
                         className="gap-3 text-foreground cursor-pointer"
-                        disabled={attachedFiles.length >= 5}
+                        disabled={attachedFiles.length >= 5 || !isOnline}
                       >
                         <Paperclip className={`w-4 h-4 text-primary ${attachedFiles.some((f) => f.status === "uploading") ? "animate-pulse" : ""}`} />
-                        Add photos &amp; files
+                        {!isOnline ? "Upload requires internet" : "Add photos & files"}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator className="bg-border/50 my-1" />
                       {TOOLS.map((tool) => {
@@ -4661,11 +4728,12 @@ const ChatPage = () => {
                   </Button>
                   <Button
                     onClick={sendMessage}
-                    disabled={(!input.trim() && !attachedFiles.some((f) => f.status === "ready")) || isTyping || attachedFiles.some((f) => f.status === "uploading")}
+                    disabled={(!input.trim() && !attachedFiles.some((f) => f.status === "ready")) || isTyping || attachedFiles.some((f) => f.status === "uploading") || !isOnline}
                     size="icon"
                     className="h-8 w-8 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"
+                    title={!isOnline ? "Chat requires internet" : undefined}
                   >
-                    <Send className="w-4 h-4" />
+                    {!isOnline ? <WifiOff className="w-4 h-4" /> : <Send className="w-4 h-4" />}
                   </Button>
                 </div>
               </>
@@ -4691,7 +4759,7 @@ const ChatPage = () => {
                       <DropdownMenuItem
                         onClick={() => fileInputRef.current?.click()}
                         className="gap-3 text-foreground cursor-pointer"
-                        disabled={attachedFiles.length >= 5}
+                        disabled={attachedFiles.length >= 5 || !isOnline}
                       >
                         <Paperclip
                           className={`w-4 h-4 text-primary ${
@@ -4700,7 +4768,7 @@ const ChatPage = () => {
                               : ""
                           }`}
                         />
-                        Add photos &amp; files
+                        {!isOnline ? "Upload requires internet" : "Add photos & files"}
                       </DropdownMenuItem>
                       <DropdownMenuSeparator className="bg-border/50 my-1" />
                       {TOOLS.map((tool) => {
@@ -4727,6 +4795,7 @@ const ChatPage = () => {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
+                      if (!isOnline) return;
                       if (!input.trim() && !attachedFiles.some((f) => f.status === "ready")) return;
                       sendMessage();
                     }
@@ -4757,12 +4826,14 @@ const ChatPage = () => {
                       (!input.trim() &&
                         !attachedFiles.some((f) => f.status === "ready")) ||
                       isTyping ||
-                      attachedFiles.some((f) => f.status === "uploading")
+                      attachedFiles.some((f) => f.status === "uploading") ||
+                      !isOnline
                     }
                     size="icon"
                     className="h-9 w-9 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-30 shrink-0"
+                    title={!isOnline ? "Chat requires internet" : undefined}
                   >
-                    <Send className="w-4 h-4" />
+                    {!isOnline ? <WifiOff className="w-4 h-4" /> : <Send className="w-4 h-4" />}
                   </Button>
                 </div>
               </div>

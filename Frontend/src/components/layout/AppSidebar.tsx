@@ -53,6 +53,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { API_BASE } from "@/config/api";
+import { cacheAPIResponse, getCachedAPI, addToSyncQueue, cacheConversation } from "@/lib/offlineStore";
 
 const USER_ID = "student-001";
 
@@ -122,15 +123,17 @@ const AppSidebar = () => {
   }, []);
 
   const fetchConversations = async () => {
+    const cacheKey = `conversations_${USER_ID}`;
     try {
       const res = await fetch(`${API_BASE}/chat/conversations?user_id=${USER_ID}`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error("fetch failed");
       const data = await res.json();
       const incoming: Conversation[] = data.conversations || [];
 
+      // Cache for offline use
+      cacheAPIResponse(cacheKey, incoming).catch(() => {});
+
       // Preserve optimistic bump while a prompt is in-flight for an existing chat.
-      // Without this, any in-flight/background fetch can temporarily overwrite the
-      // optimistic updated_at and make the row jump down before final confirmation.
       setConversations((prev) => {
         const prevById = new Map(prev.map((c) => [c.conversation_id, c]));
         return incoming.map((conv) => {
@@ -139,11 +142,44 @@ const AppSidebar = () => {
           return prevConv?.updated_at ? { ...conv, updated_at: prevConv.updated_at } : conv;
         });
       });
-    } catch { /* Silently fail */ }
+    } catch {
+      // Offline — try loading from cache
+      try {
+        const cached = await getCachedAPI<Conversation[]>(cacheKey);
+        if (cached && conversations.length === 0) {
+          setConversations(cached.data);
+        }
+      } catch { /* silently fail */ }
+    }
   };
 
   useEffect(() => { fetchConversations(); }, []);
   useEffect(() => { fetchConversations(); }, [location.pathname]);
+
+  // Proactively fetch & cache starred conversations for offline access
+  const cachedStarredRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!navigator.onLine) return;
+    const starred = conversations.filter(c => c.starred);
+    for (const conv of starred) {
+      if (cachedStarredRef.current.has(conv.conversation_id)) continue;
+      cachedStarredRef.current.add(conv.conversation_id);
+      // Fire-and-forget: fetch history and cache it
+      fetch(`${API_BASE}/chat/history/${conv.conversation_id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.messages) {
+            cacheConversation({
+              conversation_id: conv.conversation_id,
+              messages: data.messages,
+              starred: true,
+              cachedAt: new Date().toISOString(),
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
+  }, [conversations]);
 
   useEffect(() => {
     const onVisible = () => {
@@ -296,6 +332,10 @@ const AppSidebar = () => {
     setDeleteTargetId(null);
     setConversations(prev => prev.filter(c => c.conversation_id !== id));
     if (activeConversationId === id) navigate("/chat");
+    if (!navigator.onLine) {
+      addToSyncQueue({ type: "chat_delete", url: `${API_BASE}/chat/conversations/${id}?user_id=${USER_ID}`, method: "DELETE", body: "", createdAt: new Date().toISOString() }).catch(() => {});
+      return;
+    }
     try {
       await fetch(`${API_BASE}/chat/conversations/${id}?user_id=${USER_ID}`, { method: "DELETE" });
     } catch { /* Silently fail */ }

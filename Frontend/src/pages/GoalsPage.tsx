@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Check, Bell, Trash2, ChevronDown, ChevronUp, Clock, CalendarDays } from "lucide-react";
+import { Plus, Check, Bell, Trash2, ChevronDown, ChevronUp, Clock, CalendarDays, WifiOff } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import CelebrationOverlay, { CelebrationVariant } from "@/components/CelebrationOverlay";
+import { offlineFetch } from "@/lib/offlineFetch";
+import { addToSyncQueue } from "@/lib/offlineStore";
 
 const USER_ID = "student-001";
 
@@ -325,16 +327,36 @@ const GoalsPage = () => {
   // Persist daily goals to localStorage whenever they change
   useEffect(() => {
     saveDailyGoals(dailyGoals);
-    // Tell the backend the user is active and their daily goal status
-    // (used by the 9 PM notification scheduler)
+  }, [dailyGoals]);
+
+  // Send checkin to backend (for 9 PM notification scheduler)
+  // Fires: on mount, on goal change, and when coming back online
+  const sendCheckin = useCallback(() => {
+    if (!navigator.onLine) return;
     const total = dailyGoals.length;
     const done  = dailyGoals.filter((g) => g.completed).length;
     fetch(`${API_BASE}/notifications/checkin`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: USER_ID, daily_goals_total: total, daily_goals_done: done }),
-    }).catch(() => {/* non-critical, ignore errors */});
+    }).catch(() => {});
   }, [dailyGoals]);
+
+  // Fire checkin on mount
+  useEffect(() => { sendCheckin(); }, []);
+
+  // Fire checkin when goals change (debounced)
+  useEffect(() => {
+    const t = setTimeout(sendCheckin, 500);
+    return () => clearTimeout(t);
+  }, [sendCheckin]);
+
+  // Fire checkin when coming back online
+  useEffect(() => {
+    const handler = () => setTimeout(sendCheckin, 1500);
+    window.addEventListener("online", handler);
+    return () => window.removeEventListener("online", handler);
+  }, [sendCheckin]);
 
   // Midnight reset check — runs every minute
   // At midnight: all previous day's goals are cleared (empty slate for the new day)
@@ -359,14 +381,12 @@ const GoalsPage = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // ── Fetch long-term goals ─────────────────────────────────────────────────
+  // ── Fetch long-term goals (offline-aware) ──────────────────────────────────
 
   const fetchGoals = useCallback(async () => {
     setLoadingGoals(true);
     try {
-      const resp = await fetch(`${API_BASE}/goals/?user_id=${USER_ID}`);
-      if (!resp.ok) throw new Error("Failed to fetch goals");
-      const data = await resp.json();
+      const { data } = await offlineFetch(`${API_BASE}/goals/?user_id=${USER_ID}`);
       setLongTermGoals(data.goals || []);
     } catch (err: any) {
       console.error("Failed to fetch goals:", err);
@@ -407,12 +427,28 @@ const GoalsPage = () => {
     toast.success("Goal added!");
   };
 
+  const deleteDailyGoal = (id: string) => {
+    setDailyGoals((prev) => prev.filter((g) => g.id !== id));
+  };
+
   // ── Long-term goal handlers (optimistic UI) ──────────────────────────────
 
   const handleDeleteGoal = async (goalId: string) => {
     // Optimistic: remove immediately
     const prev = longTermGoals;
     setLongTermGoals((g) => g.filter((goal) => goal.goal_id !== goalId));
+
+    if (!navigator.onLine) {
+      addToSyncQueue({
+        type: "goal_delete",
+        url: `${API_BASE}/goals/${goalId}?user_id=${USER_ID}`,
+        method: "DELETE",
+        body: "",
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+      toast.success("Goal deleted (will sync when online)");
+      return;
+    }
 
     try {
       const resp = await fetch(
@@ -502,7 +538,14 @@ const GoalsPage = () => {
         }),
       });
     } catch {
-      console.error("Failed to sync task completion to backend");
+      // Offline — queue for later sync
+      addToSyncQueue({
+        type: "goal_update",
+        url: `${API_BASE}/goals/${goalId}?user_id=${USER_ID}`,
+        method: "PUT",
+        body: JSON.stringify({ completed_tasks: newCompleted, progress: newProgress }),
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
     }
   };
 
@@ -533,10 +576,7 @@ const GoalsPage = () => {
         };
       });
 
-      const resp = await fetch(`${API_BASE}/goals/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const goalBody = JSON.stringify({
           user_id: USER_ID,
           title: createForm.title.trim(),
           start_date: createForm.start_date,
@@ -544,7 +584,41 @@ const GoalsPage = () => {
           weekly_plan: weeklyPlan,
           progress: 0,
           reminder: null,
-        }),
+        });
+
+      if (!navigator.onLine) {
+        // Queue for sync and show optimistic local entry
+        await addToSyncQueue({
+          type: "goal_create",
+          url: `${API_BASE}/goals/`,
+          method: "POST",
+          body: goalBody,
+          createdAt: new Date().toISOString(),
+        });
+        // Add a temporary local entry so user sees it immediately
+        const tempGoal: GoalItem = {
+          goal_id: `offline_${Date.now()}`,
+          user_id: USER_ID,
+          title: createForm.title.trim(),
+          start_date: createForm.start_date,
+          end_date: createForm.end_date,
+          weekly_plan: weeklyPlan,
+          progress: 0,
+          completed_tasks: {},
+          reminder: null,
+          created_at: new Date().toISOString(),
+        };
+        setLongTermGoals((prev) => [...prev, tempGoal]);
+        setShowCreateDialog(false);
+        setCreateForm({ title: "", start_date: getTodayStr(), end_date: "", numWeeks: 1, weeklyTasks: [[""]] });
+        toast.success("📡 Goal queued — will be created when you're back online");
+        return;
+      }
+
+      const resp = await fetch(`${API_BASE}/goals/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: goalBody,
       });
 
       if (!resp.ok) throw new Error("Failed to create goal");
@@ -667,8 +741,15 @@ const GoalsPage = () => {
                     {goal.text}
                   </span>
                   {goal.completed && (
-                    <Check className="w-4 h-4 text-success" />
+                    <Check className="w-4 h-4 text-success shrink-0" />
                   )}
+                  <button
+                    onClick={() => deleteDailyGoal(goal.id)}
+                    className="w-6 h-6 rounded flex items-center justify-center text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
+                    title="Delete goal"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </CardContent>
               </Card>
             ))}
