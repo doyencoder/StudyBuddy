@@ -28,7 +28,8 @@ async def create_study_plan(
     timeline_weeks: int = 4,
     hours_per_week: int = 8,
     focus_days: list[str] | None = None,
-    page_numbers=None, scope=None
+    page_numbers=None, scope=None,
+    curriculum_context: str = None,
 ) -> dict:
     """
     Generates a structured study plan.
@@ -96,6 +97,7 @@ async def create_study_plan(
         context_chunks=context_chunks,
         hours_per_week=hours_per_week,
         focus_days=focus_days,
+        curriculum_context=curriculum_context,
     )
 
     # ── Attach a plan_id ──────────────────────────────────────────────────────

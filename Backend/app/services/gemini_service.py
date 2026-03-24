@@ -273,6 +273,7 @@ def chat_stream(
     response_format: str = "paragraph",
     detail_level: str = "detailed",
     language_style: str = "formal",
+    curriculum_context: str = None,
 ) -> Generator[str, None, None]:
     """
     Streams a Gemini reply with full multi-turn conversation memory.
@@ -348,6 +349,15 @@ def chat_stream(
     extra = " ".join(filter(None, [format_instruction, detail_instruction, lang_instruction]))
     if extra:
         system_instruction += f"\n\nRESPONSE STYLE: {extra}"
+
+    # ── Curriculum context injection ──────────────────────────────────────────
+    if curriculum_context and not system_prompt_override:
+        system_instruction += (
+            "\n\nCURRICULUM GUIDANCE (depth and vocabulary only — always honour the "
+            "user's explicit format requests such as 'page by page', 'bullet points', "
+            "'step by step' over any formatting implied by these guidelines):\n"
+            + curriculum_context
+        )
 
     # ── Build multi-turn contents list ────────────────────────────────────────
     # Strategy: "anchor + recent" windowing to prevent context being lost.
@@ -438,7 +448,7 @@ def chat_stream(
         yield char
 
 
-def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions: int = 5) -> dict:
+def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions: int = 5, curriculum_context: str = None) -> dict:
     """
     Uses Gemini to generate MCQ quiz questions plus one fun fact in a single call.
     - If context_chunks provided: generates strictly from the uploaded material.
@@ -463,8 +473,9 @@ def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions
             f"[Chunk {i + 1}]\n{chunk}" for i, chunk in enumerate(context_chunks)
         )
         topic_line = f"Focus specifically on the topic: {topic}" if topic else "Cover the most important concepts from the material."
+        curriculum_line = f"\n{curriculum_context}\n" if curriculum_context else ""
 
-        prompt = f"""{safety_prefix}You are a quiz generator for students. Based ONLY on the study material below, generate exactly {num_questions} multiple choice questions.
+        prompt = f"""{safety_prefix}{curriculum_line}You are a quiz generator for students. Based ONLY on the study material below, generate exactly {num_questions} multiple choice questions.
 
 {topic_line}
 
@@ -499,8 +510,8 @@ The object must have exactly these two fields:
     else:
         if not topic:
             topic = "general knowledge"
-
-        prompt = f"""{safety_prefix}You are a quiz generator for students. Generate exactly {num_questions} multiple choice questions about: {topic}
+        curriculum_line = f"\n{curriculum_context}\n" if curriculum_context else ""
+        prompt = f"""{safety_prefix}{curriculum_line}You are a quiz generator for students. Generate exactly {num_questions} multiple choice questions about: {topic}
 
 STRICT RULES:
 - Generate exactly {num_questions} questions
@@ -667,6 +678,7 @@ def generate_mermaid(
     diagram_type: str,
     context_chunks: List[str],
     layout_hint: str = None,
+    curriculum_context: str = None,
 ) -> str:
     """
     Generates valid Mermaid syntax for a flowchart or concept diagram.
@@ -779,12 +791,14 @@ STUDY MATERIAL CONTEXT:
 {format_instructions}"""
 
     # ── System instruction includes safety block ──────────────────────────────
+    curriculum_addon = f"\n\n{curriculum_context}" if curriculum_context else ""
     safety_system = (
         SAFETY_BLOCK + "\n\n"
         "You output ONLY valid Mermaid diagram syntax. "
         "No markdown fences, no explanation, no code blocks. "
         "Start your response directly with 'flowchart' or 'mindmap'. "
         f"EXCEPTION: if the topic is harmful, output only: {REFUSAL_SENTINEL}"
+        f"{curriculum_addon}"
     )
 
     def _generate():
@@ -820,6 +834,7 @@ def generate_study_plan(
     context_chunks: List[str],
     hours_per_week: int = 8,
     focus_days: List[str] = None,
+    curriculum_context: str = None,
 ) -> dict:
     """
     Generates a structured study plan as JSON using Gemini.
@@ -859,7 +874,8 @@ STUDY MATERIAL:
 
 {topic_line}"""
 
-    prompt = f"""{safety_prefix}Create a detailed study plan with exactly {timeline_weeks} weeks.
+    curriculum_line = f"\n{curriculum_context}\n" if curriculum_context else ""
+    prompt = f"""{safety_prefix}{curriculum_line}Create a detailed study plan with exactly {timeline_weeks} weeks.
 Start date: {start_date}
 Hours per week budget: {hours_per_week}{focus_str}
 
@@ -997,6 +1013,7 @@ def classify_intent(
         "pending_intent: null"
     )
 
+    
     prompt = f"""You are an intent classifier for a student study app. Return ONLY valid JSON — no markdown, no explanation.
 
 CONTEXT:

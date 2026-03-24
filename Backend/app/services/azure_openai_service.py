@@ -359,6 +359,7 @@ def chat_stream(
     response_format: str = "paragraph",
     detail_level: str = "detailed",
     language_style: str = "formal",
+    curriculum_context: str = None,
 ) -> Generator[str, None, None]:
     """
     Streams a gpt-4o-mini reply with full multi-turn conversation memory.
@@ -444,6 +445,19 @@ def chat_stream(
         ]))
         if extra:
             system_instruction += f"\n\nRESPONSE STYLE: {extra}"
+
+    # ── Curriculum context injection ──────────────────────────────────────────
+    # Appended last so it sits close to the LLM call — no override path touches it.
+    # The priority note is critical: curriculum guides depth/vocabulary only — never
+    # format. Without it, the curriculum's exam-structure language overrides explicit
+    # user format requests like "page by page" or "step by step".
+    if curriculum_context and not system_prompt_override:
+        system_instruction += (
+            "\n\nCURRICULUM GUIDANCE (depth and vocabulary only — always honour the "
+            "user's explicit format requests such as 'page by page', 'bullet points', "
+            "'step by step' over any formatting implied by these guidelines):\n"
+            + curriculum_context
+        )
 
     # ── Build messages with anchor+recent windowing ───────────────────────────
     ANCHOR_COUNT = 4
@@ -532,6 +546,7 @@ def generate_quiz_questions(
     context_chunks: List[str],
     topic: str,
     num_questions: int = 5,
+    curriculum_context: str = None,
 ) -> dict:
     """
     Generates MCQ quiz questions + one fun fact using gpt-4o-mini.
@@ -557,7 +572,8 @@ def generate_quiz_questions(
             if topic else
             "Cover the most important concepts from the material."
         )
-        user_prompt = f"""{safety_prefix}You are a quiz generator for students. Based ONLY on the study material below, generate exactly {num_questions} multiple choice questions.
+        curriculum_line = f"\n{curriculum_context}\n" if curriculum_context else ""
+        user_prompt = f"""{safety_prefix}{curriculum_line}You are a quiz generator for students. Based ONLY on the study material below, generate exactly {num_questions} multiple choice questions.
 
 {topic_line}
 
@@ -589,7 +605,8 @@ Respond ONLY with a valid JSON object. No markdown. No code fences.
     else:
         if not topic:
             topic = "general knowledge"
-        user_prompt = f"""{safety_prefix}You are a quiz generator for students. Generate exactly {num_questions} multiple choice questions about: {topic}
+        curriculum_line = f"\n{curriculum_context}\n" if curriculum_context else ""
+        user_prompt = f"""{safety_prefix}{curriculum_line}You are a quiz generator for students. Generate exactly {num_questions} multiple choice questions about: {topic}
 
 STRICT RULES:
 - Generate exactly {num_questions} questions
@@ -792,6 +809,7 @@ def generate_mermaid(
     diagram_type: str,
     context_chunks: List[str],
     layout_hint: str = None,
+    curriculum_context: str = None,
 ) -> str:
     """
     Generates valid Mermaid syntax for a flowchart or mind map.
@@ -890,12 +908,14 @@ STUDY MATERIAL CONTEXT:
 {format_instructions}"""
 
     # Safety block is prepended to system prompt — critical for chip path
+    curriculum_addon = f"\n\n{curriculum_context}" if curriculum_context else ""
     safety_system = (
         SAFETY_BLOCK + "\n\n"
         "You output ONLY valid Mermaid diagram syntax. "
         "No markdown fences, no explanation, no code blocks. "
         "Start your response directly with 'flowchart' or 'mindmap'. "
         f"EXCEPTION: if the topic is harmful, output only: {REFUSAL_SENTINEL}"
+        f"{curriculum_addon}"
     )
 
     def _generate():
@@ -941,6 +961,7 @@ def generate_study_plan(
     context_chunks: List[str],
     hours_per_week: int = 8,
     focus_days: List[str] = None,
+    curriculum_context: str = None,
 ) -> dict:
     """
     Generates a structured study plan as JSON using gpt-4o-mini.
@@ -1010,7 +1031,7 @@ Rules:
         return client.chat.completions.create(
             model=deployment,
             messages=[
-                {"role": "system", "content": SAFETY_BLOCK + "\nYou are a study plan generator. Always respond with valid JSON only."},
+                {"role": "system", "content": SAFETY_BLOCK + "\nYou are a study plan generator. Always respond with valid JSON only." + (f"\n\n{curriculum_context}" if curriculum_context else "")},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},

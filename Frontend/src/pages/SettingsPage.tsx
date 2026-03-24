@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
-  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail,
+  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail, GraduationCap, ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -183,6 +183,11 @@ const SettingsPage = () => {
     ai_preferences: { simplified_explanations: true, auto_generate_flashcards: false },
     appearance: { color_mode: "auto", chat_font: "default", voice: "buttery" },
   });
+
+  // ── Curriculum state (top-level on Cosmos doc, not nested in settings) ───
+  const [curriculumBoard, setCurriculumBoard]     = useState<string | null>(null);
+  const [curriculumGrade, setCurriculumGrade]     = useState<string | null>(null);
+  const [curriculumEnabled, setCurriculumEnabled] = useState<boolean>(false);
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [billingPlans, setBillingPlans] = useState<BillingPlan[]>([]);
   const [currentPlan, setCurrentPlan] = useState("free");
@@ -212,6 +217,10 @@ const SettingsPage = () => {
         setColorMode(appearance.color_mode as ColorMode);
         setChatFont(appearance.chat_font as ChatFont);
         setVoice(appearance.voice as VoiceSetting);
+        // Hydrate curriculum fields (null-safe — existing users won't have these)
+        setCurriculumBoard(data.curriculum_board ?? null);
+        setCurriculumGrade(data.curriculum_grade ?? null);
+        setCurriculumEnabled(data.curriculum_enabled ?? false);
       }
     } catch (err) {
       console.error("Failed to fetch settings:", err);
@@ -285,8 +294,31 @@ const SettingsPage = () => {
     }, 800);
   }, []);
 
-  // ── Connector Toggle ─────────────────────────────────────────────────────
+  // ── Curriculum Setting Save ───────────────────────────────────────────────
+  // Curriculum fields live top-level on the Cosmos doc (not in a nested section),
+  // so they are sent as plain keys alongside the standard sections.
+  // Uses the same debounce + saving indicator as saveSettings.
+  const saveCurriculumSetting = useCallback((
+    patch: { curriculum_board?: string | null; curriculum_grade?: string | null; curriculum_enabled?: boolean }
+  ) => {
+    setSaving(true);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+      } catch {
+        // silent — local state already reflects the change
+      } finally {
+        setSaving(false);
+      }
+    }, 800);
+  }, []);
 
+  // ── Connector Toggle ─────────────────────────────────────────────────────
   const handleConnectorToggle = async (connectorId: string, connected: boolean) => {
     const action = connected ? "disconnect" : "connect";
     // Optimistic update
@@ -449,6 +481,13 @@ const SettingsPage = () => {
             setSettings={setSettings}
             saveSettings={saveSettings}
             saving={saving}
+            curriculumBoard={curriculumBoard}
+            setCurriculumBoard={setCurriculumBoard}
+            curriculumGrade={curriculumGrade}
+            setCurriculumGrade={setCurriculumGrade}
+            curriculumEnabled={curriculumEnabled}
+            setCurriculumEnabled={setCurriculumEnabled}
+            saveCurriculumSetting={saveCurriculumSetting}
           />
         )}
         {activeTab === "account" && (
@@ -493,9 +532,22 @@ interface GeneralTabProps {
   setSettings: React.Dispatch<React.SetStateAction<UserSettings>>;
   saveSettings: (updates: Partial<UserSettings>) => void;
   saving: boolean;
+  curriculumBoard: string | null;
+  setCurriculumBoard: React.Dispatch<React.SetStateAction<string | null>>;
+  curriculumGrade: string | null;
+  setCurriculumGrade: React.Dispatch<React.SetStateAction<string | null>>;
+  curriculumEnabled: boolean;
+  setCurriculumEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+  saveCurriculumSetting: (patch: { curriculum_board?: string | null; curriculum_grade?: string | null; curriculum_enabled?: boolean }) => void;
 }
 
-const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabProps) => {
+const GeneralTab = ({
+  settings, setSettings, saveSettings, saving,
+  curriculumBoard, setCurriculumBoard,
+  curriculumGrade, setCurriculumGrade,
+  curriculumEnabled, setCurriculumEnabled,
+  saveCurriculumSetting,
+}: GeneralTabProps) => {
   const { setColorMode, setChatFont, setVoice } = useAppearance();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
@@ -841,6 +893,114 @@ const GeneralTab = ({ settings, setSettings, saveSettings, saving }: GeneralTabP
               ))}
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Curriculum Context ─────────────────────────────────────────────── */}
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <GraduationCap className="w-4 h-4 text-primary" />
+            <CardTitle className="text-base text-foreground">Curriculum</CardTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Tell StudyBuddy your board and class so every explanation, quiz, and study
+            plan is tailored to your exact syllabus.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-5">
+
+          {/* Board selector */}
+          <div>
+            <Label className="text-sm text-muted-foreground mb-2 block">Board</Label>
+            <div className="grid grid-cols-2 gap-3">
+              {(["CBSE", "ICSE"] as const).map((board) => (
+                <button
+                  key={board}
+                  onClick={() => {
+                    const next = curriculumBoard === board ? null : board;
+                    setCurriculumBoard(next);
+                    // Reset grade when board changes — old grade may be invalid for new board
+                    setCurriculumGrade(null);
+                    saveCurriculumSetting({ curriculum_board: next, curriculum_grade: null });
+                  }}
+                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 font-medium text-sm transition-all ${
+                    curriculumBoard === board
+                      ? "border-primary bg-primary/5 text-primary"
+                      : "border-border hover:border-muted-foreground/40 bg-card text-muted-foreground"
+                  }`}
+                >
+                  {board}
+                </button>
+              ))}
+              {/* Disabled placeholder — communicates roadmap without lying */}
+              <button
+                disabled
+                className="col-span-2 flex items-center justify-center px-4 py-2 rounded-xl border-2 border-dashed border-border text-xs text-muted-foreground/40 cursor-not-allowed select-none"
+              >
+                More boards coming soon
+              </button>
+            </div>
+          </div>
+
+          {/* Grade selector — only rendered after a board is chosen */}
+          {curriculumBoard && (
+            <div>
+              <Label className="text-sm text-muted-foreground mb-2 block">Class</Label>
+              <div className="grid grid-cols-4 gap-2">
+                {(["Class 9", "Class 10", "Class 11", "Class 12"] as const).map((grade) => (
+                  <button
+                    key={grade}
+                    onClick={() => {
+                      const next = curriculumGrade === grade ? null : grade;
+                      setCurriculumGrade(next);
+                      saveCurriculumSetting({ curriculum_grade: next });
+                    }}
+                    className={`flex items-center justify-center px-3 py-2.5 rounded-xl border-2 font-medium text-sm transition-all ${
+                      curriculumGrade === grade
+                        ? "border-primary bg-primary/5 text-primary"
+                        : "border-border hover:border-muted-foreground/40 bg-card text-muted-foreground"
+                    }`}
+                  >
+                    {grade.replace("Class ", "")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Enable toggle — dimmed until both board and grade are set */}
+          <div className={`flex items-center justify-between transition-opacity ${
+            curriculumBoard && curriculumGrade ? "opacity-100" : "opacity-40 pointer-events-none"
+          }`}>
+            <div>
+              <Label className="text-sm text-foreground">Apply curriculum context to responses</Label>
+              <p className="text-xs text-muted-foreground">
+                {curriculumBoard && curriculumGrade
+                  ? `AI will tailor every response to ${curriculumBoard} ${curriculumGrade}`
+                  : "Select a board and class above to enable"}
+              </p>
+            </div>
+            <Switch
+              checked={curriculumEnabled && Boolean(curriculumBoard && curriculumGrade)}
+              onCheckedChange={(v) => {
+                setCurriculumEnabled(v);
+                saveCurriculumSetting({ curriculum_enabled: v });
+              }}
+              className="data-[state=checked]:bg-primary"
+            />
+          </div>
+
+          {/* Active indicator pill — only shown when fully configured and ON */}
+          {curriculumEnabled && curriculumBoard && curriculumGrade && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/8 border border-primary/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse flex-shrink-0" />
+              <p className="text-xs text-primary font-medium">
+                Active — responses are tailored to {curriculumBoard} {curriculumGrade}
+              </p>
+            </div>
+          )}
+
         </CardContent>
       </Card>
     </>

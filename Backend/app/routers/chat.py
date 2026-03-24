@@ -47,6 +47,8 @@ from app.services.translator_service import translate_text
 from app.services.tts_service import synthesize_speech
 from app.services.web_search_service import web_search, build_search_context, image_search, youtube_search_api, youtube_search
 from app.utils.document_resolver import resolve_document_filter
+from app.services.settings_service import get_settings
+from app.utils.curriculum_profiles import get_curriculum_context
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -394,7 +396,22 @@ async def chat_message(request: ChatRequest):
     prior_messages = conv_data["messages"]
     pending_intent = conv_data["pending_intent"]
 
+    # ── Curriculum context (piggybacks on settings read, zero extra latency) ──
+    # get_settings() reads the same Cosmos container as other settings calls.
+    # get_curriculum_context() is a pure dict lookup — ~0.01ms, no I/O.
+    # Wrapped in try/except so a settings failure never breaks the chat path.
+    try:
+        _user_settings = await get_settings(request.user_id)
+        _curr_context: str | None = get_curriculum_context(
+            board=_user_settings.get("curriculum_board"),
+            grade=_user_settings.get("curriculum_grade"),
+            enabled=bool(_user_settings.get("curriculum_enabled", False)),
+        )
+    except Exception:
+        _curr_context = None  # never crash the chat path over a settings failure
+    print(f"[CURRICULUM] user={request.user_id} | context={'SET (' + _curr_context[:60] + '...)' if _curr_context else 'None'}")
     pre_embedding = None  # may be pre-computed by Opt 2 below
+    
 
     if request.intent_hint:
         # Intent known from chip — build classification dict with no Gemini call
@@ -890,13 +907,13 @@ async def chat_message(request: ChatRequest):
 
         # ── Dispatch ─────────────────────────────────────────────────────────
         if intent == "quiz":
-            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope):
+            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context):
                 yield evt
             return
 
         if intent in ("flowchart", "mindmap"):
             dtype = "flowchart" if intent == "flowchart" else "diagram"
-            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope):
+            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context):
                 yield evt
             return
 
@@ -908,7 +925,7 @@ async def chat_message(request: ChatRequest):
         if intent == "study_plan":
             tw = int(timeline_weeks) if timeline_weeks else 4
             hw = int(hours_per_week) if hours_per_week else 8
-            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope):
+            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context):
                 yield evt
             return
 
@@ -934,6 +951,7 @@ async def chat_message(request: ChatRequest):
                 response_format=response_format,
                 detail_level=detail_level,
                 language_style=language_style,
+                curriculum_context=_curr_context,
             ):
                 full_reply += chunk
                 yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
@@ -960,7 +978,7 @@ async def chat_message(request: ChatRequest):
 
 # ── Feature dispatch helpers ──────────────────────────────────────────────────
 
-async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None):
+async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None, curriculum_context=None):
     try:
         has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
         if not has_docs:
@@ -991,6 +1009,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
             context_chunks=context_chunks,
             topic=topic or "",
             num_questions=num_questions,
+            curriculum_context=curriculum_context,
         )
 
         # ── Safety sentinel check ─────────────────────────────────────────────
@@ -1040,7 +1059,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None):
+async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None, curriculum_context=None):
     try:
         effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
 
@@ -1080,7 +1099,13 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         except Exception:
             pass
 
-        mermaid_code = generate_mermaid(topic=effective, diagram_type=diagram_type, context_chunks=chunks, layout_hint=layout_hint)
+        mermaid_code = generate_mermaid(
+            topic=effective,
+            diagram_type=diagram_type,
+            context_chunks=chunks,
+            layout_hint=layout_hint,
+            curriculum_context=curriculum_context,
+        )
 
         # ── Safety sentinel check ─────────────────────────────────────────────
         # generate_mermaid() returns _REFUSAL_SENTINEL when it detects a harmful topic.
@@ -1154,13 +1179,14 @@ async def _dispatch_image(user_id, conversation_id, topic, prior_messages):
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None):
+async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None, curriculum_context=None):
     try:
         plan = await create_study_plan(
             user_id=user_id, conversation_id=conversation_id,
             topic=topic or None, timeline_weeks=timeline_weeks,
             hours_per_week=hours_per_week, focus_days=None,
             page_numbers=page_numbers, scope=scope,
+            curriculum_context=curriculum_context,
         )
 
         # ── Safety sentinel check ─────────────────────────────────────────────

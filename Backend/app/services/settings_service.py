@@ -134,13 +134,21 @@ async def update_settings(user_id: str, updates: Dict[str, Any]) -> Dict[str, An
                 "current_plan": "free",
             }
 
-        # Merge provided sections
+        # Merge the four standard nested sections
         for section in ("profile", "notifications", "ai_preferences", "appearance"):
             if section in updates and updates[section] is not None:
                 if section in item:
                     item[section].update(updates[section])
                 else:
                     item[section] = updates[section]
+
+        # Handle top-level curriculum fields (stored flat on the document, not nested)
+        # curriculum_enabled can legitimately be False — use `is not None` not truthiness.
+        for field in ("curriculum_board", "curriculum_grade"):
+            if field in updates and updates[field] is not None:
+                item[field] = updates[field]
+        if "curriculum_enabled" in updates and updates["curriculum_enabled"] is not None:
+            item["curriculum_enabled"] = updates["curriculum_enabled"]
 
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         await container.upsert_item(body=item)

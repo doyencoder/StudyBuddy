@@ -283,6 +283,10 @@ class SettingsUpdateRequest(BaseModel):
     notifications: Optional[NotificationSettings] = None
     ai_preferences: Optional[AIPreferences] = None
     appearance: Optional[AppearanceSettings] = None
+    # Curriculum-aware feature — top-level fields on the settings document
+    curriculum_board: Optional[str] = None    # "CBSE" | "ICSE" | null
+    curriculum_grade: Optional[str] = None    # "Class 9" | "Class 10" | ... | null
+    curriculum_enabled: Optional[bool] = None  # true | false | null
 
 
 class ActiveSession(BaseModel):

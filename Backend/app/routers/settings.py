@@ -171,6 +171,13 @@ async def update_user_settings(
             updates["ai_preferences"] = request.ai_preferences.model_dump()
         if request.appearance is not None:
             updates["appearance"] = request.appearance.model_dump()
+        # Curriculum fields — stored top-level, not nested in a section
+        if request.curriculum_board is not None:
+            updates["curriculum_board"] = request.curriculum_board
+        if request.curriculum_grade is not None:
+            updates["curriculum_grade"] = request.curriculum_grade
+        if request.curriculum_enabled is not None:
+            updates["curriculum_enabled"] = request.curriculum_enabled
 
         result = await update_settings(user_id, updates)
         return result
