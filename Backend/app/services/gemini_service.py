@@ -493,9 +493,12 @@ STRICT RULES:
 Also generate exactly 1 fun_fact: a single interesting, surprising fact related to this topic.
 It should be engaging and educational — something a student would find genuinely interesting.
 
+Also generate a "title": a concise 2-5 word academic title that accurately names the subject of these questions (e.g. "Newton's Laws of Motion", "Cell Division & Mitosis"). If the topic is completely general with no clear subject, use "General Quiz".
+
 Respond ONLY with a valid JSON object. No extra text. No markdown. No code fences.
-The object must have exactly these two fields:
+The object must have exactly these fields:
 {{
+  "title": "concise quiz title (2-5 words)",
   "questions": [
     {{
       "question": "the question text",
@@ -523,9 +526,12 @@ STRICT RULES:
 Also generate exactly 1 fun_fact: a single interesting, surprising fact related to {topic}.
 It should be engaging and educational — something a student would find genuinely interesting.
 
+Also generate a "title": a concise 2-5 word academic title that accurately names the subject of these questions (e.g. "Cricket: Rules & History", "Thermodynamics Fundamentals"). If the topic is completely general with no clear subject, use "General Quiz".
+
 Respond ONLY with a valid JSON object. No extra text. No markdown. No code fences.
-The object must have exactly these two fields:
+The object must have exactly these fields:
 {{
+  "title": "concise quiz title (2-5 words)",
   "questions": [
     {{
       "question": "the question text",
@@ -560,9 +566,11 @@ The object must have exactly these two fields:
     if isinstance(parsed, list):
         raw_questions = parsed
         fun_fact = "Did you know? The brain strengthens memories during sleep — a great reason to rest after studying!"
+        quiz_title = None
     else:
         raw_questions = parsed.get("questions", [])
         fun_fact = parsed.get("fun_fact") or "Did you know? Spaced repetition is one of the most effective study techniques proven by cognitive science!"
+        quiz_title = parsed.get("title") or None
 
     sanitized = []
     for i, q in enumerate(raw_questions[:num_questions]):
@@ -574,7 +582,7 @@ The object must have exactly these two fields:
             "explanation": q["explanation"],
         })
 
-    return {"questions": sanitized, "fun_fact": fun_fact}
+    return {"questions": sanitized, "fun_fact": fun_fact, "title": quiz_title}
 
 
 def batch_classify_weak_areas(questions: list) -> list:

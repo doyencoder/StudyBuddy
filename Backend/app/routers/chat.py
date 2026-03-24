@@ -1024,7 +1024,9 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         fun_fact = result["fun_fact"]
 
         quiz_id = str(uuid.uuid4())
-        topic_label = (topic or "General Quiz").strip()
+        # Prefer the AI-generated title; fall back to cleaned topic string or "General Quiz"
+        ai_title = (result.get("title") or "").strip()
+        topic_label = ai_title or (topic or "General Quiz").strip()
         topic_label = re.sub(
             r'\b(and|or|the|a|an|for|of|in|on|with|about)\s*$',
             '', topic_label, flags=re.IGNORECASE,
