@@ -25,6 +25,10 @@ function buildFn(expr: string): ((x: number, y: number) => number) | null {
   try {
     let js = expr
       .replace(/([a-zA-Z0-9])\s*\.\s*([a-zA-Z])/g, '$1*$2')
+      .replace(/(\d)([xy(])/g, '$1*$2')
+      .replace(/([xy])\(/g, '$1*(')
+      .replace(/(\))([xy(])/g, '$1*$2')
+      .replace(/\b([xy])([xy])\b/g, '$1*$2')
       .replace(/\^/g, '**')
       .replace(/\batan2\b/g,  'Math.atan2')
       .replace(/\bsqrt\b/g,   'Math.sqrt')
@@ -140,19 +144,22 @@ function subdivide(
 ): void {
   const vals = [tl,tr,bl,br];
   if (vals.some(v => !isFinite(v))) return;
-  const hasPos = vals.some(v => v>0);
-  const hasNeg = vals.some(v => v<0);
-  if (!hasPos || !hasNeg) return;
+  const mx = (x0+x1)/2, my = (y0+y1)/2;
+  const fml = F(x0,my), fmr = F(x1,my);
+  const fmt = F(mx,y1), fmb = F(mx,y0);
+  const fmm = F(mx,my);
+  const probes = [tl, tr, bl, br, fml, fmr, fmt, fmb, fmm];
+  if (probes.some(v => !isFinite(v))) return;
+
+  const hasPos = probes.some(v => v > ZERO_EPS);
+  const hasNeg = probes.some(v => v < -ZERO_EPS);
+  const hasNearZero = probes.some(v => Math.abs(v) <= ZERO_EPS * 64);
+  if ((!hasPos || !hasNeg) && !hasNearZero) return;
 
   if (depth >= maxDepth) {
     extractSegments(x0,y0,x1,y1,tl,tr,bl,br,out);
     return;
   }
-
-  const mx = (x0+x1)/2, my = (y0+y1)/2;
-  const fml = F(x0,my), fmr = F(x1,my);
-  const fmt = F(mx,y1), fmb = F(mx,y0);
-  const fmm = F(mx,my);
 
   // Bottom-left:  x=[x0,mx], y=[y0,my]
   subdivide(F, x0,y0,mx,my,  fml,fmm,bl, fmb, depth+1, maxDepth, out);

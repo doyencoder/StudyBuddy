@@ -34,6 +34,51 @@ const POLAR_ALLOWED_SYMBOLS = new Set<string>([
   ...FUNCTION_NAMES,
 ]);
 
+const SUPERSCRIPT_CHAR_MAP: Record<string, string> = {};
+
+// Use unicode escapes so the source remains ASCII-only while still matching
+// superscript glyphs from copied chat text.
+SUPERSCRIPT_CHAR_MAP["\u2070"] = "0";
+SUPERSCRIPT_CHAR_MAP["\u00B9"] = "1";
+SUPERSCRIPT_CHAR_MAP["\u00B2"] = "2";
+SUPERSCRIPT_CHAR_MAP["\u00B3"] = "3";
+SUPERSCRIPT_CHAR_MAP["\u2074"] = "4";
+SUPERSCRIPT_CHAR_MAP["\u2075"] = "5";
+SUPERSCRIPT_CHAR_MAP["\u2076"] = "6";
+SUPERSCRIPT_CHAR_MAP["\u2077"] = "7";
+SUPERSCRIPT_CHAR_MAP["\u2078"] = "8";
+SUPERSCRIPT_CHAR_MAP["\u2079"] = "9";
+SUPERSCRIPT_CHAR_MAP["\u207A"] = "+";
+SUPERSCRIPT_CHAR_MAP["\u207B"] = "-";
+
+function decodeSuperscriptToken(token: string): string {
+  const mapped = Array.from(token)
+    .map((char) => SUPERSCRIPT_CHAR_MAP[char] ?? "")
+    .join("");
+
+  if (!mapped) return token;
+  if (/^[+-]?\d+$/.test(mapped)) return mapped;
+  return token;
+}
+
+function normalizeUnicodeMathSymbols(text: string): string {
+  let s = text
+    .replace(/[\u2212\u2013\u2014\uFE63]/g, "-")
+    .replace(/[\u00D7\u2715\u2716\u00B7\u22C5\u2219]/g, "*")
+    .replace(/[\u00F7\u2215\u2044]/g, "/")
+    .replace(/[\uFF1D]/g, "=")
+    .replace(/[\u2264]/g, "<=")
+    .replace(/[\u2265]/g, ">=");
+
+  // Convert compact superscript powers often emitted by model text, e.g. x^2, y^-1.
+  s = s.replace(/([A-Za-z0-9)\]])([\u2070\u00B9\u00B2\u00B3\u2074\u2075\u2076\u2077\u2078\u2079\u207A\u207B]+)/g, (_, base, superscript) => {
+    const decoded = decodeSuperscriptToken(superscript);
+    return `${base}^(${decoded})`;
+  });
+
+  return s;
+}
+
 export function normalizeEscapedMathDelimiters(text: string): string {
   return text
     .replace(/\\{2,}(?=[()\[\]])/g, "\\")
@@ -104,7 +149,12 @@ function unwrapMathDelimiters(text: string): string {
 
 export function normalizeEquationForNova(raw: string): string {
   let s = normalizeEscapedMathDelimiters(raw.trim());
+  s = normalizeUnicodeMathSymbols(s);
   s = unwrapMathDelimiters(s).trim();
+  s = s
+    .replace(/\u03c0/gi, "pi")
+    .replace(/\u03b8/gi, "theta")
+    .replace(/\u03b4/gi, "delta");
 
   if (/[\\{}]/.test(s)) {
     s = latexToMathjs(s);
@@ -152,8 +202,16 @@ function hasUnsupportedSymbols(expr: string, allowedSymbols: Set<string> = ALLOW
   return words.some((word) => !allowedSymbols.has(word.toLowerCase()));
 }
 
+function normalizeImplicitProductsForValidation(expr: string): string {
+  return expr
+    .replace(/(\d)([xy])/gi, "$1*$2")
+    .replace(/\b([xy])([xy])\b/gi, "$1*$2")
+    .replace(/([xy])\(/gi, "$1*(")
+    .replace(/(\))([xy])/gi, "$1*$2");
+}
+
 export function looksGraphableEquation(raw: string): boolean {
-  const s = normalizeEquationForNova(raw);
+  const s = normalizeImplicitProductsForValidation(normalizeEquationForNova(raw));
   if (!s || s.length > 180) return false;
   const hasCartesianVars = /[xy]/i.test(s);
   const hasPolarVars = /\br\b/i.test(s) && /\btheta\b/i.test(s) && !hasCartesianVars;
@@ -206,7 +264,7 @@ export function extractGraphableEquations(text: string): string[] {
 
     if (!/[=<>]/.test(line) || !/[xyr]/i.test(line)) continue;
 
-    const equationStart = line.search(/(?:r|y|f\(x\)|\\frac|[xy(])/i);
+    const equationStart = line.search(/(?:\d+\s*[xyr]|f\(x\)|\\frac|(?<![A-Za-z])[xyr](?![A-Za-z])|\()/i);
     if (equationStart >= 0) {
       addCandidate(line.slice(equationStart));
     }

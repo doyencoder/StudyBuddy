@@ -174,10 +174,12 @@ export function normalise(raw: string): string {
   // Implicit multiplication rules (order matters):
   // 1. digit immediately followed by x, y, or opening paren
   s = s.replace(/(\d)([xy(])/g, '$1*$2');
+  s = s.replace(/([xy])\(/g, '$1*(');
   // 2. closing paren immediately followed by x, y, or opening paren
   s = s.replace(/(\))([xy(])/g, '$1*$2');
   // 3. two adjacent single-char variables (but not inside a word like "sin")
   //    "xy" → "x*y" — only if both are standalone x or y
+  s = s.replace(/\b([xy])([xy])\b/g, '$1*$2');
   s = s.replace(/\bx\b\s*\by\b/g, 'x*y');
   s = s.replace(/\by\b\s*\bx\b/g, 'y*x');
 
@@ -584,6 +586,97 @@ function tryYEvenPower(s: string): CurveEvaluator[] | null {
   ];
 }
 
+/**
+ * tryYOddPower
+ * Handles equations where y appears only as y^n for odd n ≥ 3.
+ * These curves have a single real branch:
+ *   y = sign(f(x)) * |f(x)|^(1/n)
+ */
+function tryYOddPower(s: string): CurveEvaluator[] | null {
+  if (!s.includes('=')) return null;
+
+  const powerMatch = s.match(/y\s*\^\s*(\d+)/);
+  if (!powerMatch) return null;
+  const n = parseInt(powerMatch[1], 10);
+  if (n < 3 || n % 2 === 0) return null;
+
+  const parts = s.split('=');
+  if (parts.length !== 2) return null;
+  const [lhs, rhs] = parts.map(p => p.trim());
+
+  const expectedRatio = Math.pow(2, n);
+  const checkPower = (): boolean => {
+    try {
+      for (const testX of [0.5, 1.5, 2.5]) {
+        const diff = (yVal: number): number | null => {
+          try {
+            const lhsV = compile(lhs).evaluate({ x: testX, y: yVal });
+            const rhsV = compile(rhs).evaluate({ x: testX, y: yVal });
+            const v = lhsV - rhsV;
+            return typeof v === 'number' && isFinite(v) ? v : null;
+          } catch { return null; }
+        };
+        const d0 = diff(0);
+        const d1 = diff(1);
+        const d2 = diff(2);
+        const dm1 = diff(-1);
+        if (d0 === null || d1 === null || d2 === null || dm1 === null) continue;
+
+        const r1  = d1 - d0;
+        const r2  = d2 - d0;
+        const rm1 = dm1 - d0;
+
+        if (Math.abs(r1) < 1e-10) continue;
+
+        const ratio = r2 / r1;
+        if (Math.abs(ratio - expectedRatio) > expectedRatio * 0.1) return false;
+
+        const antisymRatio = rm1 / r1;
+        if (Math.abs(antisymRatio + 1) > 0.1) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
+
+  if (!checkPower()) return null;
+
+  const yPowerRegex = new RegExp(`y\\s*\\^\\s*${n}`, 'g');
+  const lhsNoY    = lhs.replace(yPowerRegex, '0');
+  const rhsStr    = `((${rhs}) - (${lhsNoY}))`;
+  const coeffExpr = lhs.replace(yPowerRegex, '1') + ` - (${lhsNoY})`;
+
+  const testCoeff = tryEval(coeffExpr, 1);
+  if (testCoeff === null) return null;
+
+  let fxExpr: string;
+  if (Math.abs(testCoeff - 1) < 1e-6) {
+    fxExpr = rhsStr;
+  } else if (Math.abs(testCoeff + 1) < 1e-6) {
+    fxExpr = `-1 * (${rhsStr})`;
+  } else {
+    fxExpr = `(${rhsStr}) / (${coeffExpr})`;
+  }
+
+  const testFx = tryEval(fxExpr, 1);
+  if (testFx === null) return null;
+
+  const fxFnRaw = compileExpr(fxExpr);
+  if (!fxFnRaw) return null;
+
+  const root = 1 / n;
+  const oddRoot = (v: number): number => {
+    const rooted = Math.sign(v) * Math.pow(Math.abs(v), root);
+    return Math.abs(rooted) < 1e-10 ? 0 : rooted;
+  };
+  const fn: EvalFn = (x: number) => {
+    const v = fxFnRaw(x);
+    if (v === null) return null;
+    return oddRoot(v);
+  };
+
+  return [{ fn, label: `y = sign(${fxExpr})*abs(${fxExpr})^(1/${n})` }];
+}
+
 
 
 /**
@@ -615,6 +708,7 @@ export class MathEvaluator {
       tryExplicit(s)      ??
       tryYSquared(s)      ??
       tryYEvenPower(s)    ??
+      tryYOddPower(s)     ??
       tryLinearY(s)       ??
       tryBare(s)          ??
       [];
