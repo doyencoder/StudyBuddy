@@ -22,21 +22,18 @@
  */
 
 import * as React from 'react';
-import { ZoomIn, ZoomOut, Crosshair, Wrench, Minus, X, Sigma, Grid3X3 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { ZoomIn, ZoomOut, Crosshair, Grid3X3 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip, TooltipContent, TooltipTrigger, TooltipProvider,
 } from '@/components/ui/tooltip';
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import {
   NovaRenderer,
   type Viewport,
   type EquationDescriptor,
   type CurveIntersection,
   buildTickLabels,
+  getMajorTickStep,
 } from './renderer/NovaRenderer';
 import type { Equation } from './EquationsPanel';
 
@@ -55,8 +52,6 @@ const DENSITY_STEPS  = [0.5, 1, 1.5, 2, 3] as const;
 interface GraphCanvasProps {
   equations:   Equation[];
   newFromChat: string | null;
-  activeTool:  'tangent' | 'intersect' | 'area' | null;
-  onToolClick: (tool: 'tangent' | 'intersect' | 'area') => void;
 }
 
 type HoveredPoint = {
@@ -84,7 +79,7 @@ function getIntersectionKey(point: CurveIntersection, index: number): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function GraphCanvas({
-  equations, newFromChat, activeTool, onToolClick,
+  equations, newFromChat,
 }: GraphCanvasProps) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const canvasRef    = React.useRef<HTMLCanvasElement>(null);
@@ -704,7 +699,7 @@ export function GraphCanvas({
 
   if (webGLFailed) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-novaa-surface text-muted-foreground text-sm">
+      <div className="flex-1 flex items-center justify-center bg-nova-surface text-muted-foreground text-sm">
         WebGL2 not supported. Please use Chrome, Edge, or Firefox.
       </div>
     );
@@ -712,7 +707,7 @@ export function GraphCanvas({
 
   return (
     <TooltipProvider delayDuration={0}>
-      <div ref={containerRef} className="relative flex-1 overflow-hidden bg-novaa-surface">
+      <div ref={containerRef} className="relative flex-1 overflow-hidden bg-nova-surface">
 
         {/* WebGL canvas */}
         <canvas
@@ -864,34 +859,26 @@ export function GraphCanvas({
 
         {/* Floating controls */}
         <div className="absolute top-3 right-3 z-20 flex items-center gap-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8 bg-card/90 backdrop-blur-sm border border-border/60 text-muted-foreground hover:text-foreground shadow-sm">
-                <Wrench className="w-4 h-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="bottom" align="end" className="w-44">
-              <DropdownMenuItem className={cn(activeTool === 'tangent'   && 'bg-primary/10 text-primary')} onClick={() => onToolClick('tangent')}>
-                <Minus className="w-3.5 h-3.5 mr-2" />Tangent line<kbd className="ml-auto text-[10px] text-muted-foreground">T</kbd>
-              </DropdownMenuItem>
-              <DropdownMenuItem className={cn(activeTool === 'intersect' && 'bg-primary/10 text-primary')} onClick={() => onToolClick('intersect')}>
-                <X     className="w-3.5 h-3.5 mr-2" />Intersection<kbd className="ml-auto text-[10px] text-muted-foreground">I</kbd>
-              </DropdownMenuItem>
-              <DropdownMenuItem className={cn(activeTool === 'area'      && 'bg-primary/10 text-primary')} onClick={() => onToolClick('area')}>
-                <Sigma className="w-3.5 h-3.5 mr-2" />Area (∫)<kbd className="ml-auto text-[10px] text-muted-foreground">A</kbd>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="w-px h-5 bg-border/50 mx-0.5" />
-
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon"
                 className="h-8 w-8 bg-card/90 backdrop-blur-sm border border-border/60 text-muted-foreground hover:text-foreground shadow-sm"
                 onClick={() => {
-                  const idx  = DENSITY_STEPS.indexOf(gridDensity as any);
-                  const next = DENSITY_STEPS[(idx + 1) % DENSITY_STEPS.length];
+                  const currentDensity = gridDensityRef.current;
+                  const currentIdx = DENSITY_STEPS.indexOf(currentDensity as typeof DENSITY_STEPS[number]);
+                  const startIdx = currentIdx >= 0 ? currentIdx : 0;
+                  const currentStep = getMajorTickStep(scale, currentDensity);
+
+                  let next = DENSITY_STEPS[(startIdx + 1) % DENSITY_STEPS.length];
+                  for (let i = 1; i <= DENSITY_STEPS.length; i++) {
+                    const candidate = DENSITY_STEPS[(startIdx + i) % DENSITY_STEPS.length];
+                    const candidateStep = getMajorTickStep(scale, candidate);
+                    if (Math.abs(candidateStep - currentStep) > 1e-9) {
+                      next = candidate;
+                      break;
+                    }
+                  }
+
                   setGridDensity(next);
                 }}>
                 <Grid3X3 className="w-4 h-4" />

@@ -1,8 +1,8 @@
 import * as React from "react";
 import { useLocation } from "react-router-dom";
 import { useSidebar } from "@/components/ui/sidebar";
-import { EquationsPanel, type Equation } from "@/components/novaa/EquationsPanel";
-import { GraphCanvas } from "@/components/novaa/GraphCanvas";
+import { EquationsPanel, type Equation } from "@/components/nova/EquationsPanel";
+import { GraphCanvas } from "@/components/nova/GraphCanvas";
 import { canonicalEquationKey, normalizeEquationForNova } from "@/lib/novaMath";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15,29 +15,29 @@ import { canonicalEquationKey, normalizeEquationForNova } from "@/lib/novaMath";
 // high saturation so they stay vivid on both dark and light backgrounds.
 // CSS variable names map to tokens defined in index.css.
 const CURVE_COLORS = [
-  "novaa-curve-1",   // blue        210°
-  "novaa-curve-2",   // red/coral     4°
-  "novaa-curve-3",   // green       142°
-  "novaa-curve-4",   // magenta     290°
-  "novaa-curve-5",   // cyan        185°
-  "novaa-curve-6",   // yellow       52°
-  "novaa-curve-7",   // orange       28°
-  "novaa-curve-8",   // violet      260°
-  "novaa-curve-9",   // lime        100°
-  "novaa-curve-10",  // crimson     350°
-  "novaa-curve-11",  // teal        172°
-  "novaa-curve-12",  // gold         44°
-  "novaa-curve-13",  // indigo      230°
-  "novaa-curve-14",  // rose        320°
-  "novaa-curve-15",  // mint        155°
-  "novaa-curve-16",  // scarlet      10°
-  "novaa-curve-17",  // sky         200°
-  "novaa-curve-18",  // chartreuse   82°
-  "novaa-curve-19",  // plum        285°
-  "novaa-curve-20",  // coral        18°
+  "nova-curve-1",   // blue        210°
+  "nova-curve-2",   // red/coral     4°
+  "nova-curve-3",   // green       142°
+  "nova-curve-4",   // magenta     290°
+  "nova-curve-5",   // cyan        185°
+  "nova-curve-6",   // yellow       52°
+  "nova-curve-7",   // orange       28°
+  "nova-curve-8",   // violet      260°
+  "nova-curve-9",   // lime        100°
+  "nova-curve-10",  // crimson     350°
+  "nova-curve-11",  // teal        172°
+  "nova-curve-12",  // gold         44°
+  "nova-curve-13",  // indigo      230°
+  "nova-curve-14",  // rose        320°
+  "nova-curve-15",  // mint        155°
+  "nova-curve-16",  // scarlet      10°
+  "nova-curve-17",  // sky         200°
+  "nova-curve-18",  // chartreuse   82°
+  "nova-curve-19",  // plum        285°
+  "nova-curve-20",  // coral        18°
 ] as const;
 
-const STORAGE_KEY = "novaa_equations";
+const STORAGE_KEY = "nova_equations";
 
 const MIN_PANEL_WIDTH     = 140;  // px — minimum equations panel width
 const MAX_PANEL_WIDTH     = 380;  // px — maximum equations panel width
@@ -107,19 +107,19 @@ function nextColor(existing: Equation[]): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NovaaPage component
+// NovaPage component
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NovaaPage = () => {
+const NovaPage = () => {
   const { state: sidebarState, setOpen, setOpenMobile, isMobile } = useSidebar();
   const location                = useLocation();
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [equations, setEquationsRaw] = React.useState<Equation[]>(loadEquations);
-  const [activeTool, setActiveTool]  = React.useState<"tangent" | "intersect" | "area" | null>(null);
   const [newFromChat, setNewFromChat] = React.useState<string | null>(null);
   const [panelWidth, setPanelWidth]  = React.useState(DEFAULT_PANEL_WIDTH);
   const isResizing = React.useRef(false);
+  const hasResetSidebarRef = React.useRef(false);
 
   // When the AppSidebar is fully expanded (text labels visible), collapse the
   // equations panel to icon-only mode to preserve canvas space.
@@ -138,14 +138,14 @@ const NovaaPage = () => {
   );
 
   React.useEffect(() => {
-    if (isMobile) {
-      setOpenMobile(false);
-      return;
-    }
-    if (sidebarState === "expanded") {
-      setOpen(false);
-    }
-  }, [isMobile, setOpen, setOpenMobile, sidebarState]);
+    if (hasResetSidebarRef.current) return;
+    hasResetSidebarRef.current = true;
+
+    // Reset the shared sidebar when Nova is entered, then let the usual
+    // toggle controls manage it normally for the rest of the visit.
+    setOpen(false);
+    setOpenMobile(false);
+  }, [setOpen, setOpenMobile]);
 
   // ── Handle equation arriving from ChatPage via React Router state ──────────
   // ChatPage sets location.state = { equation: "y = x^2" } (or equations: [...])
@@ -264,11 +264,6 @@ const NovaaPage = () => {
       );
     });
 
-  // ── Quick tool buttons (Tangent / Intersection / Area) ────────────────────
-  // Clicking an active tool deactivates it (toggle behaviour).
-  const handleToolClick = (tool: "tangent" | "intersect" | "area") =>
-    setActiveTool((prev) => (prev === tool ? null : tool));
-
   // ── Resizable equations panel ─────────────────────────────────────────────
   // Drag the 1.5px handle on the right edge of the panel to resize it.
   const handleResizeMouseDown = (e: React.MouseEvent) => {
@@ -334,8 +329,6 @@ const NovaaPage = () => {
         <GraphCanvas
           equations={equations}
           newFromChat={newFromChat}
-          activeTool={activeTool}
-          onToolClick={handleToolClick}
         />
       </div>
 
@@ -343,4 +336,4 @@ const NovaaPage = () => {
   );
 };
 
-export default NovaaPage;
+export default NovaPage;

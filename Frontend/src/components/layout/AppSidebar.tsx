@@ -63,7 +63,7 @@ const menuItems = [
   { title: "Images",    url: "/images",    icon: ImageIcon },
   { title: "My Quizzes",url: "/quizzes",   icon: ClipboardList },
   { title: "Goals",     url: "/goals",     icon: Target },
-  { title: "Nova",      url: "/novaa",     icon: BarChart2 },
+  { title: "Nova",      url: "/nova",     icon: BarChart2 },
   { title: "Settings",  url: "/settings",  icon: Settings },
 ];
 
@@ -90,13 +90,10 @@ const AppSidebar = () => {
   const handleNavClick = (url: string) => {
     closeOnMobile();
     if (isMobile) return;
-    if (url === "/novaa") {
-      // Close only when navigating into Nova from another page.
-      // If already on Nova, keep/open sidebar on click.
-      if (location.pathname !== "/novaa") {
+    if (url === "/nova") {
+      // Reset the sidebar only when arriving on Nova from another page.
+      if (location.pathname !== "/nova") {
         setOpen(false);
-      } else {
-        setOpen(true);
       }
     }
   };
@@ -110,6 +107,7 @@ const AppSidebar = () => {
   const [renamingId, setRenamingId]   = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const [openTooltipKey, setOpenTooltipKey] = useState<string | null>(null);
 
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const optimisticTsSnapshotRef = useRef<Map<string, string | undefined>>(new Map());
@@ -121,6 +119,12 @@ const AppSidebar = () => {
     window.addEventListener("typing-state-changed", handler);
     return () => window.removeEventListener("typing-state-changed", handler);
   }, []);
+
+  useEffect(() => {
+    if (!collapsed) {
+      setOpenTooltipKey(null);
+    }
+  }, [collapsed]);
 
   const fetchConversations = async () => {
     const cacheKey = `conversations_${USER_ID}`;
@@ -395,31 +399,46 @@ const AppSidebar = () => {
                     const isActive =
                       location.pathname === item.url ||
                       (item.url === "/chat" && location.pathname === "/");
+
+                    const navNode = (
+                      <SidebarMenuButton asChild>
+                        <NavLink
+                          to={item.url}
+                          end
+                          onClick={() => handleNavClick(item.url)}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
+                            isActive
+                              ? "bg-primary/15 text-primary glow-blue-sm"
+                              : "text-sidebar-foreground hover:bg-secondary hover:text-foreground"
+                          }`}
+                          activeClassName=""
+                        >
+                          <item.icon className="w-5 h-5 shrink-0" />
+                          {!collapsed && <span className="text-sm font-medium">{item.title}</span>}
+                        </NavLink>
+                      </SidebarMenuButton>
+                    );
+
+                    if (!collapsed) {
+                      return (
+                        <SidebarMenuItem key={item.title}>
+                          {navNode}
+                        </SidebarMenuItem>
+                      );
+                    }
+
                     return (
                       <SidebarMenuItem key={item.title}>
-                        <Tooltip>
+                        <Tooltip
+                          open={openTooltipKey === item.title}
+                          onOpenChange={(open) => setOpenTooltipKey(open ? item.title : null)}
+                        >
                           <TooltipTrigger asChild>
-                            <SidebarMenuButton asChild>
-                              <NavLink
-                                to={item.url} end
-                                onClick={() => handleNavClick(item.url)}
-                                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
-                                  isActive
-                                    ? "bg-primary/15 text-primary glow-blue-sm"
-                                    : "text-sidebar-foreground hover:bg-secondary hover:text-foreground"
-                                }`}
-                                activeClassName=""
-                              >
-                                <item.icon className="w-5 h-5 shrink-0" />
-                                {!collapsed && <span className="text-sm font-medium">{item.title}</span>}
-                              </NavLink>
-                            </SidebarMenuButton>
+                            {navNode}
                           </TooltipTrigger>
-                          {collapsed && (
-                            <TooltipContent side="right" sideOffset={8}>
-                              {item.title}
-                            </TooltipContent>
-                          )}
+                          <TooltipContent side="right" sideOffset={8}>
+                            {item.title}
+                          </TooltipContent>
                         </Tooltip>
                       </SidebarMenuItem>
                     );

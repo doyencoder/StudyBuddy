@@ -42,7 +42,7 @@ self.addEventListener("install", (event) => {
         "/goals",
         "/settings",
         "/images",
-        "/novaa",
+        "/nova",
       ]).catch(() => {
         // Non-critical — pages will be cached on first visit
       });

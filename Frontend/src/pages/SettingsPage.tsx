@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
-  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail, GraduationCap, ChevronDown,
+  ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail, GraduationCap,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { API_BASE } from "@/config/api";
@@ -303,56 +304,37 @@ const SettingsPage = () => {
   // Curriculum fields live top-level on the Cosmos doc (not in a nested section),
   // so they are sent as plain keys alongside the standard sections.
   // Uses the same debounce + saving indicator as saveSettings.
-  const saveCurriculumSetting = useCallback((
+  const saveCurriculumSetting = useCallback(async (
     patch: { curriculum_board?: string | null; curriculum_grade?: string | null; curriculum_enabled?: boolean }
   ) => {
     setSaving(true);
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
-      try {
-        await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
+    try {
+      if (!navigator.onLine) {
+        await addToSyncQueue({
+          type: "settings_save",
+          url: `${API_BASE}/settings/?user_id=${USER_ID}`,
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(patch),
+          createdAt: new Date().toISOString(),
         });
-      } catch {
-        // silent — local state already reflects the change
-      } finally {
-        setSaving(false);
+        return;
       }
-    }, 800);
+
+      await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+    } catch {
+      // Keep UI optimistic even when the network call fails.
+    } finally {
+      setSaving(false);
+    }
   }, []);
 
-  // ── Connector Toggle ─────────────────────────────────────────────────────
-  const handleConnectorToggle = async (connectorId: string, connected: boolean) => {
-    const action = connected ? "disconnect" : "connect";
-    // Optimistic update
-    setConnectors((prev) =>
-      prev.map((c) =>
-        c.id === connectorId
-          ? { ...c, connected: !connected, connected_at: !connected ? new Date().toISOString() : null }
-          : c
-      )
-    );
-    try {
-      const res = await fetch(`${API_BASE}/settings/connectors/toggle?user_id=${USER_ID}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ connector_id: connectorId, action }),
-      });
-      if (!res.ok) throw new Error("Toggle failed");
-      const data = await res.json();
-      const label = data.connector?.name || connectorId;
-      toast.success(action === "connect" ? `${label} connected!` : `${label} disconnected.`);
-    } catch {
-      // Revert optimistic update
-      setConnectors((prev) =>
-        prev.map((c) =>
-          c.id === connectorId ? { ...c, connected, connected_at: connected ? new Date().toISOString() : null } : c
-        )
-      );
-      toast.error("Could not update connector. Please try again.");
-    }
+  // ── Connector Placeholder ────────────────────────────────────────────────
+  const handleConnectorClick = (connectorName: string) => {
+    toast.info(`${connectorName} connector coming soon.`);
   };
 
   // ── Plan Upgrade ─────────────────────────────────────────────────────────
@@ -518,7 +500,7 @@ const SettingsPage = () => {
         {activeTab === "connectors" && (
           <ConnectorsTab
             connectors={connectors}
-            handleConnectorToggle={handleConnectorToggle}
+            handleConnectorClick={handleConnectorClick}
           />
         )}
       </div>
@@ -918,61 +900,49 @@ const GeneralTab = ({
           {/* Board selector */}
           <div>
             <Label className="text-sm text-muted-foreground mb-2 block">Board</Label>
-            <div className="grid grid-cols-2 gap-3">
-              {(["CBSE", "ICSE"] as const).map((board) => (
-                <button
-                  key={board}
-                  onClick={() => {
-                    const next = curriculumBoard === board ? null : board;
-                    setCurriculumBoard(next);
-                    // Reset grade when board changes — old grade may be invalid for new board
-                    setCurriculumGrade(null);
-                    saveCurriculumSetting({ curriculum_board: next, curriculum_grade: null });
-                  }}
-                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 font-medium text-sm transition-all ${
-                    curriculumBoard === board
-                      ? "border-primary bg-primary/5 text-primary"
-                      : "border-border hover:border-muted-foreground/40 bg-card text-muted-foreground"
-                  }`}
-                >
-                  {board}
-                </button>
-              ))}
-              {/* Disabled placeholder — communicates roadmap without lying */}
-              <button
-                disabled
-                className="col-span-2 flex items-center justify-center px-4 py-2 rounded-xl border-2 border-dashed border-border text-xs text-muted-foreground/40 cursor-not-allowed select-none"
-              >
-                More boards coming soon
-              </button>
-            </div>
+            <Select
+              value={curriculumBoard ?? ""}
+              onValueChange={(board) => {
+                const next = board || null;
+                setCurriculumBoard(next);
+                setCurriculumGrade(null);
+                saveCurriculumSetting({ curriculum_board: next, curriculum_grade: null });
+              }}
+            >
+              <SelectTrigger className="bg-background border-border">
+                <SelectValue placeholder="Select board" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="CBSE">CBSE</SelectItem>
+                <SelectItem value="ICSE">ICSE</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground/60 mt-1.5">More boards coming soon.</p>
           </div>
 
-          {/* Grade selector — only rendered after a board is chosen */}
-          {curriculumBoard && (
-            <div>
-              <Label className="text-sm text-muted-foreground mb-2 block">Class</Label>
-              <div className="grid grid-cols-4 gap-2">
-                {(["Class 9", "Class 10", "Class 11", "Class 12"] as const).map((grade) => (
-                  <button
-                    key={grade}
-                    onClick={() => {
-                      const next = curriculumGrade === grade ? null : grade;
-                      setCurriculumGrade(next);
-                      saveCurriculumSetting({ curriculum_grade: next });
-                    }}
-                    className={`flex items-center justify-center px-3 py-2.5 rounded-xl border-2 font-medium text-sm transition-all ${
-                      curriculumGrade === grade
-                        ? "border-primary bg-primary/5 text-primary"
-                        : "border-border hover:border-muted-foreground/40 bg-card text-muted-foreground"
-                    }`}
-                  >
-                    {grade.replace("Class ", "")}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Grade selector */}
+          <div>
+            <Label className="text-sm text-muted-foreground mb-2 block">Class</Label>
+            <Select
+              value={curriculumGrade ?? ""}
+              onValueChange={(grade) => {
+                const next = grade || null;
+                setCurriculumGrade(next);
+                saveCurriculumSetting({ curriculum_grade: next });
+              }}
+              disabled={!curriculumBoard}
+            >
+              <SelectTrigger className="bg-background border-border disabled:opacity-50">
+                <SelectValue placeholder={curriculumBoard ? "Select class" : "Select board first"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Class 9">Class 9</SelectItem>
+                <SelectItem value="Class 10">Class 10</SelectItem>
+                <SelectItem value="Class 11">Class 11</SelectItem>
+                <SelectItem value="Class 12">Class 12</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
           {/* Enable toggle — dimmed until both board and grade are set */}
           <div className={`flex items-center justify-between transition-opacity ${
@@ -1278,30 +1248,29 @@ const BillingTab = ({
 
 interface ConnectorsTabProps {
   connectors: ConnectorItem[];
-  handleConnectorToggle: (id: string, connected: boolean) => Promise<void>;
+  handleConnectorClick: (name: string) => void;
 }
 
-const ConnectorsTab = ({ connectors, handleConnectorToggle }: ConnectorsTabProps) => {
+const ConnectorsTab = ({ connectors, handleConnectorClick }: ConnectorsTabProps) => {
   return (
     <>
       <Card className="bg-card border-border">
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base text-foreground">Connectors</CardTitle>
-              <p className="text-sm text-muted-foreground mt-1">
-                Allow Study Buddy to reference other apps and services for more context.
-              </p>
-            </div>
-            <Button variant="outline" size="sm" className="border-border">
-              Browse connectors
-            </Button>
+          <div>
+            <CardTitle className="text-base text-foreground">Connectors</CardTitle>
+            <p className="text-sm text-muted-foreground mt-1">
+              Allow Study Buddy to reference other apps and services for more context.
+            </p>
           </div>
         </CardHeader>
         <CardContent className="space-y-1">
           {connectors.map((connector, index) => (
             <div key={connector.id}>
-              <div className="flex items-center justify-between py-3">
+              <button
+                type="button"
+                onClick={() => handleConnectorClick(connector.name)}
+                className="flex w-full items-center justify-between py-3 text-left transition-colors hover:bg-secondary/30 rounded-lg px-2"
+              >
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-lg bg-muted/50 flex items-center justify-center overflow-hidden">
                     {CONNECTOR_ICON_MAP[connector.icon] ?? (
@@ -1312,22 +1281,22 @@ const ConnectorsTab = ({ connectors, handleConnectorToggle }: ConnectorsTabProps
                   </div>
                   <div>
                     <p className="text-sm font-medium text-foreground">{connector.name}</p>
-                    {connector.connected && connector.connected_at && (
-                      <p className="text-xs text-muted-foreground">
-                        Connected {new Date(connector.connected_at).toLocaleDateString()}
-                      </p>
-                    )}
+                    <p className="text-xs text-muted-foreground">Coming soon</p>
                   </div>
                 </div>
                 <Button
-                  variant={connector.connected ? "secondary" : "outline"}
+                  type="button"
+                  variant="outline"
                   size="sm"
-                  onClick={() => handleConnectorToggle(connector.id, connector.connected)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleConnectorClick(connector.name);
+                  }}
                   className="border-border min-w-[100px]"
                 >
-                  {connector.connected ? "Disconnect" : "Connect"}
+                  Coming soon
                 </Button>
-              </div>
+              </button>
               {index < connectors.length - 1 && <Separator className="bg-border" />}
             </div>
           ))}

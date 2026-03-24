@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  Trash2, Plus, MessageSquare,
+  Trash2, Plus, MessageSquare, Mic,
   Sparkles, Calculator, Loader2, WifiOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,7 @@ import { API_BASE } from "@/config/api";
 import { normalizeEquationForNova } from "@/lib/novaMath";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import "mathquill/build/mathquill.css";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -50,26 +51,26 @@ interface EquationsPanelProps {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const colorDotStyle: Record<string, React.CSSProperties> = {
-  "novaa-curve-1":  { backgroundColor: "hsl(var(--novaa-curve-1))" },
-  "novaa-curve-2":  { backgroundColor: "hsl(var(--novaa-curve-2))" },
-  "novaa-curve-3":  { backgroundColor: "hsl(var(--novaa-curve-3))" },
-  "novaa-curve-4":  { backgroundColor: "hsl(var(--novaa-curve-4))" },
-  "novaa-curve-5":  { backgroundColor: "hsl(var(--novaa-curve-5))" },
-  "novaa-curve-6":  { backgroundColor: "hsl(var(--novaa-curve-6))" },
-  "novaa-curve-7":  { backgroundColor: "hsl(var(--novaa-curve-7))" },
-  "novaa-curve-8":  { backgroundColor: "hsl(var(--novaa-curve-8))" },
-  "novaa-curve-9":  { backgroundColor: "hsl(var(--novaa-curve-9))" },
-  "novaa-curve-10": { backgroundColor: "hsl(var(--novaa-curve-10))" },
-  "novaa-curve-11": { backgroundColor: "hsl(var(--novaa-curve-11))" },
-  "novaa-curve-12": { backgroundColor: "hsl(var(--novaa-curve-12))" },
-  "novaa-curve-13": { backgroundColor: "hsl(var(--novaa-curve-13))" },
-  "novaa-curve-14": { backgroundColor: "hsl(var(--novaa-curve-14))" },
-  "novaa-curve-15": { backgroundColor: "hsl(var(--novaa-curve-15))" },
-  "novaa-curve-16": { backgroundColor: "hsl(var(--novaa-curve-16))" },
-  "novaa-curve-17": { backgroundColor: "hsl(var(--novaa-curve-17))" },
-  "novaa-curve-18": { backgroundColor: "hsl(var(--novaa-curve-18))" },
-  "novaa-curve-19": { backgroundColor: "hsl(var(--novaa-curve-19))" },
-  "novaa-curve-20": { backgroundColor: "hsl(var(--novaa-curve-20))" },
+  "nova-curve-1":  { backgroundColor: "hsl(var(--nova-curve-1))" },
+  "nova-curve-2":  { backgroundColor: "hsl(var(--nova-curve-2))" },
+  "nova-curve-3":  { backgroundColor: "hsl(var(--nova-curve-3))" },
+  "nova-curve-4":  { backgroundColor: "hsl(var(--nova-curve-4))" },
+  "nova-curve-5":  { backgroundColor: "hsl(var(--nova-curve-5))" },
+  "nova-curve-6":  { backgroundColor: "hsl(var(--nova-curve-6))" },
+  "nova-curve-7":  { backgroundColor: "hsl(var(--nova-curve-7))" },
+  "nova-curve-8":  { backgroundColor: "hsl(var(--nova-curve-8))" },
+  "nova-curve-9":  { backgroundColor: "hsl(var(--nova-curve-9))" },
+  "nova-curve-10": { backgroundColor: "hsl(var(--nova-curve-10))" },
+  "nova-curve-11": { backgroundColor: "hsl(var(--nova-curve-11))" },
+  "nova-curve-12": { backgroundColor: "hsl(var(--nova-curve-12))" },
+  "nova-curve-13": { backgroundColor: "hsl(var(--nova-curve-13))" },
+  "nova-curve-14": { backgroundColor: "hsl(var(--nova-curve-14))" },
+  "nova-curve-15": { backgroundColor: "hsl(var(--nova-curve-15))" },
+  "nova-curve-16": { backgroundColor: "hsl(var(--nova-curve-16))" },
+  "nova-curve-17": { backgroundColor: "hsl(var(--nova-curve-17))" },
+  "nova-curve-18": { backgroundColor: "hsl(var(--nova-curve-18))" },
+  "nova-curve-19": { backgroundColor: "hsl(var(--nova-curve-19))" },
+  "nova-curve-20": { backgroundColor: "hsl(var(--nova-curve-20))" },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -354,24 +355,34 @@ function useMathQuill(): MQStatic | null {
     if (mq) return;
     if (!_mqPromise) {
       _mqPromise = (async () => {
-        // 1. Load MathQuill CSS from CDN
-        if (!document.querySelector('link[data-mq]')) {
-          const link = document.createElement("link");
-          link.rel  = "stylesheet";
-          link.setAttribute("data-mq", "1");
-          link.href = "https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.css";
-          document.head.appendChild(link);
+        // Prefer local bundled dependencies so Math mode works even when CDN is blocked.
+        try {
+          if (!window.MathQuill) {
+            const jqueryModule = await import("jquery");
+            const jq = (jqueryModule as any).default ?? jqueryModule;
+            (window as any).jQuery = jq;
+            (window as any).$ = jq;
+            await import("mathquill/build/mathquill.js");
+          }
+
+          if (window.MathQuill) {
+            return window.MathQuill.getInterface(2);
+          }
+        } catch {
+          // Fall back to CDN loading if local bundling fails for any reason.
         }
-        // 2. Load jQuery from CDN (MathQuill requires it)
+
         if (!(window as any).jQuery) {
           await loadScript(
             "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
           );
         }
-        // 3. Load MathQuill JS from CDN
         await loadScript(
           "https://cdnjs.cloudflare.com/ajax/libs/mathquill/0.10.1/mathquill.min.js"
         );
+        if (!window.MathQuill) {
+          throw new Error("MathQuill failed to load");
+        }
         return window.MathQuill.getInterface(2);
       })();
     }
@@ -573,7 +584,10 @@ export function EquationsPanel({
   const [inputValue, setInputValue] = React.useState("");   // AI mode text / mathjs from MQ
   const [mqValue,    setMqValue]    = React.useState("");   // live mathjs from MathQuill field
   const [isLoading, setIsLoading] = React.useState(false);
+  const [isListening, setIsListening] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const recognitionRef = React.useRef<any | null>(null);
+  const baseTextRef = React.useRef("");
 
   // Reactive online status (navigator.onLine alone doesn't trigger re-renders)
   const [online, setOnline] = React.useState(navigator.onLine);
@@ -594,6 +608,21 @@ export function EquationsPanel({
     const timer = window.setTimeout(() => setError(null), 4200);
     return () => window.clearTimeout(timer);
   }, [error]);
+
+  React.useEffect(() => {
+    if (isAIMode) return;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+  }, [isAIMode]);
+
+  React.useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
   // The value to submit depends on mode
   const submitValue = isAIMode ? inputValue : mqValue;
@@ -666,6 +695,67 @@ export function EquationsPanel({
       setInputValue("");
       setMqValue("");
     }
+  };
+
+  const toggleListening = () => {
+    if (!isAIMode || !online || isLoading) return;
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognitionAPI =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionAPI) {
+      setError("Your browser doesn't support speech input. Try Chrome or Edge.");
+      return;
+    }
+
+    const recognition: any = new SpeechRecognitionAPI();
+    recognition.lang = "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    baseTextRef.current = inputValue;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      let final = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) final += result[0].transcript;
+        else interim += result[0].transcript;
+      }
+
+      if (final) {
+        baseTextRef.current = `${baseTextRef.current} ${final}`.trim();
+      }
+
+      setInputValue(`${baseTextRef.current} ${interim}`.trim());
+    };
+
+    recognition.onerror = (event: any) => {
+      setIsListening(false);
+      const msgs: Record<string, string> = {
+        "language-not-supported": "Speech input is not supported for this language.",
+        "not-allowed": "Microphone access denied.",
+        "no-speech": "No speech detected.",
+        network: "Network error during speech recognition.",
+      };
+      setError(msgs[event.error] ?? "Speech recognition error. Try typing instead.");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
   };
 
   if (isCollapsed) {
@@ -799,28 +889,39 @@ export function EquationsPanel({
               </div>
             )}
 
-            {/* Submit button */}
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              onClick={() => handleSubmit()}
-              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-primary hover:bg-background/70 rounded-lg"
-              disabled={!submitValue.trim() || isLoading}
-            >
-              {isLoading
-                ? <Loader2 className="w-3 h-3 animate-spin" />
-                : <Plus className="w-3 h-3" />
-              }
-            </Button>
+            {isAIMode ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={toggleListening}
+                className={cn(
+                  "h-8 w-8 shrink-0 rounded-lg",
+                  isListening
+                    ? "text-destructive bg-destructive/10 hover:bg-destructive/15"
+                    : "text-muted-foreground hover:text-primary hover:bg-background/70",
+                )}
+                disabled={isLoading || !online}
+                title={isListening ? "Stop voice input" : "Start voice input"}
+              >
+                <Mic className={cn("w-3 h-3", isListening && "animate-pulse")} />
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={() => handleSubmit()}
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-primary hover:bg-background/70 rounded-lg"
+                disabled={!submitValue.trim() || isLoading}
+              >
+                {isLoading
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <Plus className="w-3 h-3" />
+                }
+              </Button>
+            )}
           </div>
-
-          {/* Shortcut hint — Math mode only */}
-          {!isAIMode && !mqValue && (
-            <p className="text-[10px] text-muted-foreground/65 leading-tight px-0.5">
-              type ^ for exponent · / for fraction · pi, theta, sqrt auto-render
-            </p>
-          )}
 
           {error && (
             <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 shadow-sm">

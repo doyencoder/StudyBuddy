@@ -3,7 +3,7 @@ import {
   BookOpen, Target, ClipboardList, TrendingUp, TrendingDown, Flame,
   ChevronRight, Zap, AlertTriangle,
   Brain, Sparkles, CalendarDays, ChevronDown, ChevronUp, Clock,
-  Save, Loader2, CheckCircle2, Gauge, WifiOff,
+  Save, Loader2, CheckCircle2, Gauge, WifiOff, Trash2,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer,
@@ -20,8 +20,13 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Tooltip as UITooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { offlineFetch } from "@/lib/offlineFetch";
-import { addToSyncQueue } from "@/lib/offlineStore";
+import { addToSyncQueue, cacheAPIResponse } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { formatCachedTime } from "@/lib/offlineStore";
 
@@ -32,6 +37,8 @@ const C2 = "hsl(var(--accent))";         // chart-2 → accent teal
 const C3 = "hsl(var(--muted-foreground))"; // chart-3 → muted grey
 
 const USER_ID = "student-001";
+const DISMISSED_WEAK_TOPICS_PATH = `/settings/dismissed-weak-topics?user_id=${USER_ID}`;
+const DISMISSED_WEAK_TOPICS_URL = `${API_BASE}${DISMISSED_WEAK_TOPICS_PATH}`;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface WeekPlanData {
@@ -241,6 +248,47 @@ function ScoreDistribution({ data }: { data: { name: string; value: number; fill
 
 // ─── HeatmapGrid ──────────────────────────────────────────────────────────────
 const WEEK_COUNT = 16;
+type HeatmapCell = {
+  week: number;
+  day: number;
+  dateKey: string;
+  label: string;
+  count: number;
+  intensity: number;
+  isFuture: boolean;
+};
+
+function startOfLocalDay(date: Date): Date {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function addDays(date: Date, amount: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function startOfWeek(date: Date): Date {
+  const next = startOfLocalDay(date);
+  next.setDate(next.getDate() - next.getDay());
+  return next;
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function heatmapDateLabel(date: Date): string {
+  return date.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 // Map intensity 0-1 to 4 discrete levels: 0=none, 1=low, 2=mid, 3=high, 4=max
 function intensityLevel(v: number): 0 | 1 | 2 | 3 | 4 {
   if (!v || v <= 0) return 0;
@@ -251,8 +299,12 @@ function intensityLevel(v: number): 0 | 1 | 2 | 3 | 4 {
 }
 const LEVEL_OPACITY: Record<number, number> = { 0: 0.15, 1: 0.35, 2: 0.55, 3: 0.75, 4: 1 };
 
-function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: number }[] }) {
+function HeatmapGrid({ data }: { data: HeatmapCell[] }) {
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const cellMap = useMemo(
+    () => new Map(data.map((cell) => [`${cell.week}-${cell.day}`, cell])),
+    [data],
+  );
 
   return (
     <AnimatedWrapper delay={600} className="h-full">
@@ -283,30 +335,40 @@ function HeatmapGrid({ data }: { data: { week: number; day: number; intensity: n
             {Array.from({ length: WEEK_COUNT }).map((_, wi) => (
               <div key={wi} className="flex flex-col gap-[10px]">
                 {Array.from({ length: 7 }).map((_, di) => {
-                  const cell = data.find((c) => c.week === wi && c.day === di);
+                  const cell = cellMap.get(`${wi}-${di}`);
                   const level = intensityLevel(cell?.intensity ?? 0);
+                  const tooltipLabel = !cell
+                    ? "No data"
+                    : `${cell.label} - ${cell.count} quiz${cell.count === 1 ? "" : "zes"}`;
 
                   return (
-                    <div
-                      key={di}
-                      className="h-[18px] w-[18px] rounded-[4px] transition-all hover:ring-1 hover:ring-primary/50"
-                      style={{
-                        backgroundColor:
-                          level === 0
-                            ? "hsl(var(--muted))"
-                            : C1,
+                    <UITooltip key={di}>
+                      <TooltipTrigger asChild>
+                        <div
+                          className="h-[18px] w-[18px] rounded-[4px] transition-all hover:ring-1 hover:ring-primary/50"
+                          aria-label={tooltipLabel}
+                          style={{
+                            backgroundColor:
+                              level === 0
+                                ? "hsl(var(--muted))"
+                                : C1,
 
-                        border:
-                          level === 0
-                            ? "1px solid hsl(var(--border))"
-                            : "none",
+                            border:
+                              level === 0
+                                ? "1px solid hsl(var(--border))"
+                                : "none",
 
-                        opacity:
-                          level === 0
-                            ? 0.7
-                            : LEVEL_OPACITY[level],
-                      }}
-                    />
+                            opacity:
+                              level === 0
+                                ? 0.7
+                                : LEVEL_OPACITY[level],
+                          }}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent side="top" sideOffset={8}>
+                        {tooltipLabel}
+                      </TooltipContent>
+                    </UITooltip>
                   );
                 })}
               </div>
@@ -380,31 +442,49 @@ function GoalsProgress({ goals }: { goals: GoalItem[] }) {
 }
 
 // ─── ImprovementAreas ─────────────────────────────────────────────────────────
-function ImprovementAreas({ areas, onImprove }: { areas: { topic: string; accuracy: number }[]; onImprove: (t: string) => void }) {
+function ImprovementAreas({
+  areas,
+  onImprove,
+  onDelete,
+}: {
+  areas: { topic: string; accuracy: number }[];
+  onImprove: (t: string) => void;
+  onDelete: (t: string) => void;
+}) {
   return (
-    <AnimatedWrapper delay={800}>
-      <div className="flex flex-col rounded-2xl border border-border bg-card p-6">
+    <AnimatedWrapper delay={800} className="h-full">
+      <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
         <div className="mb-6">
           <h3 className="text-lg font-semibold text-foreground">Improvement Areas</h3>
           <p className="text-sm text-muted-foreground">Topics below 70%</p>
         </div>
         {areas.length > 0 ? (
           <div className="flex flex-col gap-4">
-            {areas.map((area, i) => (
-              <div key={i} className="flex items-center justify-between rounded-xl border border-border bg-secondary/50 p-4 transition-colors hover:border-muted-foreground/30">
-                <div className="flex items-center gap-3">
+            {areas.map((area) => (
+              <div key={area.topic} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/50 p-4 transition-colors hover:border-muted-foreground/30">
+                <div className="flex min-w-0 items-center gap-3">
                   <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
-                  <div>
-                    <p className="font-medium text-foreground">{area.topic}</p>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-foreground">{area.topic}</p>
                     <p className="text-sm text-muted-foreground">{area.accuracy}%</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => onImprove(area.topic)}
-                  className="flex items-center gap-1 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-secondary"
-                >
-                  Improve <ChevronRight className="h-4 w-4" />
-                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={() => onDelete(area.topic)}
+                    className="rounded-md p-2 text-red-400 transition-colors hover:bg-red-500/10 hover:text-red-300"
+                    title={`Delete ${area.topic}`}
+                    aria-label={`Delete ${area.topic}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => onImprove(area.topic)}
+                    className="flex items-center gap-1 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-secondary"
+                  >
+                    Improve <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -423,8 +503,8 @@ function ImprovementAreas({ areas, onImprove }: { areas: { topic: string; accura
 function RecentQuizzes({ quizzes }: { quizzes: { quiz_id: string; topic: string; score: number; date: string }[] }) {
   const navigate = useNavigate();
   return (
-    <AnimatedWrapper delay={900}>
-      <div className="flex flex-col rounded-2xl border border-border bg-card p-6">
+    <AnimatedWrapper delay={900} className="h-full">
+      <div className="flex h-full flex-col rounded-2xl border border-border bg-card p-6">
         <div className="mb-6 flex items-center justify-between">
           <div>
             <h3 className="text-lg font-semibold text-foreground">Recent Quizzes</h3>
@@ -487,9 +567,13 @@ const DashboardPage = () => {
   const { isOnline } = useOnlineStatus();
   const [cachedAt, setCachedAt] = useState<string | null>(null);
 
+  const syncDismissedTopicsCache = (topics: string[]) => {
+    cacheAPIResponse(DISMISSED_WEAK_TOPICS_PATH, { dismissed_topics: topics }).catch(() => {});
+  };
+
   // ── Fetches (offline-aware) ─────────────────────────────────────────────────
   useEffect(() => {
-    offlineFetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`)
+    offlineFetch(DISMISSED_WEAK_TOPICS_URL)
       .then(({ data: d }) => d && setDismissedTopics(d.dismissed_topics || []))
       .catch(() => {});
   }, []);
@@ -590,14 +674,66 @@ const DashboardPage = () => {
   const handleRemoveFromWeakTopics = async (shouldRemove: boolean) => {
     if (shouldRemove) {
       try {
-        await fetch(`${API_BASE}/settings/dismissed-weak-topics?user_id=${USER_ID}`, {
+        await fetch(DISMISSED_WEAK_TOPICS_URL, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ topic: originalTopic.trim() }),
         });
-        setDismissedTopics(p => [...p, originalTopic.trim()]); toast.success("Topic removed!");
+        setDismissedTopics((previousTopics) => {
+          const nextTopics = previousTopics.includes(originalTopic.trim())
+            ? previousTopics
+            : [...previousTopics, originalTopic.trim()];
+          syncDismissedTopicsCache(nextTopics);
+          return nextTopics;
+        });
+        toast.success("Topic removed!");
       } catch { toast.error("Failed to dismiss topic."); }
     }
     setImproveDialogOpen(false);
+  };
+
+  const handleDeleteWeakTopic = (topic: string) => {
+    const trimmedTopic = topic.trim();
+    if (!trimmedTopic || dismissedTopics.includes(trimmedTopic)) return;
+
+    const previousTopics = dismissedTopics;
+    const nextTopics = [...previousTopics, trimmedTopic];
+
+    setDismissedTopics(nextTopics);
+    syncDismissedTopicsCache(nextTopics);
+
+    if (!navigator.onLine) {
+      addToSyncQueue({
+        type: "dismissed_weak_topic_add",
+        url: DISMISSED_WEAK_TOPICS_URL,
+        method: "POST",
+        body: JSON.stringify({ topic: trimmedTopic }),
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+      toast.success("Improvement area removed. It will sync when you're back online.");
+      return;
+    }
+
+    fetch(DISMISSED_WEAK_TOPICS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic: trimmedTopic }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status}`);
+        }
+
+        const data = await response.json().catch(() => null);
+        if (Array.isArray(data?.dismissed_topics)) {
+          setDismissedTopics(data.dismissed_topics);
+          syncDismissedTopicsCache(data.dismissed_topics);
+        }
+      })
+      .catch(() => {
+        setDismissedTopics(previousTopics);
+        syncDismissedTopicsCache(previousTopics);
+        toast.error("Failed to delete improvement area. Please try again.");
+      });
   };
 
   const toggleWeek = (n: number) => setExpandedWeeks(p => { const s = new Set(p); s.has(n) ? s.delete(n) : s.add(n); return s; });
@@ -666,31 +802,46 @@ const DashboardPage = () => {
     ].filter(d => d.value > 0);
   }, [submittedQuizzes]);
 
-  const heatmapData = useMemo(() => {
-  const today = new Date();
-  const weeks = WEEK_COUNT;
+  const heatmapData = useMemo<HeatmapCell[]>(() => {
+    const today = startOfLocalDay(new Date());
+    const currentWeekStart = startOfWeek(today);
+    const firstWeekStart = addDays(currentWeekStart, -((WEEK_COUNT - 1) * 7));
+    const dailyCounts = new Map<string, number>();
 
-  return Array.from({ length: weeks }, (_, week) =>
-    Array.from({ length: 7 }, (_, day) => {
-      // FIX: correct reverse indexing so latest week is rightmost
-      const d = new Date(today);
-      d.setDate(today.getDate() - ((weeks - 1 - week) * 7 + (6 - day)));
+    for (const quiz of submittedQuizzes) {
+      const quizDate = startOfLocalDay(new Date(quiz.created_at));
+      const key = localDateKey(quizDate);
+      dailyCounts.set(key, (dailyCounts.get(key) ?? 0) + 1);
+    }
 
-      const key = d.toISOString().split("T")[0];
+    const visibleDates = Array.from({ length: WEEK_COUNT * 7 }, (_, index) =>
+      addDays(firstWeekStart, index),
+    ).filter((date) => date <= today);
 
-      const count = quizzes.filter(
-        (q) =>
-          new Date(q.created_at).toISOString().split("T")[0] === key
-      ).length;
+    const maxDailyCount = Math.max(
+      1,
+      ...visibleDates.map((date) => dailyCounts.get(localDateKey(date)) ?? 0),
+    );
 
-      return {
-        week,
-        day,
-        intensity: count > 0 ? Math.min(1, count / 3) : 0,
-      };
-    })
-  ).flat();
-}, [quizzes]);
+    return Array.from({ length: WEEK_COUNT }, (_, week) =>
+      Array.from({ length: 7 }, (_, day) => {
+        const date = addDays(firstWeekStart, week * 7 + day);
+        const dateKey = localDateKey(date);
+        const isFuture = date > today;
+        const count = isFuture ? 0 : (dailyCounts.get(dateKey) ?? 0);
+
+        return {
+          week,
+          day,
+          dateKey,
+          label: heatmapDateLabel(date),
+          count,
+          intensity: isFuture || count === 0 ? 0 : count / maxDailyCount,
+          isFuture,
+        };
+      }),
+    ).flat();
+  }, [submittedQuizzes]);
 
   const weakTopics = useMemo(() => {
     const map = new Map<string, number[]>();
@@ -937,8 +1088,8 @@ if (loading) {
         </section>
 
         {/* Bottom row */}
-        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 items-start">
-          <ImprovementAreas areas={weakTopics} onImprove={openImproveDialog} />
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 auto-rows-fr items-stretch">
+          <ImprovementAreas areas={weakTopics} onImprove={openImproveDialog} onDelete={handleDeleteWeakTopic} />
           <RecentQuizzes quizzes={recentQuizzesList} />
         </section>
 

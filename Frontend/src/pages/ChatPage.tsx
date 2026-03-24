@@ -17,10 +17,11 @@ import {
   ChevronDown,
   ChevronUp,
   Search,
-  Maximize2, ZoomIn, ZoomOut, X,TrendingUp,
+  Maximize2, ZoomIn, ZoomOut, X,TrendingUp, GraduationCap,
   WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -31,11 +32,12 @@ import {
   normalizeEquationForNova,
   normalizeEscapedMathDelimiters,
 } from "@/lib/novaMath";
+import { withMindmapTheme } from "@/lib/mermaidMindmapTheme";
 import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAppearance } from "@/contexts/AppearanceContext";
 import CelebrationOverlay from "@/components/CelebrationOverlay";
-import { cacheConversation, getCachedConversation } from "@/lib/offlineStore";
+import { addToSyncQueue, cacheConversation, getCachedConversation } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
@@ -1581,6 +1583,10 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
   const [zoom, setZoom] = useState(1);
   const containerId = useRef(`mermaid-${generateUUID().replace(/-/g, "")}`);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const themedCode = withMindmapTheme(
+    diagramData.mermaid_code,
+    `${diagramData.diagram_id}:${diagramData.topic}`,
+  );
 
   // Close on Escape
   useEffect(() => {
@@ -1617,12 +1623,12 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
   // Render SVG and parse natural dimensions from viewBox so the scroll
   // wrapper can be sized correctly at any zoom level.
   useEffect(() => {
-    if (!diagramData.mermaid_code) return;
+    if (!themedCode) return;
     setRenderError(false);
     setSvg("");
 
     mermaid
-      .render(containerId.current, diagramData.mermaid_code)
+      .render(containerId.current, themedCode)
       .then(({ svg: renderedSvg }) => {
         // Force responsive SVG sizing so diagrams never clip on smaller viewports.
         const normalizedSvg = renderedSvg.replace(
@@ -1646,7 +1652,7 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
         if (leaked) leaked.remove();
         setRenderError(true);
       });
-  }, [diagramData.mermaid_code]);
+  }, [themedCode]);
 
   const typeLabel = diagramData.type === "flowchart" ? "Flowchart" : "Mind Map";
   const typeBadgeColor =
@@ -1697,7 +1703,7 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
             className="h-7 px-2 text-xs text-muted-foreground hover:text-primary gap-1.5"
           >
             <Code className="w-3.5 h-3.5" />
-            {showCode ? "Hide code" : "View code"}
+            {showCode ? "Hide Mermaid" : "View Mermaid"}
           </Button>
         </div>
       </div>
@@ -1723,7 +1729,7 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
             <div className="text-center space-y-2" onClick={(e) => e.stopPropagation()}>
               <p className="text-sm text-destructive">Failed to render diagram.</p>
               <p className="text-xs text-muted-foreground">
-                Click "View code" to see the raw Mermaid syntax.
+                Click "View Mermaid" to see the raw Mermaid syntax.
               </p>
             </div>
           ) : (
@@ -1734,6 +1740,7 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
 
       {showCode && (
         <div className="rounded-xl bg-secondary/80 border border-border p-4 overflow-x-auto">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-2">Mermaid code</p>
           <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">
             {diagramData.mermaid_code}
           </pre>
@@ -1800,7 +1807,7 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
                   onClick={() => setShowCode((v) => !v)}
                   style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "rgba(255,255,255,0.55)", background: "rgba(255,255,255,0.07)", border: "none", borderRadius: 6, padding: "5px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
                 >
-                  <Code size={13} /> {showCode ? "View diagram" : "View code"}
+                  <Code size={13} /> {showCode ? "View diagram" : "View Mermaid"}
                 </button>
                 <button
                   onClick={() => downloadPNG(svg, diagramData.topic)}
@@ -1847,6 +1854,9 @@ const DiagramCard = ({ diagramData }: { diagramData: DiagramData }) => {
             {/* ── Code view ── */}
             {showCode && (
               <div style={{ flex: 1, overflow: "auto", padding: "20px 24px" }}>
+                <p style={{ fontSize: 11, letterSpacing: 0.5, textTransform: "uppercase", color: "rgba(255,255,255,0.45)", margin: "0 0 8px 0" }}>
+                  Mermaid code
+                </p>
                 <pre style={{ fontSize: 12, fontFamily: "monospace", color: "rgba(255,255,255,0.6)", whiteSpace: "pre-wrap", margin: 0 }}>
                   {diagramData.mermaid_code}
                 </pre>
@@ -2349,6 +2359,9 @@ const ChatPage = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [intentChip, setIntentChip] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [curriculumBoard, setCurriculumBoard] = useState<string | null>(null);
+  const [curriculumGrade, setCurriculumGrade] = useState<string | null>(null);
+  const [curriculumEnabled, setCurriculumEnabled] = useState(false);
 
   // TTS / audio state
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
@@ -2375,9 +2388,65 @@ const ChatPage = () => {
   const handleEquationClick = (eq: string) => {
     const normalizedEquation = normalizeEquationForNova(eq);
     if (!normalizedEquation) return;
-    navigate("/novaa", { state: { equation: normalizedEquation } });
+    navigate("/nova", { state: { equation: normalizedEquation } });
   };
   const [searchParams] = useSearchParams();
+  const curriculumReady = Boolean(curriculumBoard && curriculumGrade);
+  const curriculumContextActive = curriculumEnabled && curriculumReady;
+
+  // Keep curriculum toggle available in chat composer without opening Settings.
+  useEffect(() => {
+    let cancelled = false;
+    const loadCurriculumSettings = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setCurriculumBoard(data.curriculum_board ?? null);
+        setCurriculumGrade(data.curriculum_grade ?? null);
+        setCurriculumEnabled(Boolean(data.curriculum_enabled ?? false));
+      } catch {
+        // Non-blocking: chat must still work if settings are unavailable.
+      }
+    };
+    loadCurriculumSettings();
+    return () => { cancelled = true; };
+  }, []);
+
+  const updateCurriculumToggle = (nextEnabled: boolean) => {
+    if (nextEnabled && !curriculumReady) {
+      toast.info("Set board and class in Settings before enabling curriculum context.");
+      return;
+    }
+
+    // Optimistic update for instantaneous UI feedback.
+    setCurriculumEnabled(nextEnabled);
+    const body = JSON.stringify({ curriculum_enabled: nextEnabled });
+
+    void (async () => {
+      try {
+        if (!navigator.onLine) {
+          await addToSyncQueue({
+            type: "settings_save",
+            url: `${API_BASE}/settings/?user_id=${USER_ID}`,
+            method: "PUT",
+            body,
+            createdAt: new Date().toISOString(),
+          });
+          return;
+        }
+
+        await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+      } catch {
+        // Keep optimistic state to avoid visible lag/jitter.
+      }
+    })();
+  };
 
   // AutoSend trigger: fires sendMessage on mount if sessionStorage flag is set.
   useEffect(() => {
@@ -4709,6 +4778,25 @@ const ChatPage = () => {
                           </DropdownMenuItem>
                         );
                       })}
+                      <DropdownMenuSeparator className="bg-border/50 my-1" />
+                      <DropdownMenuItem
+                        onSelect={(e) => e.preventDefault()}
+                        className="cursor-default"
+                      >
+                        <div className="w-full flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 text-foreground">
+                            <GraduationCap className="w-4 h-4 text-primary" />
+                            <span className="text-sm">Curriculum context</span>
+                          </div>
+                          <Switch
+                            checked={curriculumContextActive}
+                            disabled={!curriculumReady}
+                            onCheckedChange={(checked) => updateCurriculumToggle(Boolean(checked))}
+                            onClick={(e) => e.stopPropagation()}
+                            className="data-[state=checked]:bg-primary"
+                          />
+                        </div>
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                   {/* Chip badge inline */}
@@ -4784,6 +4872,25 @@ const ChatPage = () => {
                           </DropdownMenuItem>
                         );
                       })}
+                      <DropdownMenuSeparator className="bg-border/50 my-1" />
+                      <DropdownMenuItem
+                        onSelect={(e) => e.preventDefault()}
+                        className="cursor-default"
+                      >
+                        <div className="w-full flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 text-foreground">
+                            <GraduationCap className="w-4 h-4 text-primary" />
+                            <span className="text-sm">Curriculum context</span>
+                          </div>
+                          <Switch
+                            checked={curriculumContextActive}
+                            disabled={!curriculumReady}
+                            onCheckedChange={(checked) => updateCurriculumToggle(Boolean(checked))}
+                            onClick={(e) => e.stopPropagation()}
+                            className="data-[state=checked]:bg-primary"
+                          />
+                        </div>
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>

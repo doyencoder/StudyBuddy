@@ -79,7 +79,7 @@ export interface Viewport {
 export interface EquationDescriptor {
   id:        string;
   raw:       string;       // raw user string, e.g. "x^2 + y^2 = 9"
-  color:     string;       // CSS variable key, e.g. "novaa-curve-1"
+  color:     string;       // CSS variable key, e.g. "nova-curve-1"
   visible:   boolean;
   fromChat:  boolean;      // provenance only; rendering stays solid
 }
@@ -444,6 +444,11 @@ function niceGridStep(scale: number, densityDivisor: number = 1): number {
   return 10 * mag;
 }
 
+// Major-axis tick spacing visible on labels/grid for a given zoom+density.
+export function getMajorTickStep(scale: number, densityDivisor: number = 1): number {
+  return niceGridStep(scale, densityDivisor) * 5;
+}
+
 interface GridGeometry {
   minor: Float32Array;
   major: Float32Array;
@@ -581,7 +586,7 @@ export function buildTickLabels(vp: Viewport, densityDivisor: number = 1): TickL
   const yMax = (originY - 0)       / scale;
 
   const step      = niceGridStep(scale, densityDivisor);
-  const majorStep = step * 5;
+  const majorStep = getMajorTickStep(scale, densityDivisor);
   const labels: TickLabel[] = [];
 
   // X-axis tick labels

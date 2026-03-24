@@ -8,7 +8,7 @@ const AppHeader = () => {
   const location = useLocation();
   const { toggleSidebar } = useSidebar();
 
-  const isNovaa = location.pathname === "/novaa";
+  const isNova = location.pathname === "/nova";
 
   return (
     <header className="h-14 flex items-center justify-between border-b border-border px-4 bg-card">
@@ -25,7 +25,7 @@ const AppHeader = () => {
         </Button>
 
         {/* Logo / title — changes per page */}
-        {isNovaa ? (
+        {isNova ? (
           <div className="flex items-center gap-2 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
               <BarChart2 className="w-5 h-5 text-primary" />

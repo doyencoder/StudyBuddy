@@ -103,7 +103,7 @@ export function GraphToolbar({ onSubmit, onToolClick, activeTool }: GraphToolbar
             <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-primary/10">
               <Sparkles className="w-4 h-4 text-primary" />
             </div>
-            <h1 className="text-lg font-semibold text-foreground tracking-tight">Novaa</h1>
+            <h1 className="text-lg font-semibold text-foreground tracking-tight">Nova</h1>
           </div>
 
           <div className="h-6 w-px bg-border/50 shrink-0" />

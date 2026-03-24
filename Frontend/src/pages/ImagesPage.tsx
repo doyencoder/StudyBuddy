@@ -18,6 +18,7 @@ import mermaid from "mermaid";
 import { API_BASE } from "@/config/api";
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
+import { withMindmapTheme } from "@/lib/mermaidMindmapTheme";
 
 // Ensure mermaid is initialized regardless of which page loads first
 mermaid.initialize({
@@ -84,19 +85,20 @@ const DiagramPreview = ({ item }: { item: DiagramItem }) => {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState(false);
   const id = `preview-${item.diagram_id.replace(/-/g, "")}`;
+  const themedCode = withMindmapTheme(item.mermaid_code, `${item.diagram_id}:${item.topic}`);
 
   useEffect(() => {
     if (item.type === "image") return;
-    if (!item.mermaid_code) return;
+    if (!themedCode) return;
     mermaid
-      .render(id, item.mermaid_code)
+      .render(id, themedCode)
       .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
       .catch(() => {
         const leaked = document.getElementById(`d${id}`);
         if (leaked) leaked.remove();
         setError(true);
       });
-  }, [item.mermaid_code]);
+  }, [id, themedCode, item.type]);
 
   // ── Real AI-generated image ───────────────────────────────────────────────
   if (item.type === "image") {
@@ -170,6 +172,7 @@ const DiagramModal = ({
   const [error, setError] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const modalId = `modal-${item.diagram_id.replace(/-/g, "")}`;
+  const themedCode = withMindmapTheme(item.mermaid_code, `${item.diagram_id}:${item.topic}`);
 
   const isImage = item.type === "image";
 
@@ -177,7 +180,7 @@ const DiagramModal = ({
     if (isImage) return;
 
     mermaid
-      .render(modalId, item.mermaid_code)
+      .render(modalId, themedCode)
       .then(({ svg: renderedSvg }) => setSvg(renderedSvg))
       .catch(() => {
         const leaked = document.getElementById(`d${modalId}`);
@@ -188,7 +191,7 @@ const DiagramModal = ({
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [item.mermaid_code]);
+  }, [isImage, modalId, onClose, themedCode]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -270,7 +273,7 @@ const DiagramModal = ({
                 className="h-8 px-3 text-xs text-muted-foreground hover:text-primary gap-1.5"
               >
                 <Code className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{showCode ? "View diagram" : "View code"}</span>
+                <span className="hidden sm:inline">{showCode ? "View diagram" : "View Mermaid"}</span>
               </Button>
             )}
 
@@ -358,9 +361,12 @@ const DiagramModal = ({
               </div>
             )
           ) : showCode ? (
-            <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap bg-secondary/60 rounded-xl p-4">
-              {item.mermaid_code}
-            </pre>
+            <div className="bg-secondary/60 rounded-xl p-4">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground/70 mb-2">Mermaid code</p>
+              <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">
+                {item.mermaid_code}
+              </pre>
+            </div>
           ) : svg ? (
             <div
               className="w-full flex items-center justify-center"

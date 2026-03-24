@@ -57,30 +57,30 @@
     --info: 199 89% 48%;
     --info-foreground: 0 0% 98%;
 
-    /* Novaa graph tokens */
-    /* Novaa graph tokens — dark mode */
-    --novaa-curve-1: 217 91% 62%;    /* blue   — matches StudyBuddy primary  */
-    --novaa-curve-2: 340 75% 65%;    /* pink/rose                            */
-    --novaa-curve-3: 38  92% 58%;    /* orange/amber                         */
-    --novaa-curve-4: 270 65% 70%;    /* purple                               */
-    --novaa-curve-5: 185 85% 55%;    /* cyan                                 */
-    --novaa-curve-6: 52  95% 55%;    /* yellow                               */
-    --novaa-curve-7: 28  95% 58%;    /* deep orange                          */
-    --novaa-curve-8: 260 70% 68%;    /* violet                               */
-    --novaa-curve-9: 100 75% 52%;    /* lime green                           */
-    --novaa-curve-10: 350 85% 62%;   /* crimson                              */
-    --novaa-curve-11: 172 80% 48%;   /* teal                                 */
-    --novaa-curve-12: 44  95% 55%;   /* gold                                 */
-    --novaa-curve-13: 230 80% 65%;   /* indigo                               */
-    --novaa-curve-14: 320 75% 65%;   /* rose                                 */
-    --novaa-curve-15: 155 70% 52%;   /* mint                                 */
-    --novaa-curve-16: 8   90% 64%;   /* scarlet                              */
-    --novaa-curve-17: 204 88% 63%;   /* sky blue                             */
-    --novaa-curve-18: 84  72% 52%;   /* chartreuse                           */
-    --novaa-curve-19: 286 58% 66%;   /* plum                                 */
-    --novaa-curve-20: 18  88% 64%;   /* coral                                */
-    --novaa-grid:    220 15% 30%;    /* subtle but visible grid lines        */
-    --novaa-surface: 230 15% 7%;     /* canvas background                    */
+    /* Nova graph tokens */
+    /* Nova graph tokens — dark mode */
+    --nova-curve-1: 217 91% 62%;    /* blue   — matches StudyBuddy primary  */
+    --nova-curve-2: 340 75% 65%;    /* pink/rose                            */
+    --nova-curve-3: 38  92% 58%;    /* orange/amber                         */
+    --nova-curve-4: 270 65% 70%;    /* purple                               */
+    --nova-curve-5: 185 85% 55%;    /* cyan                                 */
+    --nova-curve-6: 52  95% 55%;    /* yellow                               */
+    --nova-curve-7: 28  95% 58%;    /* deep orange                          */
+    --nova-curve-8: 260 70% 68%;    /* violet                               */
+    --nova-curve-9: 100 75% 52%;    /* lime green                           */
+    --nova-curve-10: 350 85% 62%;   /* crimson                              */
+    --nova-curve-11: 172 80% 48%;   /* teal                                 */
+    --nova-curve-12: 44  95% 55%;   /* gold                                 */
+    --nova-curve-13: 230 80% 65%;   /* indigo                               */
+    --nova-curve-14: 320 75% 65%;   /* rose                                 */
+    --nova-curve-15: 155 70% 52%;   /* mint                                 */
+    --nova-curve-16: 8   90% 64%;   /* scarlet                              */
+    --nova-curve-17: 204 88% 63%;   /* sky blue                             */
+    --nova-curve-18: 84  72% 52%;   /* chartreuse                           */
+    --nova-curve-19: 286 58% 66%;   /* plum                                 */
+    --nova-curve-20: 18  88% 64%;   /* coral                                */
+    --nova-grid:    220 15% 30%;    /* subtle but visible grid lines        */
+    --nova-surface: 230 15% 7%;     /* canvas background                    */
   }
 
   /* Light theme */
@@ -132,29 +132,29 @@
     --info: 199 89% 48%;
     --info-foreground: 0 0% 100%;
 
-    /* Novaa graph tokens */
-    --novaa-curve-1: 217 91% 50%;
-    --novaa-curve-2: 340 65% 50%;
-    --novaa-curve-3: 38  85% 44%;
-    --novaa-curve-4: 270 55% 52%;
-    --novaa-curve-5: 185 80% 38%;
-    --novaa-curve-6: 52  90% 40%;
-    --novaa-curve-7: 28  90% 44%;
-    --novaa-curve-8: 260 65% 52%;
-    --novaa-curve-9: 100 65% 38%;
-    --novaa-curve-10: 350 75% 48%;
-    --novaa-curve-11: 172 72% 35%;
-    --novaa-curve-12: 44  90% 40%;
-    --novaa-curve-13: 230 72% 50%;
-    --novaa-curve-14: 320 68% 50%;
-    --novaa-curve-15: 155 62% 38%;
-    --novaa-curve-16: 8   78% 50%;
-    --novaa-curve-17: 204 74% 48%;
-    --novaa-curve-18: 84  58% 40%;
-    --novaa-curve-19: 286 48% 50%;
-    --novaa-curve-20: 18  78% 52%;
-    --novaa-grid:    220 14% 60%;    /* darker = visible on light background */
-    --novaa-surface: 220 20% 97%;
+    /* Nova graph tokens */
+    --nova-curve-1: 217 91% 50%;
+    --nova-curve-2: 340 65% 50%;
+    --nova-curve-3: 38  85% 44%;
+    --nova-curve-4: 270 55% 52%;
+    --nova-curve-5: 185 80% 38%;
+    --nova-curve-6: 52  90% 40%;
+    --nova-curve-7: 28  90% 44%;
+    --nova-curve-8: 260 65% 52%;
+    --nova-curve-9: 100 65% 38%;
+    --nova-curve-10: 350 75% 48%;
+    --nova-curve-11: 172 72% 35%;
+    --nova-curve-12: 44  90% 40%;
+    --nova-curve-13: 230 72% 50%;
+    --nova-curve-14: 320 68% 50%;
+    --nova-curve-15: 155 62% 38%;
+    --nova-curve-16: 8   78% 50%;
+    --nova-curve-17: 204 74% 48%;
+    --nova-curve-18: 84  58% 40%;
+    --nova-curve-19: 286 48% 50%;
+    --nova-curve-20: 18  78% 52%;
+    --nova-grid:    220 14% 60%;    /* darker = visible on light background */
+    --nova-surface: 220 20% 97%;
   }
 }
 
@@ -204,8 +204,8 @@
   .bg-surface-overlay {
     background-color: hsl(var(--surface-overlay));
   }
-  .bg-novaa-surface {
-    background-color: hsl(var(--novaa-surface));
+  .bg-nova-surface {
+    background-color: hsl(var(--nova-surface));
   }
   .animate-pulse-glow {
     animation: pulse-glow 2s ease-in-out infinite;
@@ -273,8 +273,8 @@ body.font-dyslexic {
 .dashboard-font {
   font-family: 'Geist Sans', 'GeistSans', 'Inter', system-ui, sans-serif;
 }
-.bg-novaa-surface {
-  background-color: hsl(var(--novaa-surface));
+.bg-nova-surface {
+  background-color: hsl(var(--nova-surface));
 }
 /* ── MathQuill overrides — match Nova panel dark theme ───────────────────── */
 .mq-nova {
