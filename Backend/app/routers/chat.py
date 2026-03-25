@@ -19,6 +19,7 @@ from app.services.ai_service import (
     generate_image as generate_image_bytes,
     extract_document_context,
     classify_search_intent,
+    get_provider,
 )
 from app.services.search_service import (
     retrieve_chunks, retrieve_chunks_hybrid, store_chunks,
@@ -40,6 +41,7 @@ from app.services.cosmos_service import (
     rename_conversation,
     delete_conversation,
     star_conversation,
+    set_conversation_provider,
 )
 from app.services.blob_service import upload_generated_image_to_blob
 from app.services.study_plan_service import create_study_plan
@@ -410,6 +412,29 @@ async def chat_message(request: ChatRequest):
     except Exception:
         _curr_context = None  # never crash the chat path over a settings failure
     print(f"[CURRICULUM] user={request.user_id} | context={'SET (' + _curr_context[:60] + '...)' if _curr_context else 'None'}")
+
+    # ── Resolve request-scoped AI provider ────────────────────────────────────
+    # get_provider() returns the correct module for this request only.
+    # Falls back to the server-wide default (Azure) when model_provider is None.
+    # Embeddings always use Azure regardless — get_provider() does not affect
+    # embed_query / embed_text which are imported directly from ai_service.
+    _provider = get_provider(request.model_provider)
+    _provider_name = "GEMINI" if "gemini" in getattr(_provider, "__name__", "") else "AZURE"
+    print(f"[PROVIDER] user={request.user_id} | conv={conversation_id} | model={_provider_name} (requested={request.model_provider!r})")
+
+    # ── Persist sticky provider choice to the conversation document ───────────
+    # Fire-and-forget: we don't await so it never adds latency to the stream.
+    # Only writes when the value actually changed (set_conversation_provider is
+    # a no-op when the stored value already matches).
+    if request.model_provider and conversation_id:
+        asyncio.ensure_future(
+            set_conversation_provider(
+                conversation_id=conversation_id,
+                user_id=request.user_id,
+                model_provider=request.model_provider,
+            )
+        )
+
     pre_embedding = None  # may be pre-computed by Opt 2 below
     
 
@@ -558,7 +583,7 @@ async def chat_message(request: ChatRequest):
         # Natural language path — run classify + embed concurrently on thread pool
         loop = asyncio.get_event_loop()
         classification, pre_embedding = await asyncio.gather(
-            loop.run_in_executor(None, lambda: classify_intent(
+            loop.run_in_executor(None, lambda: _provider.classify_intent(
                 message=request.message,
                 intent_hint=None,
                 conversation_history=prior_messages,
@@ -907,13 +932,13 @@ async def chat_message(request: ChatRequest):
 
         # ── Dispatch ─────────────────────────────────────────────────────────
         if intent == "quiz":
-            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context):
+            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider):
                 yield evt
             return
 
         if intent in ("flowchart", "mindmap"):
             dtype = "flowchart" if intent == "flowchart" else "diagram"
-            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context):
+            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider):
                 yield evt
             return
 
@@ -925,7 +950,7 @@ async def chat_message(request: ChatRequest):
         if intent == "study_plan":
             tw = int(timeline_weeks) if timeline_weeks else 4
             hw = int(hours_per_week) if hours_per_week else 8
-            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context):
+            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider):
                 yield evt
             return
 
@@ -944,7 +969,7 @@ async def chat_message(request: ChatRequest):
         # ── Regular chat ──────────────────────────────────────────────────────
         full_reply = ""
         try:
-            for chunk in chat_stream(
+            for chunk in _provider.chat_stream(
                 question=request.message,
                 context_chunks=active_chunks,
                 history=prior_messages,
@@ -978,7 +1003,10 @@ async def chat_message(request: ChatRequest):
 
 # ── Feature dispatch helpers ──────────────────────────────────────────────────
 
-async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None, curriculum_context=None):
+async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None, curriculum_context=None, provider=None):
+    # provider defaults to the module-level import (server default) when not supplied.
+    from app.services.ai_service import get_provider as _gp
+    _p = provider or _gp(None)
     try:
         has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
         if not has_docs:
@@ -1005,7 +1033,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
             )
         context_chunks = [text for text, *_ in raw_chunks]
 
-        result = generate_quiz_questions(
+        result = _p.generate_quiz_questions(
             context_chunks=context_chunks,
             topic=topic or "",
             num_questions=num_questions,
@@ -1061,9 +1089,11 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None, curriculum_context=None):
+async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None, curriculum_context=None, provider=None):
+    from app.services.ai_service import get_provider as _gp
+    _p = provider or _gp(None)
     try:
-        effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
+        effective = topic or _p.infer_topic_from_messages(prior_messages) or "General Topic"
 
         msg_lower = (raw_message or "").lower()
         if any(w in msg_lower for w in ("circular", "circle", "cyclic", "cycle diagram", "loop diagram")):
@@ -1101,7 +1131,7 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         except Exception:
             pass
 
-        mermaid_code = generate_mermaid(
+        mermaid_code = _p.generate_mermaid(
             topic=effective,
             diagram_type=diagram_type,
             context_chunks=chunks,
@@ -1181,7 +1211,9 @@ async def _dispatch_image(user_id, conversation_id, topic, prior_messages):
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None, curriculum_context=None):
+async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None, curriculum_context=None, provider=None):
+    from app.services.ai_service import get_provider as _gp
+    _p = provider or _gp(None)
     try:
         plan = await create_study_plan(
             user_id=user_id, conversation_id=conversation_id,
@@ -1189,6 +1221,7 @@ async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, 
             hours_per_week=hours_per_week, focus_days=None,
             page_numbers=page_numbers, scope=scope,
             curriculum_context=curriculum_context,
+            model_provider=("gemini" if "gemini" in getattr(_p, "__name__", "") else "azure"),
         )
 
         # ── Safety sentinel check ─────────────────────────────────────────────
@@ -1695,10 +1728,13 @@ CURRENT QUESTION: "{query}"
 @router.get("/history/{conversation_id}", response_model=ChatHistoryResponse)
 async def chat_history(conversation_id: str):
     try:
-        raw_messages = await get_messages(conversation_id)
+        # Use get_conversation_full so we also retrieve model_provider in a
+        # single Cosmos read — no extra round trip vs the old get_messages call.
+        conv_data = await get_conversation_full(conversation_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch chat history: {str(e)}")
 
+    raw_messages = conv_data.get("messages", [])
     if not raw_messages:
         raise HTTPException(status_code=404, detail=f"No conversation found with id '{conversation_id}'.")
 
@@ -1706,7 +1742,11 @@ async def chat_history(conversation_id: str):
         ChatMessage(id=m["id"], role=m["role"], content=m["content"], timestamp=m["timestamp"])
         for m in raw_messages
     ]
-    return ChatHistoryResponse(conversation_id=conversation_id, messages=messages)
+    return ChatHistoryResponse(
+        conversation_id=conversation_id,
+        messages=messages,
+        model_provider=conv_data.get("model_provider"),
+    )
 
 
 # ── GET /chat/conversations ───────────────────────────────────────────────────

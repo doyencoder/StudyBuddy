@@ -35,6 +35,10 @@ class ChatRequest(BaseModel):
     # which caused the intent prefix to leak into quiz titles.
     num_questions_override: Optional[int] = None
     timer_seconds_override: Optional[int] = None
+    # Dynamic model selection — "azure" | "gemini" | None (None → server default).
+    # Sent by the frontend model selector on every request. Resolved by
+    # get_provider() in chat.py; never affects the embedding pipeline.
+    model_provider: Optional[Literal["azure", "gemini"]] = None
 
 
 class ChatMessage(BaseModel):
@@ -47,6 +51,10 @@ class ChatMessage(BaseModel):
 class ChatHistoryResponse(BaseModel):
     conversation_id: str
     messages: List[ChatMessage]
+    # Stored provider for this conversation — None means "use server default".
+    # Returned by GET /chat/history so the frontend can restore the selector
+    # to the correct state when a conversation is loaded or the page is refreshed.
+    model_provider: Optional[Literal["azure", "gemini"]] = None
 
 
 # ── Quiz ──────────────────────────────────────────────────────────────────────

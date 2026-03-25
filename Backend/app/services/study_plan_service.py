@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 # FIX: was "from app.services.gemini_service import ..." which bypassed the
 # AI_PROVIDER toggle entirely. Now correctly routes through ai_service.
-from app.services.ai_service import embed_query, generate_study_plan
+from app.services.ai_service import embed_query, generate_study_plan, get_provider
 # Add these two imports
 from app.services.search_service import retrieve_chunks_smart, conversation_has_documents, get_conversation_filenames
 from app.utils.document_resolver import resolve_document_filter
@@ -30,6 +30,7 @@ async def create_study_plan(
     focus_days: list[str] | None = None,
     page_numbers=None, scope=None,
     curriculum_context: str = None,
+    model_provider: str | None = None,
 ) -> dict:
     """
     Generates a structured study plan.
@@ -89,8 +90,10 @@ async def create_study_plan(
                 print(f"[StudyPlan] Chunk retrieval failed: {e}")
                 context_chunks = []
 
-    # ── Generate the plan via the active AI provider ──────────────────────────
-    plan = generate_study_plan(
+    # ── Generate the plan via the request-scoped AI provider ─────────────────
+    # get_provider() falls back to the server default when model_provider is None.
+    _provider = get_provider(model_provider)
+    plan = _provider.generate_study_plan(
         topic=topic or "",
         timeline_weeks=timeline_weeks,
         start_date=start_date,

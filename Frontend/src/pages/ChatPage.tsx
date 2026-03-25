@@ -39,6 +39,7 @@ import { useAppearance } from "@/contexts/AppearanceContext";
 import CelebrationOverlay from "@/components/CelebrationOverlay";
 import { addToSyncQueue, cacheConversation, getCachedConversation } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { ModelSelector, type ProviderKey } from "@/components/ModelSelector";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
 mermaid.initialize({
@@ -2362,6 +2363,12 @@ const ChatPage = () => {
   const [curriculumBoard, setCurriculumBoard] = useState<string | null>(null);
   const [curriculumGrade, setCurriculumGrade] = useState<string | null>(null);
   const [curriculumEnabled, setCurriculumEnabled] = useState(false);
+  // ── Dynamic model selection ────────────────────────────────────────────────
+  // Defaults to "azure" (matches server-side default). Restored from Cosmos
+  // when a conversation is loaded — see the history useEffect below.
+  // Sent as model_provider on every /chat/message request so the backend
+  // can route to the correct LLM provider for this specific conversation.
+  const [modelProvider, setModelProvider] = useState<ProviderKey>("azure");
 
   // TTS / audio state
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
@@ -2482,6 +2489,7 @@ const ChatPage = () => {
       setActiveConvId(null);
       setInput("");
       lastLoadedId.current = null;
+      setModelProvider("azure"); // reset to default — new chat has no stored provider
       return;
     }
 
@@ -2785,6 +2793,15 @@ const ChatPage = () => {
           regeneratingMsgId: null,
           retakingMsgId: null,
         }));
+
+        // Restore the model selector to the provider that was active when this
+        // conversation was last used.  Falls back to "azure" for conversations
+        // created before this feature was introduced (model_provider is null).
+        if (data.model_provider === "azure" || data.model_provider === "gemini") {
+          setModelProvider(data.model_provider);
+        } else {
+          setModelProvider("azure");
+        }
       } catch {
         toast.error("Could not load conversation history.");
       } finally {
@@ -2849,6 +2866,7 @@ const ChatPage = () => {
       setActiveConvId(null);
       setInput("");
       lastLoadedId.current = null;
+      setModelProvider("azure"); // reset to default — new chat has no stored provider
       navigate("/chat", { replace: true });
     };
     window.addEventListener("new-chat-clicked", handler);
@@ -3154,6 +3172,7 @@ const ChatPage = () => {
           intent_hint: "quiz",
           num_questions_override: originalQuizData.num_questions ?? originalQuizData.questions.length,
           timer_seconds_override: originalQuizData.timer_seconds ?? null,
+          model_provider: modelProvider,
         }),
       });
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -3255,6 +3274,7 @@ const ChatPage = () => {
         user_id: USER_ID,
         conversation_id: convId,
         message: userText,
+        model_provider: modelProvider,
       }),
     });
     if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -3680,6 +3700,7 @@ const ChatPage = () => {
           ...filePayload,
           ...attachmentsPayload,
           ...intentPayload,
+          model_provider: modelProvider,
         }),
       });
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
@@ -4805,6 +4826,12 @@ const ChatPage = () => {
                     <button onClick={() => setIntentChip(null)} className="text-primary/60 hover:text-primary" aria-label="Remove intent">✕</button>
                   </div>
                   <div className="flex-1" />
+                  {/* Model selector — sits between the spacer and the mic */}
+                  <ModelSelector
+                    value={modelProvider}
+                    onChange={setModelProvider}
+                    disabled={!isOnline}
+                  />
                   <Button
                     variant="ghost"
                     size="icon"
@@ -4914,6 +4941,12 @@ const ChatPage = () => {
                 />
 
                 <div className="flex items-end gap-1 pr-1 pb-1 shrink-0">
+                  {/* Model selector — sits between the textarea and the mic */}
+                  <ModelSelector
+                    value={modelProvider}
+                    onChange={setModelProvider}
+                    disabled={!isOnline}
+                  />
                   <Button
                     variant="ghost"
                     size="icon"

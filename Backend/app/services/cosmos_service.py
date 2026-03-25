@@ -217,6 +217,8 @@ async def get_conversation_full(conversation_id: str) -> Dict[str, Any]:
                 "title": doc.get("title", ""),
                 "messages": messages,
                 "pending_intent": doc.get("pending_intent"),
+                # Dynamic model selection — None means "use server default"
+                "model_provider": doc.get("model_provider"),
             }
 
         except CosmosResourceNotFoundError:
@@ -384,7 +386,42 @@ async def star_conversation(conversation_id: str, user_id: str, starred: bool) -
             return True
         except CosmosResourceNotFoundError:
             return False
-    
+
+
+async def set_conversation_provider(
+    conversation_id: str,
+    user_id: str,
+    model_provider: str,
+) -> bool:
+    """
+    Persists the model provider selection ("azure" | "gemini") to the
+    conversation document so the choice survives page refreshes.
+
+    Called once per conversation the first time the frontend sends a provider
+    key that differs from what is already stored.  The read-then-replace is
+    cheap because it always hits the Cosmos point-read path (partition key
+    supplied).
+
+    Returns True if updated, False if not found (safe to ignore — the
+    frontend still has the correct value in local state).
+    """
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(CONVERSATIONS_CONTAINER)
+        try:
+            item = await container.read_item(
+                item=conversation_id, partition_key=user_id
+            )
+            # Only write if the value actually changed — avoids a pointless
+            # Cosmos RU charge when the user has not switched providers.
+            if item.get("model_provider") == model_provider:
+                return True
+            item["model_provider"] = model_provider
+            await container.replace_item(item=conversation_id, body=item)
+            return True
+        except CosmosResourceNotFoundError:
+            return False
+
 
 # ── Quiz Container ─────────────────────────────────────────────────────────────
 

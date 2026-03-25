@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from app.services.ai_service import generate_flashcards
+from app.services.ai_service import generate_flashcards, get_provider
 from app.services.cosmos_service import get_conversation_full, save_flashcard_deck
 from app.services.search_service import retrieve_all_chunks_ordered
 
@@ -133,6 +133,9 @@ def _sanitize_cards(raw_cards: Any, requested_count: int) -> List[Dict[str, str]
 
 
 async def generate_and_save_flashcards(user_id: str, conversation_id: str) -> Dict[str, Any]:
+    # get_conversation_full returns both messages and model_provider in a
+    # single Cosmos point-read — no extra round trip needed to resolve the
+    # provider; it's already on the same document we're fetching for messages.
     conversation = await get_conversation_full(conversation_id)
     messages = conversation.get("messages", [])
     cleaned_messages = _extract_text_messages(messages)
@@ -154,7 +157,16 @@ async def generate_and_save_flashcards(user_id: str, conversation_id: str) -> Di
         cleaned_messages=cleaned_messages,
     )
 
-    result = generate_flashcards(
+    # ── Resolve the request-scoped AI provider ────────────────────────────────
+    # model_provider is stored on the conversation document by set_conversation_provider()
+    # (called fire-and-forget on every /chat/message request). For conversations
+    # created before this feature existed, model_provider is None and get_provider()
+    # silently falls back to the server-wide default (Azure), so old data is safe.
+    _provider = get_provider(conversation.get("model_provider"))
+    print(f"[flashcards] Using provider: {getattr(_provider, '__name__', 'unknown')} "
+          f"(stored: {conversation.get('model_provider')!r})")
+
+    result = _provider.generate_flashcards(
         conversation_title=conversation_title,
         chat_history=chat_history,
         document_context=document_context,
