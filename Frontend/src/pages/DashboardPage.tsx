@@ -29,6 +29,7 @@ import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue, cacheAPIResponse } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { formatCachedTime } from "@/lib/offlineStore";
+import { useCoins } from "@/contexts/CoinContext";
 
 // ─── colour aliases — V0 uses --chart-1/2/3, this project uses --primary/--accent
 // We resolve them here as inline-style strings so nothing else needs changing.
@@ -73,13 +74,15 @@ function AnimatedWrapper({
 interface StatCardProps {
   label: string; value: string; suffix?: string; change: string;
   trend: "up" | "down" | "neutral"; icon: React.ElementType; index: number;
+  onClick?: () => void;
 }
-function StatCard({ label, value, suffix, change, trend, icon: Icon, index }: StatCardProps) {
+function StatCard({ label, value, suffix, change, trend, icon: Icon, index, onClick }: StatCardProps) {
   const [hovered, setHovered] = useState(false);
+  const interactive = typeof onClick === "function";
   return (
     <AnimatedWrapper delay={index * 100}>
       <div
-        className="relative overflow-hidden rounded-2xl border p-6 cursor-default"
+        className={`relative overflow-hidden rounded-2xl border p-6 ${interactive ? "cursor-pointer" : "cursor-default"}`}
         style={{
           background: "linear-gradient(145deg, hsl(var(--card) / 0.7), hsl(var(--card) / 0.4))",
           backdropFilter: "blur(12px)",
@@ -96,6 +99,16 @@ function StatCard({ label, value, suffix, change, trend, icon: Icon, index }: St
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        onClick={onClick}
+        onKeyDown={(event) => {
+          if (!interactive) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onClick?.();
+          }
+        }}
+        role={interactive ? "button" : undefined}
+        tabIndex={interactive ? 0 : undefined}
       >
         {/* Subtle blue tint — always on */}
         <div
@@ -552,6 +565,9 @@ const DashboardPage = () => {
   const [displayName, setDisplayName]       = useState("");
   const [dismissedTopics, setDismissedTopics] = useState<string[]>([]);
   const [weeklyMinutes, setWeeklyMinutes] = useState<number | null>(null);
+  const [studyStreak, setStudyStreak] = useState(0);
+  const { coinState } = useCoins();
+  const navigate = useNavigate();
 
   // Improve dialog
   const [improveDialogOpen, setImproveDialogOpen] = useState(false);
@@ -596,7 +612,11 @@ const DashboardPage = () => {
 
   useEffect(() => {
     offlineFetch(`${API_BASE}/sessions/weekly?user_id=${USER_ID}`)
-      .then(({ data: d }) => d && setWeeklyMinutes(d.total_minutes))
+      .then(({ data: d }) => {
+        if (!d) return;
+        setWeeklyMinutes(d.total_minutes);
+        setStudyStreak(typeof d.study_streak === "number" ? d.study_streak : 0);
+      })
       .catch(() => {});
   }, []);
 
@@ -743,34 +763,7 @@ const DashboardPage = () => {
   const totalQuizzes  = quizzes.length;
   const avgScore      = useMemo(() => !submittedQuizzes.length ? 0 : Math.round(submittedQuizzes.reduce((a, q) => a + (q.score ?? 0), 0) / submittedQuizzes.length), [submittedQuizzes]);
   const uniqueTopics  = useMemo(() => new Set(quizzes.map(q => q.topic)).size, [quizzes]);
-  const studyStreak   = useMemo(() => {
-    // Build set of local-date strings (YYYY-MM-DD) with quiz activity
-    const days = new Set<string>();
-    for (const q of quizzes) {
-      const d = new Date(q.created_at);
-      // Use local date string to avoid UTC timezone mismatch
-      const localDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      days.add(localDate);
-    }
-    // Always count today as active (user is viewing the dashboard right now)
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    days.add(todayStr);
-
-    // Count consecutive days backwards from today
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if (days.has(dateStr)) {
-        streak++;
-      } else {
-        break; // streak broken
-      }
-    }
-    return streak;
-  }, [quizzes]);
+  const dailyStreak = coinState.login_streak;
   const thisWeekCount = useMemo(() => { const w = new Date(); w.setDate(w.getDate() - 7); return quizzes.filter(q => new Date(q.created_at) >= w).length; }, [quizzes]);
   const scoreChangeText = useMemo(() => {
     if (submittedQuizzes.length < 2) return "Keep taking quizzes!";
@@ -784,8 +777,27 @@ const DashboardPage = () => {
     { label: "Quizzes Taken",  value: totalQuizzes.toString(), change: thisWeekCount > 0 ? `+${thisWeekCount} this week` : "None this week", trend: thisWeekCount > 0 ? "up" : "neutral", icon: ClipboardList, index: 0 },
     { label: "Average Score",  value: `${avgScore}`, suffix: "%", change: scoreChangeText, trend: scoreChangeText.startsWith("+") ? "up" : "neutral", icon: Gauge, index: 1 },
     { label: "Topics Studied", value: uniqueTopics.toString(), change: uniqueTopics > 0 ? `${uniqueTopics} unique topics` : "No topics yet", trend: uniqueTopics > 0 ? "up" : "neutral", icon: BookOpen, index: 2 },
-    { label: "Study Streak",   value: studyStreak.toString(), suffix: studyStreak !== 1 ? "days" : "day", change: studyStreak >= 7 ? "Personal best!" : studyStreak > 0 ? "Keep it up!" : "Start today!", trend: studyStreak > 0 ? "up" : "neutral", icon: Flame, index: 3 },
-  ], [totalQuizzes, avgScore, uniqueTopics, studyStreak, thisWeekCount, scoreChangeText]);
+    {
+      label: "Daily Streak",
+      value: dailyStreak.toString(),
+      suffix: dailyStreak !== 1 ? "days" : "day",
+      change: dailyStreak >= 7 ? "Great consistency!" : dailyStreak > 0 ? "Log in tomorrow too!" : "Start your streak today!",
+      trend: dailyStreak > 0 ? "up" : "neutral",
+      icon: Flame,
+      index: 3,
+      onClick: () => navigate("/store?tab=earn"),
+    },
+    {
+      label: "Study Streak",
+      value: studyStreak.toString(),
+      suffix: studyStreak !== 1 ? "days" : "day",
+      change: studyStreak >= 7 ? "Personal best!" : studyStreak > 0 ? "Keep it up!" : "Study today to begin",
+      trend: studyStreak > 0 ? "up" : "neutral",
+      icon: Clock,
+      index: 4,
+      onClick: () => navigate("/quizzes"),
+    },
+  ], [totalQuizzes, avgScore, uniqueTopics, dailyStreak, studyStreak, thisWeekCount, scoreChangeText, navigate]);
 
   const scoreData = useMemo(() =>
     [...submittedQuizzes].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).slice(-15)
@@ -1071,7 +1083,7 @@ if (loading) {
         </AnimatedWrapper>
 
         {/* Stat Cards */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           {statsCards.map(s => <StatCard key={s.label} {...s} />)}
         </section>
 

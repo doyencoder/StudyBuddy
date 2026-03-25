@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
-import { processDailyLogin } from "@/lib/coinStore";
-import { X, Flame, Gift, Coins, Sparkles, TrendingUp } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { X, Flame, Gift, Sparkles, TrendingUp } from "lucide-react";
+import { useCoins } from "@/contexts/CoinContext";
 
 const CoinSVG = ({ size = 40, className = "" }: { size?: number; className?: string }) => (
   <svg width={size} height={size} viewBox="0 0 40 40" className={className}>
@@ -27,14 +27,29 @@ const FloatingCoins = () => (
 );
 
 export const DailyLoginReward = () => {
+  const { initialized, claimDailyLogin } = useCoins();
   const [reward, setReward] = useState<{ coins_earned: number; new_streak: number; streak_bonus: number; streak_milestone: string | null } | null>(null);
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
+  const attemptedRef = useRef(false);
 
   useEffect(() => {
-    const t = setTimeout(() => { const r = processDailyLogin(); if (r) { setReward(r); setVisible(true); } }, 800);
+    if (!initialized || attemptedRef.current) return;
+    attemptedRef.current = true;
+
+    const t = setTimeout(() => {
+      claimDailyLogin()
+        .then((r) => {
+          if (r) {
+            setReward(r);
+            setVisible(true);
+          }
+        })
+        .catch(() => {});
+    }, 800);
+
     return () => clearTimeout(t);
-  }, []);
+  }, [initialized, claimDailyLogin]);
 
   const close = () => { setClosing(true); setTimeout(() => setVisible(false), 300); };
   if (!visible || !reward) return null;

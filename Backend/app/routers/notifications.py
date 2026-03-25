@@ -9,6 +9,8 @@ Background scheduler (APScheduler AsyncIOScheduler, IST timezone):
   • 9 PM IST daily  → send_daily_reminders()
       - goal_reminders ON + daily goals not complete  → daily goals reminder email
       - study_streak_alerts ON + not active today     → streak alert email
+  • 12 PM IST daily → send_flashcard_review_reminders()
+      - flashcard_review_reminders ON + has flashcards → flashcard review reminder email
   • Every Sunday 9 AM IST → send_weekly_longterm_reminders()
       - long_term_goals_reminder ON                   → weekly goal summary email
 """
@@ -30,8 +32,10 @@ except ImportError:
 
 from app.services.settings_service import record_checkin, get_all_users_for_notifications
 from app.services.goals_service import list_goals
+from app.services.cosmos_service import has_flashcard_decks
 from app.services.email_service import (
     send_daily_goals_reminder,
+    send_flashcard_review_reminder,
     send_weekly_all_goals_summary,
     send_streak_alert,
 )
@@ -98,6 +102,40 @@ async def send_daily_reminders():
                     print(f"[notifications] Streak alert failed for {email}: {e}")
 
     print(f"[notifications] Daily reminder job done — processed {len(users)} users.")
+
+
+async def send_flashcard_review_reminders():
+    """Runs at 12 PM IST. Sends flashcard revision reminders."""
+    print("[notifications] Running flashcard review reminder job...")
+
+    try:
+        users = await get_all_users_for_notifications()
+    except Exception as e:
+        print(f"[notifications] Failed to fetch users: {e}")
+        return
+
+    for user in users:
+        email        = user.get("profile", {}).get("email", "")
+        display_name = user.get("profile", {}).get("display_name") or user.get("profile", {}).get("full_name", "")
+        notifs       = user.get("notifications", {})
+        user_id      = user.get("user_id", "")
+
+        if not email or not notifs.get("flashcard_review_reminders", False):
+            continue
+
+        try:
+            if not await has_flashcard_decks(user_id):
+                continue
+        except Exception as e:
+            print(f"[notifications] Failed to inspect flashcards for {user_id}: {e}")
+            continue
+
+        try:
+            send_flashcard_review_reminder(to_email=email, display_name=display_name)
+        except Exception as e:
+            print(f"[notifications] Flashcard reminder failed for {email}: {e}")
+
+    print(f"[notifications] Flashcard review reminder job done — processed {len(users)} users.")
 
 
 async def send_weekly_longterm_reminders():
@@ -207,6 +245,15 @@ def start_scheduler():
         misfire_grace_time=600,
     )
 
+    # 12 PM IST daily
+    sched.add_job(
+        send_flashcard_review_reminders,
+        CronTrigger(hour=12, minute=0, timezone=IST),
+        id="flashcard_review_reminders",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+
     # Every Sunday 9 AM IST
     sched.add_job(
         send_weekly_longterm_reminders,
@@ -219,6 +266,7 @@ def start_scheduler():
     sched.start()
     print("[notifications] Scheduler started.")
     print("[notifications]   daily_reminders  → 9 PM IST daily  (daily goals reminder + study streak alert)")
+    print("[notifications]   flashcard_review_reminders → 12 PM IST daily (flashcard review reminder)")
     print("[notifications]   weekly_longterm  → Sunday 9 AM IST (long-term goals progress email)")
 
 
@@ -259,7 +307,7 @@ async def checkin(request: CheckinRequest):
 
 class TestEmailRequest(BaseModel):
     user_id: str
-    type: str  # "daily_goals" | "weekly_goals" | "streak"
+    type: str  # "daily_goals" | "weekly_goals" | "streak" | "flashcards"
 
 
 @router.post("/test-email")
@@ -328,8 +376,12 @@ async def test_email(request: TestEmailRequest):
                 goals_data=goals_data,
             )
             return {"status": "sent", "to": email, "type": request.type, "goals_in_email": len(goals_data)}
+        elif request.type == "flashcards":
+            if not await has_flashcard_decks(request.user_id):
+                raise HTTPException(status_code=400, detail="No flashcard decks found.")
+            send_flashcard_review_reminder(email, display_name)
         else:
-            raise HTTPException(status_code=400, detail="type must be 'daily_goals', 'weekly_goals', or 'streak'")
+            raise HTTPException(status_code=400, detail="type must be 'daily_goals', 'weekly_goals', 'streak', or 'flashcards'")
 
         return {"status": "sent", "to": email, "type": request.type}
     except HTTPException:

@@ -749,6 +749,21 @@ async def list_flashcard_decks(user_id: str) -> List[Dict[str, Any]]:
         return results
 
 
+async def has_flashcard_decks(user_id: str) -> bool:
+    """Returns True when the user has at least one flashcard deck."""
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(FLASHCARDS_CONTAINER)
+
+        query = "SELECT TOP 1 c.id FROM c WHERE c.user_id = @user_id"
+        parameters = [{"name": "@user_id", "value": user_id}]
+
+        async for _ in container.query_items(query=query, parameters=parameters):
+            return True
+
+        return False
+
+
 async def get_flashcard_deck(user_id: str, conversation_id: str) -> Dict[str, Any]:
     """Fetches the flashcard deck for a conversation."""
     deck_id = f"flashcards::{conversation_id}"

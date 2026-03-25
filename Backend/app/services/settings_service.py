@@ -3,6 +3,7 @@ Service: Settings
 Manages user settings, connectors and billing info in Cosmos DB.
 """
 
+import copy
 import os
 import uuid
 from datetime import datetime, timezone
@@ -48,6 +49,7 @@ DEFAULT_SETTINGS = {
         "goal_reminders": False,
         "long_term_goals_reminder": False,
         "study_streak_alerts": False,
+        "flashcard_review_reminders": False,
     },
     "ai_preferences": {
         "simplified_explanations": True,
@@ -68,6 +70,37 @@ DEFAULT_CONNECTORS = [
 ]
 
 
+def _default_settings_doc(user_id: str) -> Dict[str, Any]:
+    return {
+        "id": user_id,
+        "user_id": user_id,
+        **copy.deepcopy(DEFAULT_SETTINGS),
+        "connectors": [c.copy() for c in DEFAULT_CONNECTORS],
+        "current_plan": "free",
+    }
+
+
+def _reconcile_settings_item(item: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    """Merge newly introduced default keys into an existing settings document."""
+    changed = False
+
+    for section in ("profile", "notifications", "ai_preferences", "appearance"):
+        default_section = copy.deepcopy(DEFAULT_SETTINGS[section])
+        current_section = item.get(section)
+
+        if not isinstance(current_section, dict):
+            item[section] = default_section
+            changed = True
+            continue
+
+        merged = {**default_section, **current_section}
+        if merged != current_section:
+            item[section] = merged
+            changed = True
+
+    return item, changed
+
+
 async def get_settings(user_id: str) -> Dict[str, Any]:
     """Fetch user settings. Returns defaults if not found.
 
@@ -80,6 +113,7 @@ async def get_settings(user_id: str) -> Dict[str, Any]:
         container = db.get_container_client(SETTINGS_CONTAINER)
         try:
             item = await container.read_item(item=user_id, partition_key=user_id)
+            item, changed = _reconcile_settings_item(item)
 
             # Reconcile connectors: build a fresh list from DEFAULT_CONNECTORS,
             # preserving connected/connected_at for any IDs that still match.
@@ -101,20 +135,18 @@ async def get_settings(user_id: str) -> Dict[str, Any]:
             # Persist the reconciled list only if it changed (avoids unnecessary writes)
             stored_ids = [c["id"] for c in stored_map.values()]
             if stored_ids != [c["id"] for c in DEFAULT_CONNECTORS]:
+                changed = True
+
+            if changed:
                 item["updated_at"] = datetime.now(timezone.utc).isoformat()
                 await container.upsert_item(body=item)
 
             return item
         except CosmosResourceNotFoundError:
             # Return defaults without saving
-            return {
-                "id": user_id,
-                "user_id": user_id,
-                **DEFAULT_SETTINGS,
-                "connectors": [c.copy() for c in DEFAULT_CONNECTORS],
-                "current_plan": "free",
-                "updated_at": None,
-            }
+            default_item = _default_settings_doc(user_id)
+            default_item["updated_at"] = None
+            return default_item
 
 
 async def update_settings(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -126,13 +158,9 @@ async def update_settings(user_id: str, updates: Dict[str, Any]) -> Dict[str, An
         try:
             item = await container.read_item(item=user_id, partition_key=user_id)
         except CosmosResourceNotFoundError:
-            item = {
-                "id": user_id,
-                "user_id": user_id,
-                **DEFAULT_SETTINGS,
-                "connectors": [c.copy() for c in DEFAULT_CONNECTORS],
-                "current_plan": "free",
-            }
+            item = _default_settings_doc(user_id)
+
+        item, _ = _reconcile_settings_item(item)
 
         # Merge the four standard nested sections
         for section in ("profile", "notifications", "ai_preferences", "appearance"):

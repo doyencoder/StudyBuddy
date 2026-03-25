@@ -65,6 +65,13 @@ async def _print_cors_info():
     except Exception as e:
         print(f"[startup] Settings container init error (non-fatal): {e}")
 
+    # Ensure coins container exists in Cosmos DB
+    try:
+        from app.services.coins_service import ensure_coins_container
+        await ensure_coins_container()
+    except Exception as e:
+        print(f"[startup] Coins container init error (non-fatal): {e}")
+
     # Ensure sessions container exists in Cosmos DB
     try:
         from app.services.sessions_service import ensure_sessions_container
@@ -109,6 +116,7 @@ from app.routers.settings import router as settings_router
 from app.routers.sessions import router as sessions_router
 from app.routers.graph import router as graph_router
 from app.routers.notifications import router as notifications_router
+from app.routers.coins import router as coins_router
 app.include_router(chat_router)
 app.include_router(quiz_router)
 app.include_router(diagrams_router)
@@ -119,6 +127,7 @@ app.include_router(settings_router)
 app.include_router(sessions_router)
 app.include_router(graph_router)
 app.include_router(notifications_router)
+app.include_router(coins_router)
 
 
 @app.on_event("shutdown")

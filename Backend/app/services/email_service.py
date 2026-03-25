@@ -200,6 +200,37 @@ def send_streak_alert(to_email, display_name):
     return _send(to_email, subject, html, "Streak alert")
 
 
+# ── 4. Flashcard review reminder ─────────────────────────────────────────────
+
+def send_flashcard_review_reminder(to_email, display_name):
+    name = display_name or "Student"
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_STYLE}</style></head><body>
+<div class="wrap">
+  <div class="hero">
+    <div class="hero-icon">&#128209;</div>
+    <h1>Time to revise your flashcards</h1>
+    <p>Your 12 PM Study Buddy reminder</p>
+  </div>
+  <div class="body">
+    <p>Hey <strong style="color:#e2e3eb">{name}</strong>,</p>
+    <p>It's noon — this is a great time to do a quick flashcard review and keep the material fresh in your mind.</p>
+    <div class="goal-block">
+      <p class="goal-title" style="margin:0 0 8px">&#9889; Quick revision plan</p>
+      <ul style="margin:0;padding-left:18px;color:#c9cbd6;font-size:14px;line-height:1.8">
+        <li>Open one flashcard deck</li>
+        <li>Review difficult terms first</li>
+        <li>Spend 5 to 10 focused minutes revising</li>
+      </ul>
+    </div>
+    <p>Short daily revision sessions make recall much stronger over time.</p>
+    <a href="{SITE_URL}/flashcards" class="cta">Review flashcards &#8594;</a>
+  </div>
+  <div class="footer"><p>Study Buddy &middot; Flashcard review reminders are on in Settings.</p></div>
+</div></body></html>"""
+    subject = f"\U0001f4dd Flashcard review reminder \u2014 {_today_label()}"
+    return _send(to_email, subject, html, "Flashcard review reminder")
+
+
 # ── Legacy per-goal function (kept for backward compat — do not use in new code) ──
 
 def send_weekly_longterm_reminder(to_email, display_name, goal_title, weeks_elapsed,

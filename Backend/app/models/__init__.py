@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Dict
 from datetime import datetime, date
 
@@ -283,6 +283,7 @@ class NotificationSettings(BaseModel):
     goal_reminders: bool = False
     long_term_goals_reminder: bool = False
     study_streak_alerts: bool = False
+    flashcard_review_reminders: bool = False
 
 
 class AIPreferences(BaseModel):
@@ -366,3 +367,103 @@ class BillingPlan(BaseModel):
 class BillingResponse(BaseModel):
     current_plan: str
     plans: List[BillingPlan]
+
+
+# ── Coins / Gamification ─────────────────────────────────────────────────────
+
+class CoinTransaction(BaseModel):
+    id: str
+    type: Literal["earn", "spend"]
+    amount: int
+    reason: str
+    category: str
+    timestamp: str
+
+
+class StoreOrder(BaseModel):
+    id: str
+    item_id: str
+    item_name: str
+    cost: int
+    ordered_at: str
+    status: Literal["delivered", "pending"] = "delivered"
+
+
+class MissionProgress(BaseModel):
+    mission_id: str
+    completed: bool
+    completed_at: Optional[str] = None
+
+
+class LegacyCoinStatePayload(BaseModel):
+    balance: int = 0
+    lifetime_earned: int = 0
+    login_streak: int = 0
+    longest_streak: int = 0
+    last_login_date: Optional[str] = None
+    last_reward_date: Optional[str] = None
+    transactions: List[CoinTransaction] = Field(default_factory=list)
+    orders: List[StoreOrder] = Field(default_factory=list)
+    missions: Dict[str, MissionProgress] = Field(default_factory=dict)
+    referral_code: Optional[str] = None
+    referred_by: Optional[str] = None
+    referral_count: int = 0
+
+
+class CoinStateResponse(BaseModel):
+    user_id: str
+    balance: int = 0
+    lifetime_earned: int = 0
+    login_streak: int = 0
+    longest_streak: int = 0
+    last_login_date: Optional[str] = None
+    last_reward_date: Optional[str] = None
+    transactions: List[CoinTransaction] = Field(default_factory=list)
+    orders: List[StoreOrder] = Field(default_factory=list)
+    missions: Dict[str, MissionProgress] = Field(default_factory=dict)
+    referral_code: str = ""
+    referred_by: Optional[str] = None
+    referral_count: int = 0
+    updated_at: Optional[str] = None
+
+
+class CoinsBootstrapRequest(BaseModel):
+    user_id: str
+    legacy_state: Optional[LegacyCoinStatePayload] = None
+
+
+class DailyLoginRewardPayload(BaseModel):
+    coins_earned: int
+    new_streak: int
+    streak_bonus: int
+    streak_milestone: Optional[str] = None
+
+
+class DailyLoginRequest(BaseModel):
+    user_id: str
+
+
+class DailyLoginResponse(BaseModel):
+    coin_state: CoinStateResponse
+    reward: Optional[DailyLoginRewardPayload] = None
+
+
+class MissionCompleteRequest(BaseModel):
+    user_id: str
+    mission_id: str
+
+
+class MissionCompleteResponse(BaseModel):
+    coin_state: CoinStateResponse
+    earned_amount: int
+
+
+class ReferralApplyRequest(BaseModel):
+    user_id: str
+    code: str
+
+
+class ReferralApplyResponse(BaseModel):
+    coin_state: CoinStateResponse
+    applied: bool
+    reason: Optional[Literal["self_referral", "already_referred"]] = None

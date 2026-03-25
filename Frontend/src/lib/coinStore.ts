@@ -1,5 +1,5 @@
 /**
- * coinStore.ts — StudyCoins economy engine (localStorage, IST timezone)
+ * coinStore.ts — Shared gamification types/constants plus legacy localStorage helpers.
  */
 
 export function getTodayIST(): string {
@@ -34,8 +34,8 @@ export interface CoinState {
   referral_code: string; referred_by: string | null; referral_count: number;
 }
 
-const STORAGE_KEY = "studybuddy_coins";
-/** Bump this whenever reward values change — forces a clean reset so old inflated balances don't persist */
+export const LEGACY_COIN_STORAGE_KEY = "studybuddy_coins";
+/** Latest serialized shape for legacy browser-side coin data. */
 const ECONOMY_VERSION = 2;
 
 export const REWARDS = {
@@ -81,22 +81,96 @@ export const EARN_MISSIONS: EarnMission[] = [
 // ── Core ────────────────────────────────────────────────────────────────────
 function genId(): string { return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function genCode(): string { const c = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let s = "SB-"; for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)]; return s; }
-function defaults(): CoinState { return { balance: 0, lifetime_earned: 0, login_streak: 0, longest_streak: 0, last_login_date: null, last_reward_date: null, transactions: [], orders: [], missions: {}, referral_code: genCode(), referred_by: null, referral_count: 0 }; }
+export function createDefaultCoinState(): CoinState { return { balance: 0, lifetime_earned: 0, login_streak: 0, longest_streak: 0, last_login_date: null, last_reward_date: null, transactions: [], orders: [], missions: {}, referral_code: genCode(), referred_by: null, referral_count: 0 }; }
+
+function coerceInt(value: unknown, fallback = 0): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeLegacyCoinState(raw: unknown): CoinState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const parsed = raw as Record<string, unknown>;
+
+  const looksLikeCoinState = [
+    "balance",
+    "lifetime_earned",
+    "login_streak",
+    "last_login_date",
+    "transactions",
+    "referral_code",
+  ].some((key) => key in parsed);
+
+  if (!looksLikeCoinState) return null;
+
+  return {
+    balance: Math.max(0, coerceInt(parsed.balance, 0)),
+    lifetime_earned: Math.max(
+      Math.max(0, coerceInt(parsed.balance, 0)),
+      coerceInt(parsed.lifetime_earned, 0),
+    ),
+    login_streak: Math.max(0, coerceInt(parsed.login_streak, 0)),
+    longest_streak: Math.max(
+      Math.max(0, coerceInt(parsed.login_streak, 0)),
+      coerceInt(parsed.longest_streak, 0),
+    ),
+    last_login_date: typeof parsed.last_login_date === "string" ? parsed.last_login_date : null,
+    last_reward_date: typeof parsed.last_reward_date === "string" ? parsed.last_reward_date : null,
+    transactions: Array.isArray(parsed.transactions) ? parsed.transactions as CoinTransaction[] : [],
+    orders: Array.isArray(parsed.orders) ? parsed.orders as StoreOrder[] : [],
+    missions: (parsed.missions && typeof parsed.missions === "object") ? parsed.missions as Record<string, MissionProgress> : {},
+    referral_code: typeof parsed.referral_code === "string" && parsed.referral_code ? parsed.referral_code : genCode(),
+    referred_by: typeof parsed.referred_by === "string" ? parsed.referred_by : null,
+    referral_count: Math.max(0, coerceInt(parsed.referral_count, 0)),
+  };
+}
+
+export function hasMeaningfulCoinState(state: CoinState | null | undefined): state is CoinState {
+  if (!state) return false;
+  return (
+    state.balance > 0 ||
+    state.lifetime_earned > 0 ||
+    state.login_streak > 0 ||
+    state.longest_streak > 0 ||
+    !!state.last_login_date ||
+    !!state.last_reward_date ||
+    state.transactions.length > 0 ||
+    state.orders.length > 0 ||
+    Object.keys(state.missions).length > 0 ||
+    !!state.referred_by ||
+    state.referral_count > 0
+  );
+}
+
+export function getLegacyCoinState(): CoinState | null {
+  try {
+    const raw = localStorage.getItem(LEGACY_COIN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const normalized = normalizeLegacyCoinState(parsed);
+    if (!normalized) {
+      localStorage.removeItem(LEGACY_COIN_STORAGE_KEY);
+      return null;
+    }
+    if (parsed._v !== ECONOMY_VERSION) {
+      save(normalized);
+    }
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+export function clearLegacyCoinState(): void {
+  localStorage.removeItem(LEGACY_COIN_STORAGE_KEY);
+}
 
 export function getCoinState(): CoinState {
   try {
-    const r = localStorage.getItem(STORAGE_KEY);
-    if (!r) return defaults();
-    const p = JSON.parse(r);
-    // Economy version mismatch → wipe stale inflated balances
-    if (p._v !== ECONOMY_VERSION) { localStorage.removeItem(STORAGE_KEY); return defaults(); }
-    if (!p.referral_code) p.referral_code = genCode();
-    if (!p.missions) p.missions = {};
-    if (!p.orders) p.orders = [];
-    return p as CoinState;
-  } catch { return defaults(); }
+    return getLegacyCoinState() ?? createDefaultCoinState();
+  } catch { return createDefaultCoinState(); }
 }
-function save(s: CoinState) { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...s, _v: ECONOMY_VERSION })); }
+function save(s: CoinState) { localStorage.setItem(LEGACY_COIN_STORAGE_KEY, JSON.stringify({ ...s, _v: ECONOMY_VERSION })); }
 
 export function earnCoins(amount: number, reason: string, category: string): CoinState {
   const s = getCoinState(); s.balance += amount; s.lifetime_earned += amount;
@@ -156,8 +230,8 @@ export function completeMission(missionId: string): number {
   if (s.transactions.length > 200) s.transactions = s.transactions.slice(0, 200); save(s); return m.reward;
 }
 
-export function isMissionCompletedToday(missionId: string): boolean {
-  const s = getCoinState(); const m = s.missions[missionId]; return !!m?.completed && m.completed_at === getTodayIST();
+export function isMissionCompletedToday(missionId: string, state: CoinState = getCoinState()): boolean {
+  const m = state.missions[missionId]; return !!m?.completed && m.completed_at === getTodayIST();
 }
 
 export function getBalance(): number { return getCoinState().balance; }

@@ -88,6 +88,7 @@ async def get_weekly_minutes(user_id: str) -> dict:
 
         daily = []
         total = 0
+        minutes_by_day = {}
 
         for day in days:
             doc_id = f"{user_id}_{day}"
@@ -98,10 +99,41 @@ async def get_weekly_minutes(user_id: str) -> dict:
                 mins = 0
 
             total += mins
+            minutes_by_day[day] = mins
             daily.append({"date": day, "minutes": mins})
+
+        anchor_day = None
+        today_key = today.strftime("%Y-%m-%d")
+        yesterday_key = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        if minutes_by_day.get(today_key, 0) > 0:
+            anchor_day = today
+        elif minutes_by_day.get(yesterday_key, 0) > 0:
+            anchor_day = today - timedelta(days=1)
+
+        study_streak = 0
+        if anchor_day is not None:
+            for offset in range(365):
+                day = (anchor_day - timedelta(days=offset)).strftime("%Y-%m-%d")
+                doc_id = f"{user_id}_{day}"
+
+                if day in minutes_by_day:
+                    mins = minutes_by_day[day]
+                else:
+                    try:
+                        doc = await container.read_item(item=doc_id, partition_key=user_id)
+                        mins = doc.get("minutes", 0)
+                    except CosmosResourceNotFoundError:
+                        mins = 0
+
+                if mins > 0:
+                    study_streak += 1
+                else:
+                    break
 
         return {
             "total_minutes": total,
             "total_hours": round(total / 60, 1),
             "daily": daily,
+            "study_streak": study_streak,
         }

@@ -8,12 +8,12 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { toast } from "sonner";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  getCoinState, STORE_ITEMS, EARN_MISSIONS,
-  isMissionCompletedToday, type CoinState, type StoreItem, type EarnMission,
+  STORE_ITEMS, EARN_MISSIONS,
+  isMissionCompletedToday, type CoinState,
 } from "@/lib/coinStore";
+import { useCoins } from "@/contexts/CoinContext";
 
 type StoreTab = "redeem" | "earn" | "premium" | "orders";
 
@@ -54,7 +54,7 @@ const StorePage = () => {
   const [searchParams] = useSearchParams();
   const initTab = (searchParams.get("tab") as StoreTab) || "redeem";
   const [activeTab, setActiveTab] = useState<StoreTab>(["redeem","earn","premium","orders"].includes(initTab) ? initTab : "redeem");
-  const [coinState, setCoinState] = useState<CoinState>(getCoinState());
+  const { coinState } = useCoins();
 
   const swipeStartX = useRef<number | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
@@ -71,8 +71,6 @@ const StorePage = () => {
     el.addEventListener("touchstart", s, { passive: true }); el.addEventListener("touchend", e2, { passive: true });
     return () => { el.removeEventListener("touchstart", s); el.removeEventListener("touchend", e2); };
   }, []);
-
-  const refresh = () => setCoinState(getCoinState());
 
   const tabs: { id: StoreTab; label: string; icon: React.ReactNode }[] = [
     { id: "redeem", label: "Redeem", icon: <Gift className="w-4 h-4" /> },
@@ -104,7 +102,7 @@ const StorePage = () => {
                 <p className="text-2xl font-bold text-primary leading-tight">{coinState.balance.toLocaleString()}</p>
               </div>
               <div className="ml-2 flex items-center gap-1 text-xs text-muted-foreground">
-                <Flame className="w-3.5 h-3.5 text-primary" /><span>{coinState.login_streak}d</span>
+                <Flame className="w-3.5 h-3.5 text-primary" /><span>{coinState.login_streak}d login</span>
               </div>
             </div>
           </div>
@@ -189,8 +187,8 @@ const EarnSection = ({ coinState }: { coinState: CoinState }) => {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Total Earned", value: coinState.lifetime_earned.toLocaleString(), icon: <TrendingUp className="w-4 h-4 text-green-500" /> },
-          { label: "Current Streak", value: `${coinState.login_streak}d`, icon: <Flame className="w-4 h-4 text-primary" /> },
-          { label: "Best Streak", value: `${coinState.longest_streak}d`, icon: <Trophy className="w-4 h-4 text-primary" /> },
+          { label: "Current Login Streak", value: `${coinState.login_streak}d`, icon: <Flame className="w-4 h-4 text-primary" /> },
+          { label: "Best Login Streak", value: `${coinState.longest_streak}d`, icon: <Trophy className="w-4 h-4 text-primary" /> },
           { label: "Referrals", value: coinState.referral_count.toString(), icon: <Users className="w-4 h-4 text-primary" /> },
         ].map(s => (
           <div key={s.label} className="px-4 py-3 rounded-xl bg-card border border-border text-center">
@@ -210,7 +208,7 @@ const EarnSection = ({ coinState }: { coinState: CoinState }) => {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {missions.map(mission => {
-                const completedToday = isMissionCompletedToday(mission.id);
+                const completedToday = isMissionCompletedToday(mission.id, coinState);
                 const everCompleted = coinState.missions[mission.id]?.completed;
                 const done = mission.repeatable ? completedToday : everCompleted;
                 return (

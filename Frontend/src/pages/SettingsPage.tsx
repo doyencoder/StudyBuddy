@@ -25,9 +25,9 @@ import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { StudentExcellenceProgram } from "@/components/StudentExcellenceProgram";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  getCoinState, applyReferralCode, REWARDS,
-  type CoinState,
+  REWARDS,
 } from "@/lib/coinStore";
+import { useCoins } from "@/contexts/CoinContext";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,6 +47,7 @@ interface Notifications {
   goal_reminders: boolean;
   long_term_goals_reminder: boolean;
   study_streak_alerts: boolean;
+  flashcard_review_reminders: boolean;
 }
 
 interface AIPreferences {
@@ -66,6 +67,23 @@ interface UserSettings {
   ai_preferences: AIPreferences;
   appearance: Appearance;
 }
+
+const DEFAULT_PROFILE: Profile = { full_name: "", display_name: "", email: "" };
+const DEFAULT_NOTIFICATIONS: Notifications = {
+  goal_reminders: false,
+  long_term_goals_reminder: false,
+  study_streak_alerts: false,
+  flashcard_review_reminders: false,
+};
+const DEFAULT_AI_PREFERENCES: AIPreferences = {
+  simplified_explanations: true,
+  auto_generate_flashcards: false,
+};
+const DEFAULT_APPEARANCE: Appearance = {
+  color_mode: "auto",
+  chat_font: "default",
+  voice: "buttery",
+};
 
 interface ActiveSession {
   device: string;
@@ -194,10 +212,10 @@ const SettingsPage = () => {
   }, []); // ← runs once on mount, never needs to re-register
 
   const [settings, setSettings] = useState<UserSettings>({
-    profile: { full_name: "", display_name: "", email: "" },
-    notifications: { goal_reminders: false, long_term_goals_reminder: false, study_streak_alerts: false },
-    ai_preferences: { simplified_explanations: true, auto_generate_flashcards: false },
-    appearance: { color_mode: "auto", chat_font: "default", voice: "buttery" },
+    profile: { ...DEFAULT_PROFILE },
+    notifications: { ...DEFAULT_NOTIFICATIONS },
+    ai_preferences: { ...DEFAULT_AI_PREFERENCES },
+    appearance: { ...DEFAULT_APPEARANCE },
   });
 
   // ── Curriculum state (top-level on Cosmos doc, not nested in settings) ───
@@ -222,11 +240,11 @@ const SettingsPage = () => {
   const fetchSettings = useCallback(async () => {
     try {
       const { data } = await offlineFetch(`${API_BASE}/settings/?user_id=${USER_ID}`);
-      const appearance = data.appearance || { color_mode: "auto", chat_font: "default", voice: "buttery" };
+      const appearance = { ...DEFAULT_APPEARANCE, ...(data.appearance || {}) };
       setSettings({
-        profile: data.profile || { full_name: "", display_name: "", email: "" },
-        notifications: data.notifications || { goal_reminders: false, long_term_goals_reminder: false, study_streak_alerts: false },
-        ai_preferences: data.ai_preferences || { simplified_explanations: true, auto_generate_flashcards: false },
+        profile: { ...DEFAULT_PROFILE, ...(data.profile || {}) },
+        notifications: { ...DEFAULT_NOTIFICATIONS, ...(data.notifications || {}) },
+        ai_preferences: { ...DEFAULT_AI_PREFERENCES, ...(data.ai_preferences || {}) },
         appearance,
       });
       setColorMode(appearance.color_mode as ColorMode);
@@ -296,28 +314,34 @@ const SettingsPage = () => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       try {
-        await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
+        const response = await fetch(`${API_BASE}/settings/?user_id=${USER_ID}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(updates),
         });
+        if (!response.ok) {
+          throw new Error(`Settings save failed with status ${response.status}`);
+        }
       } catch {
         // Offline — queue for later sync
-        addToSyncQueue({
-          type: "settings_save",
-          url: `${API_BASE}/settings/?user_id=${USER_ID}`,
-          method: "PUT",
-          body: JSON.stringify(updates),
-          createdAt: new Date().toISOString(),
-        }).catch(() => {});
         if (!navigator.onLine) {
+          addToSyncQueue({
+            type: "settings_save",
+            url: `${API_BASE}/settings/?user_id=${USER_ID}`,
+            method: "PUT",
+            body: JSON.stringify(updates),
+            createdAt: new Date().toISOString(),
+          }).catch(() => {});
           toast.info("Settings saved locally — will sync when online", { duration: 2000 });
+        } else {
+          toast.error("Couldn't save settings. Restoring the last saved values.");
+          fetchSettings().catch(() => {});
         }
       } finally {
         setSaving(false);
       }
     }, 800);
-  }, []);
+  }, [fetchSettings]);
 
   // ── Curriculum Setting Save ───────────────────────────────────────────────
   // Curriculum fields live top-level on the Cosmos doc (not in a nested section),
@@ -713,7 +737,7 @@ const GeneralTab = ({
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-1.5">
-              Used for goal reminders, weekly updates, and streak alerts. Press Enter or click Save.
+              Used for goal reminders, weekly updates, streak alerts, and flashcard reminders. Press Enter or click Save.
             </p>
           </div>
         </CardContent>
@@ -743,6 +767,11 @@ const GeneralTab = ({
               field: "study_streak_alerts" as const,
               label: "Study streak alerts",
               desc: "Email at 9 PM if you haven't visited today",
+            },
+            {
+              field: "flashcard_review_reminders" as const,
+              label: "Flashcard review reminder",
+              desc: "Daily email at 12 PM IST to revise your flashcards",
             },
           ]).map((item) => (
             <div key={item.field} className="flex items-center justify-between">
@@ -1007,7 +1036,7 @@ const GeneralTab = ({
 // ── Referral Section (embedded in General tab) ──────────────────────────────
 
 const ReferralSection = () => {
-  const [coinState, setCoinState] = useState<CoinState>(getCoinState());
+  const { coinState, applyReferralCode } = useCoins();
   const [copiedCode, setCopiedCode] = useState(false);
   const [friendCode, setFriendCode] = useState("");
   const [applyingCode, setApplyingCode] = useState(false);
@@ -1037,22 +1066,24 @@ const ReferralSection = () => {
   const handleApplyCode = () => {
     if (!friendCode.trim()) { toast.error("Enter a referral code first"); return; }
     setApplyingCode(true);
-    setTimeout(() => {
-      const success = applyReferralCode(friendCode.trim().toUpperCase());
-      if (success) {
-        toast.success(`Referral applied! You earned ${REWARDS.REFERRAL_RECEIVER} Study Coins!`);
-        setCoinState(getCoinState());
-        setFriendCode("");
-      } else {
-        if (friendCode.trim().toUpperCase() === coinState.referral_code) {
+    setTimeout(async () => {
+      try {
+        const result = await applyReferralCode(friendCode.trim().toUpperCase());
+        if (result.applied) {
+          toast.success(`Referral applied! You earned ${REWARDS.REFERRAL_RECEIVER} Study Coins!`);
+          setFriendCode("");
+        } else if (result.reason === "self_referral") {
           toast.error("You can't use your own referral code!");
-        } else if (coinState.referred_by) {
+        } else if (result.reason === "already_referred") {
           toast.error("You've already used a referral code");
         } else {
           toast.error("Invalid referral code");
         }
+      } catch {
+        toast.error("Could not apply referral code right now.");
+      } finally {
+        setApplyingCode(false);
       }
-      setApplyingCode(false);
     }, 400);
   };
 
@@ -1077,7 +1108,7 @@ const ReferralSection = () => {
           </div>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <Flame className="w-3.5 h-3.5 text-primary" />
-            <span>{coinState.login_streak}d streak</span>
+            <span>{coinState.login_streak}d login streak</span>
           </div>
           <Button size="sm" variant="outline" className="border-primary/30 text-primary hover:bg-primary/10 text-xs h-8" onClick={() => navigate("/store")}>
             <Gift className="w-3 h-3 mr-1" /> Store

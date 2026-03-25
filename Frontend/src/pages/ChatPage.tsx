@@ -39,8 +39,8 @@ import { useAppearance } from "@/contexts/AppearanceContext";
 import CelebrationOverlay from "@/components/CelebrationOverlay";
 import { addToSyncQueue, cacheConversation, getCachedConversation } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
-import { completeMission } from "@/lib/coinStore";
 import { ModelSelector, type ProviderKey } from "@/components/ModelSelector";
+import { useCoins } from "@/contexts/CoinContext";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
 mermaid.initialize({
@@ -1313,6 +1313,7 @@ const QuizCard = ({
   onQuizComplete: (id: string, data: QuizData) => void;
   onRetake?: () => void;
 }) => {
+  const { completeMission } = useCoins();
   const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState<(number | null)[]>(
     Array(quizData.questions.length).fill(null)
@@ -1430,7 +1431,7 @@ const QuizCard = ({
           : undefined,
       });
       // Award Study Coins for completing a quiz
-      completeMission("complete_quiz");
+      completeMission("complete_quiz").catch(() => {});
     } catch (err: any) {
       toast.error(`Failed to submit quiz: ${err.message}`);
       setShowFunFact(false);
@@ -2304,6 +2305,7 @@ const ChatPage = () => {
   const { language } = useLanguage();
   const { voice } = useAppearance();
   const { isOnline } = useOnlineStatus();
+  const { completeMission } = useCoins();
   // ── Per-conversation state map ──────────────────────────────────────────────
   // Keyed by conversation ID (or NEW_CONV_KEY for an unsaved new chat).
   // SSE handlers always write into their own slot, so switching convs never
@@ -4075,7 +4077,7 @@ const ChatPage = () => {
             )
           );
           // Award Study Coins for uploading a document
-          completeMission("upload_doc");
+          completeMission("upload_doc").catch(() => {});
         } catch (err: any) {
           const msg: string = err.message || "";
           if (msg.startsWith("PAGE_LIMIT_EXCEEDED:")) {
