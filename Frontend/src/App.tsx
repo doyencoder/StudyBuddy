@@ -14,6 +14,7 @@ import GoalsPage from "@/pages/GoalsPage";
 import SettingsPage from "@/pages/SettingsPage";
 import ImagesPage from "@/pages/ImagesPage";
 import NovaPage from "@/pages/NovaPage";       // ← NEW
+import StorePage from "@/pages/StorePage";       // ← Gamification store
 import LandingPage from "@/pages/LandingPage";
 import NotFound from "@/pages/NotFound";
 
@@ -38,6 +39,7 @@ const App = () => (
                 <Route path="/goals" element={<GoalsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/nova" element={<NovaPage />} />   {/* ← NEW */}
+                <Route path="/store" element={<StorePage />} />   {/* ← Gamification store */}
               </Route>
               <Route path="*" element={<NotFound />} />
             </Routes>

@@ -39,6 +39,7 @@ import { useAppearance } from "@/contexts/AppearanceContext";
 import CelebrationOverlay from "@/components/CelebrationOverlay";
 import { addToSyncQueue, cacheConversation, getCachedConversation } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { completeMission } from "@/lib/coinStore";
 import { ModelSelector, type ProviderKey } from "@/components/ModelSelector";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
@@ -1428,6 +1429,8 @@ const QuizCard = ({
           ? result.unanswered_indices
           : undefined,
       });
+      // Award Study Coins for completing a quiz
+      completeMission("complete_quiz");
     } catch (err: any) {
       toast.error(`Failed to submit quiz: ${err.message}`);
       setShowFunFact(false);
@@ -4071,6 +4074,8 @@ const ChatPage = () => {
                 : f
             )
           );
+          // Award Study Coins for uploading a document
+          completeMission("upload_doc");
         } catch (err: any) {
           const msg: string = err.message || "";
           if (msg.startsWith("PAGE_LIMIT_EXCEEDED:")) {

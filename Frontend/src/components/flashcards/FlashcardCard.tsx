@@ -98,7 +98,7 @@ export function FlashcardCard({
 
   return (
     <div
-      className={`absolute inset-0 overflow-hidden rounded-xl select-none transition-[transform,opacity,filter,box-shadow,border-color,background] duration-[620ms] ease-[cubic-bezier(0.2,0.9,0.2,1)] will-change-transform ${
+      className={`absolute inset-0 overflow-hidden rounded-xl select-none transition-[transform,opacity,filter,box-shadow,border-color,background] [transition-duration:620ms] [transition-timing-function:cubic-bezier(0.2,0.9,0.2,1)] will-change-transform ${
         isCenter ? "cursor-pointer" : ""
       }`}
       onClick={isCenter ? onCycle : undefined}

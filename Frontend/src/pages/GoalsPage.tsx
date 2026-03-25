@@ -33,7 +33,11 @@ interface StoredDailyGoals {
 }
 
 function getTodayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function loadDailyGoals(): DailyGoal[] {
@@ -371,7 +375,7 @@ const GoalsPage = () => {
             const empty: DailyGoal[] = [];
             saveDailyGoals(empty);
             setDailyGoals(empty);
-            toast.info("It's a new day! Your daily goals have been cleared. Add new ones for today 🌅");
+            toast.info("It's a new day! Your daily goals have been cleared. Add new ones for today.");
           }
         } catch {
           /* ignore */

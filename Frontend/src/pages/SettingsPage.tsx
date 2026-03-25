@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
   ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail, GraduationCap,
+  Gift, Coins, Flame, Users, Share2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -21,6 +22,11 @@ import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from 
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  getCoinState, applyReferralCode, REWARDS,
+  type CoinState,
+} from "@/lib/coinStore";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -144,7 +150,12 @@ const CONNECTOR_ICON_MAP: Record<string, React.ReactNode> = {
 
 const SettingsPage = () => {
   const { setColorMode, setChatFont, setVoice } = useAppearance();
-  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const [searchParams] = useSearchParams();
+  const urlTab = searchParams.get("tab") as SettingsTab | null;
+  const validTabs: SettingsTab[] = ["general", "account", "billing", "connectors"];
+  const [activeTab, setActiveTab] = useState<SettingsTab>(
+    urlTab && validTabs.includes(urlTab) ? urlTab : "general"
+  );
 
   // Swipe gesture refs
   const swipeStartX = useRef<number | null>(null);
@@ -245,6 +256,13 @@ const SettingsPage = () => {
       setCurrentPlan(data.current_plan);
     } catch (err) {
       console.error("Failed to fetch billing:", err);
+      // Fallback plans — matches Backend/app/routers/settings.py PLANS exactly
+      setBillingPlans([
+        { id: "free", name: "Free", tagline: "Get started with Study Buddy", price: "$0", period: "", features: ["5 AI chat messages per day","3 quiz generations per day","Basic diagram generation","Upload up to 5 files","Community support"], is_current: true },
+        { id: "pro", name: "Pro", tagline: "For serious students", price: "$12", period: "USD/month", features: ["Everything in Free and:","Unlimited AI chat messages","Unlimited quiz generations","Advanced diagram generation","Upload up to 50 files","Priority support","Study plan generation","Voice input & output","Translation to 8 languages"], is_current: false },
+        { id: "max", name: "Max", tagline: "For power users & teams", price: "From $30", period: "USD/month", features: ["Everything in Pro, plus:","Unlimited file uploads","Custom AI model tuning","Team collaboration","API access","Dedicated support","Advanced analytics","Custom integrations"], is_current: false },
+      ]);
+      setCurrentPlan("free");
     }
   }, []);
 
@@ -978,7 +996,153 @@ const GeneralTab = ({
 
         </CardContent>
       </Card>
+
+      {/* ── Referral & Study Coins ─────────────────────────────────────────── */}
+      <ReferralSection />
     </>
+  );
+};
+
+// ── Referral Section (embedded in General tab) ──────────────────────────────
+
+const ReferralSection = () => {
+  const [coinState, setCoinState] = useState<CoinState>(getCoinState());
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [friendCode, setFriendCode] = useState("");
+  const [applyingCode, setApplyingCode] = useState(false);
+  const navigate = useNavigate();
+
+  const copyReferralCode = async () => {
+    try {
+      await navigator.clipboard.writeText(coinState.referral_code);
+      setCopiedCode(true);
+      toast.success("Referral code copied!");
+      setTimeout(() => setCopiedCode(false), 2000);
+    } catch {
+      toast.error("Failed to copy");
+    }
+  };
+
+  const shareReferral = async () => {
+    const text = `Hey! Join me on StudyBuddy — the AI-powered study companion. Use my referral code ${coinState.referral_code} to get ${REWARDS.REFERRAL_RECEIVER} bonus Study Coins when you sign up!`;
+    if (navigator.share) {
+      try { await navigator.share({ title: "StudyBuddy Referral", text }); } catch { /* user cancelled */ }
+    } else {
+      await navigator.clipboard.writeText(text);
+      toast.success("Referral message copied to clipboard!");
+    }
+  };
+
+  const handleApplyCode = () => {
+    if (!friendCode.trim()) { toast.error("Enter a referral code first"); return; }
+    setApplyingCode(true);
+    setTimeout(() => {
+      const success = applyReferralCode(friendCode.trim().toUpperCase());
+      if (success) {
+        toast.success(`Referral applied! You earned ${REWARDS.REFERRAL_RECEIVER} Study Coins!`);
+        setCoinState(getCoinState());
+        setFriendCode("");
+      } else {
+        if (friendCode.trim().toUpperCase() === coinState.referral_code) {
+          toast.error("You can't use your own referral code!");
+        } else if (coinState.referred_by) {
+          toast.error("You've already used a referral code");
+        } else {
+          toast.error("Invalid referral code");
+        }
+      }
+      setApplyingCode(false);
+    }, 400);
+  };
+
+  return (
+    <Card className="bg-card border-border overflow-hidden">
+      <div className="h-1 bg-gradient-to-r from-primary via-primary/80 to-primary/60" />
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base text-foreground flex items-center gap-2">
+          <Users className="w-4 h-4 text-primary" />
+          Refer Friends & Earn
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Balance mini-display */}
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/8 border border-primary/15">
+          <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+            <Coins className="w-4 h-4 text-primary" />
+          </div>
+          <div className="flex-1">
+            <p className="text-xs text-muted-foreground">Your Study Coins</p>
+            <p className="text-lg font-bold text-primary leading-tight">{coinState.balance.toLocaleString()}</p>
+          </div>
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Flame className="w-3.5 h-3.5 text-primary" />
+            <span>{coinState.login_streak}d streak</span>
+          </div>
+          <Button size="sm" variant="outline" className="border-primary/30 text-primary hover:bg-primary/10 text-xs h-8" onClick={() => navigate("/store")}>
+            <Gift className="w-3 h-3 mr-1" /> Store
+          </Button>
+        </div>
+
+        <Separator className="bg-border" />
+
+        {/* Your referral code */}
+        <div>
+          <Label className="text-sm text-muted-foreground mb-2 block">Your referral code</Label>
+          <div className="flex gap-2">
+            <div className="flex-1 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-background border border-border font-mono text-base tracking-widest text-foreground select-all">
+              {coinState.referral_code}
+            </div>
+            <Button size="icon" variant="outline" className="border-border h-[42px] w-[42px]" onClick={copyReferralCode}>
+              {copiedCode ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+            </Button>
+            <Button size="icon" variant="outline" className="border-border h-[42px] w-[42px]" onClick={shareReferral}>
+              <Share2 className="w-4 h-4" />
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1.5">
+            Share your code — you get <span className="text-primary font-semibold">{REWARDS.REFERRAL_SENDER}</span> coins and your friend gets <span className="text-primary font-semibold">{REWARDS.REFERRAL_RECEIVER}</span> coins!
+          </p>
+        </div>
+
+        {/* Apply friend's code */}
+        {!coinState.referred_by ? (
+          <div>
+            <Label className="text-sm text-muted-foreground mb-2 block">Have a friend's code?</Label>
+            <div className="flex gap-2">
+              <Input
+                value={friendCode}
+                onChange={(e) => setFriendCode(e.target.value.toUpperCase())}
+                placeholder="SB-XXXXXX"
+                className="bg-background border-border font-mono tracking-wider uppercase"
+                maxLength={9}
+                onKeyDown={(e) => { if (e.key === "Enter") handleApplyCode(); }}
+              />
+              <Button
+                onClick={handleApplyCode}
+                disabled={applyingCode || !friendCode.trim()}
+              >
+                {applyingCode ? <Loader2 className="w-4 h-4 animate-spin" /> : "Apply"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/8 border border-green-500/20">
+            <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
+            <p className="text-xs text-green-500 font-medium">
+              Referral applied — you received {REWARDS.REFERRAL_RECEIVER} bonus coins
+            </p>
+          </div>
+        )}
+
+        {/* Referral stats */}
+        {coinState.referral_count > 0 && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Users className="w-3.5 h-3.5" />
+            <span>{coinState.referral_count} friend{coinState.referral_count !== 1 ? "s" : ""} joined with your code</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 };
 
