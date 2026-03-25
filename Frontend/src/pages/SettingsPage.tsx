@@ -22,6 +22,7 @@ import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from 
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { StudentExcellenceProgram } from "@/components/StudentExcellenceProgram";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   getCoinState, applyReferralCode, REWARDS,
@@ -1351,6 +1352,9 @@ const BillingTab = ({
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Student Excellence Program ── */}
+      <StudentExcellenceProgram />
 
       {/* Plans Comparison Dialog */}
       <Dialog open={showPlansDialog} onOpenChange={setShowPlansDialog}>
