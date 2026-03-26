@@ -56,4 +56,4 @@ jobs:
         with:
           app-name: 'studybuddy-api'
           slot-name: 'Production'
-          package: './Backend'
+          package: '.'
