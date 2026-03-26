@@ -9,11 +9,18 @@ from datetime import datetime, timezone, timedelta
 from azure.storage.blob import BlobServiceClient, ContentSettings, generate_blob_sas, BlobSasPermissions
 
 
+_BLOB_CLIENT: BlobServiceClient | None = None
+
 def get_blob_client() -> BlobServiceClient:
+    global _BLOB_CLIENT
+    if _BLOB_CLIENT is not None:
+        return _BLOB_CLIENT
     connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
     if not connection_string:
         raise ValueError("AZURE_STORAGE_CONNECTION_STRING is not set in .env")
-    return BlobServiceClient.from_connection_string(connection_string)
+    _BLOB_CLIENT = BlobServiceClient.from_connection_string(connection_string)
+    print("[blob_service] Singleton BlobServiceClient created")
+    return _BLOB_CLIENT
 
 
 def upload_file_to_blob(file_bytes: bytes, original_filename: str, user_id: str) -> dict:

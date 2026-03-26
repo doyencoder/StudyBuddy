@@ -29,22 +29,49 @@ from azure.search.documents.indexes.models import (
 from azure.search.documents.models import VectorizedQuery
 
 
+# ── Cached config — read once from env ───────────────────────────────────────
+_INDEX_NAME: str | None = None
+_ENDPOINT: str | None = None
+_CREDENTIAL: AzureKeyCredential | None = None
+_SEARCH_CLIENT: SearchClient | None = None
+
 def _get_index_name() -> str:
-    return os.getenv("AZURE_SEARCH_INDEX_NAME", "studybuddy-index")
+    global _INDEX_NAME
+    if _INDEX_NAME is None:
+        _INDEX_NAME = os.getenv("AZURE_SEARCH_INDEX_NAME", "studybuddy-index")
+    return _INDEX_NAME
 
 
 def _get_credential() -> AzureKeyCredential:
-    key = os.getenv("AZURE_SEARCH_KEY")
-    if not key:
-        raise ValueError("AZURE_SEARCH_KEY is not set in .env")
-    return AzureKeyCredential(key)
+    global _CREDENTIAL
+    if _CREDENTIAL is None:
+        key = os.getenv("AZURE_SEARCH_KEY")
+        if not key:
+            raise ValueError("AZURE_SEARCH_KEY is not set in .env")
+        _CREDENTIAL = AzureKeyCredential(key)
+    return _CREDENTIAL
 
 
 def _get_endpoint() -> str:
-    endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-    if not endpoint:
-        raise ValueError("AZURE_SEARCH_ENDPOINT is not set in .env")
-    return endpoint
+    global _ENDPOINT
+    if _ENDPOINT is None:
+        _ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+        if not _ENDPOINT:
+            raise ValueError("AZURE_SEARCH_ENDPOINT is not set in .env")
+    return _ENDPOINT
+
+
+def _get_search_client() -> SearchClient:
+    """Singleton SearchClient — reused across all search/store calls."""
+    global _SEARCH_CLIENT
+    if _SEARCH_CLIENT is None:
+        _SEARCH_CLIENT = SearchClient(
+            endpoint=_get_endpoint(),
+            index_name=_get_index_name(),
+            credential=_get_credential(),
+        )
+        print("[search_service] Singleton SearchClient created")
+    return _SEARCH_CLIENT
 
 
 def create_index_if_not_exists():
@@ -126,11 +153,7 @@ def store_chunks(
         page_numbers: Optional list of source page numbers, one per chunk.
                       If None, all chunks get page_number=0.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
 
     documents = []
     for i, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
@@ -166,11 +189,7 @@ def retrieve_chunks(
     Pure vector search — used by regenerate endpoint and quiz fallback.
     Returns plain chunk text strings above the cosine similarity threshold.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
 
     vector_query = VectorizedQuery(
         vector=query_embedding,
@@ -224,11 +243,7 @@ def retrieve_chunks_hybrid(
     Returns:
         List of chunk_text strings that passed the RRF threshold.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
 
     vector_query = VectorizedQuery(
         vector=query_embedding,
@@ -273,11 +288,7 @@ def retrieve_chunks_smart(
         List of (chunk_text, page_number) tuples — NOT plain strings.
         Callers must use _tag_chunks_with_pages() to convert before sending to Gemini.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
 
     # Build filter — always scope to user + conversation, optionally add page filter
     base_filter = f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'"
@@ -315,11 +326,7 @@ def conversation_has_documents(user_id: str, conversation_id: str) -> bool:
     Used as a hard gate before attempting any vector search.
     Zero embedding calls — pure metadata check.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
 
     results = search_client.search(
         search_text="*",
@@ -337,11 +344,7 @@ def get_conversation_filenames(user_id: str, conversation_id: str) -> list:
     Returns ordered list of unique filenames uploaded to this conversation.
     Order matches upload sequence — used to resolve 'document 1', 'document 2'.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
     results = search_client.search(
         search_text="*",
         filter=f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'",
@@ -366,11 +369,7 @@ def retrieve_all_chunks_ordered(
     Returns list of (chunk_text, page_number, filename) tuples — same shape
     as retrieve_chunks_smart() so callers don't need to change anything.
     """
-    search_client = SearchClient(
-        endpoint=_get_endpoint(),
-        index_name=_get_index_name(),
-        credential=_get_credential(),
-    )
+    search_client = _get_search_client()
 
     base_filter = f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'"
     if filename_filter:

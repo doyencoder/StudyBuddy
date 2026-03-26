@@ -18,11 +18,26 @@ DB_NAME = os.getenv("AZURE_COSMOS_DB_NAME", "studybuddy")
 GOALS_CONTAINER = "goals"
 
 
-def _get_client() -> CosmosClient:
-    connection_string = os.getenv("AZURE_COSMOS_CONNECTION_STRING")
-    if not connection_string:
-        raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set in .env")
-    return CosmosClient.from_connection_string(connection_string)
+class _CosmosWrapper:
+    __slots__ = ("_client",)
+    def __init__(self, client: CosmosClient):
+        self._client = client
+    async def __aenter__(self) -> CosmosClient:
+        return self._client
+    async def __aexit__(self, *args):
+        pass
+
+_COSMOS_CLIENT: CosmosClient | None = None
+
+def _get_client() -> _CosmosWrapper:
+    global _COSMOS_CLIENT
+    if _COSMOS_CLIENT is None:
+        connection_string = os.getenv("AZURE_COSMOS_CONNECTION_STRING")
+        if not connection_string:
+            raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set in .env")
+        _COSMOS_CLIENT = CosmosClient.from_connection_string(connection_string)
+        print("[goals_service] Singleton CosmosClient created")
+    return _CosmosWrapper(_COSMOS_CLIENT)
 
 
 async def create_goal(

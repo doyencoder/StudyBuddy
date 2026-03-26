@@ -21,7 +21,12 @@ ENABLE_FIGURE_VISION = os.getenv("ENABLE_FIGURE_VISION", "false").strip().lower(
 print(f"[doc_intelligence] Figure vision: {'ENABLED' if ENABLE_FIGURE_VISION else 'DISABLED'}")
 
 
+_DOC_CLIENT: DocumentIntelligenceClient | None = None
+
 def get_doc_intelligence_client() -> DocumentIntelligenceClient:
+    global _DOC_CLIENT
+    if _DOC_CLIENT is not None:
+        return _DOC_CLIENT
     endpoint = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")
     key = os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")
 
@@ -30,7 +35,9 @@ def get_doc_intelligence_client() -> DocumentIntelligenceClient:
             "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOCUMENT_INTELLIGENCE_KEY "
             "must be set in .env"
         )
-    return DocumentIntelligenceClient(endpoint=endpoint, credential=AzureKeyCredential(key))
+    _DOC_CLIENT = DocumentIntelligenceClient(endpoint=endpoint, credential=AzureKeyCredential(key))
+    print("[doc_intelligence] Singleton DocumentIntelligenceClient created")
+    return _DOC_CLIENT
 
 
 def extract_text_from_url(blob_url: str) -> str:

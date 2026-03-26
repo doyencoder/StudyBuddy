@@ -357,6 +357,10 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
 
+        # Mid-stream refusal fallback
+        if _REFUSAL_MESSAGE in full_reply and full_reply.strip() != _REFUSAL_MESSAGE:
+            full_reply = _REFUSAL_MESSAGE
+
         await update_message_content(
             conversation_id=request.conversation_id,
             user_id=request.user_id,
@@ -865,6 +869,12 @@ async def chat_message(request: ChatRequest):
                     just_ingested_filenames.append(file_name)
 
                 if all_ingested_chunks:
+                    # ── Wait for Azure Search to index the chunks ─────────────────
+                    # Azure Search upload_documents() returns when docs are accepted,
+                    # NOT when they are searchable. Without this delay, retrieval
+                    # returns empty and the LLM has no document context.
+                    await asyncio.sleep(2)
+
                     # ── Retrieval AFTER all files stored so every file's chunks are findable ──
                     if scope == "document":
                         # Full coverage — bypass vector search, fetch all chunks ordered
@@ -876,30 +886,16 @@ async def chat_message(request: ChatRequest):
                         total = len(all_ingested_chunks)
                         tk = min(total, 20)
 
-                        # ── Fix: use actual message/topic as query, not "key concepts" ──
-                        # When message is empty (e.g. image uploaded with no text),
-                        # use the first ingested chunk text as the query so the
-                        # embedding is grounded in the actual uploaded content,
-                        # not a meaningless fallback string.
                         if request.message.strip():
                             post_q_text = request.message
                         elif topic:
                             post_q_text = topic
                         else:
-                            # Empty message + no topic → use first chunk of
-                            # the just-uploaded file as the query anchor
                             post_q_text = all_ingested_chunks[0][:500] if all_ingested_chunks else "key concepts"
 
                         q_emb = embed_query(post_q_text)
                         use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
 
-                        # ── Fix: restrict retrieval to ONLY just-uploaded files ──
-                        # Without this, old files in the conversation dominate
-                        # the vector search and the new file's content is buried.
-                        # If only 1 new file → filter strictly to that file.
-                        # If multiple new files → no filename filter (all new files
-                        # are fair game) but old files are naturally outranked
-                        # because post_q_text is derived from new content.
                         post_filename_filter = (
                             just_ingested_filenames[0]
                             if len(just_ingested_filenames) == 1
@@ -914,7 +910,7 @@ async def chat_message(request: ChatRequest):
                             page_numbers=page_numbers if page_numbers else None,
                             top_k=tk,
                             use_hybrid=use_hybrid_post,
-                            filename_filter=post_filename_filter,   # ← KEY FIX
+                            filename_filter=post_filename_filter,
                         )
                     print(f"[DEBUG-RETRIEVAL] post-ingestion chunks retrieved: {len(active_chunks)}")
 
@@ -984,6 +980,12 @@ async def chat_message(request: ChatRequest):
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             return
+
+        # Mid-stream refusal fallback — if the safety message appeared after
+        # some tokens were already streamed, save only the clean refusal to
+        # Cosmos so conversation history stays correct.
+        if _REFUSAL_MESSAGE in full_reply and full_reply.strip() != _REFUSAL_MESSAGE:
+            full_reply = _REFUSAL_MESSAGE
 
         saved = await save_message(
             conversation_id=conversation_id,
@@ -1339,6 +1341,10 @@ async def _rag_from_doc(user_id, conversation_id, query, prior_messages, loop, u
             yield "data: [DONE]\n\n"
             return
 
+        # Mid-stream refusal fallback
+        if _REFUSAL_MESSAGE in full_reply and full_reply.strip() != _REFUSAL_MESSAGE:
+            full_reply = _REFUSAL_MESSAGE
+
         # Persist as plain text (not web_search_answer JSON) so regenerate
         # correctly re-runs RAG — not web search — on this message
         if update_message_id:
@@ -1652,7 +1658,9 @@ CURRENT QUESTION: "{query}"
             return
 
         # If the generated answer is a refusal, never attach web metadata.
-        if _is_refusal_text(full_reply):
+        # Also catches mid-stream refusal fallback where _REFUSAL_MESSAGE
+        # appears after some tokens were already streamed.
+        if _is_refusal_text(full_reply) or (_REFUSAL_MESSAGE in full_reply):
             clean_refusal = _REFUSAL_MESSAGE
             if update_message_id:
                 await update_message_content(

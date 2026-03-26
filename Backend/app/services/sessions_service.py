@@ -24,11 +24,26 @@ DB_NAME         = os.getenv("AZURE_COSMOS_DB_NAME", "studybuddy")
 SESSIONS_CONTAINER = "sessions"
 
 
-def _get_client() -> CosmosClient:
-    conn = os.getenv("AZURE_COSMOS_CONNECTION_STRING")
-    if not conn:
-        raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set")
-    return CosmosClient.from_connection_string(conn)
+class _CosmosWrapper:
+    __slots__ = ("_client",)
+    def __init__(self, client: CosmosClient):
+        self._client = client
+    async def __aenter__(self) -> CosmosClient:
+        return self._client
+    async def __aexit__(self, *args):
+        pass
+
+_COSMOS_CLIENT: CosmosClient | None = None
+
+def _get_client() -> _CosmosWrapper:
+    global _COSMOS_CLIENT
+    if _COSMOS_CLIENT is None:
+        conn = os.getenv("AZURE_COSMOS_CONNECTION_STRING")
+        if not conn:
+            raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set")
+        _COSMOS_CLIENT = CosmosClient.from_connection_string(conn)
+        print("[sessions_service] Singleton CosmosClient created")
+    return _CosmosWrapper(_COSMOS_CLIENT)
 
 
 async def ensure_sessions_container():

@@ -21,16 +21,48 @@ FLASHCARDS_CONTAINER = "flashcards"
 
 # ── Client helper ─────────────────────────────────────────────────────────────
 
-def _get_client() -> CosmosClient:
+class _CosmosWrapper:
     """
-    Returns an async CosmosClient using the NoSQL connection string.
-    The connection string format:
-      AccountEndpoint=https://....documents.azure.com:443/;AccountKey=...==;
+    Wraps a singleton CosmosClient so ``async with _get_client() as client:``
+    reuses the same connection instead of creating + destroying one per call.
+
+    Without this wrapper, every ``async with CosmosClient(...) as client:``
+    opens a fresh HTTP session in __aenter__ and CLOSES it in __aexit__.
+    That costs ~100-200ms of TCP+TLS overhead per call × 29 call-sites = ~3-6s
+    of pure waste per request.
+
+    The wrapper's __aexit__ is intentionally a no-op — the session stays open
+    for the lifetime of the process.  Cleanup happens in main.py @shutdown.
     """
-    connection_string = os.getenv("AZURE_COSMOS_CONNECTION_STRING")
-    if not connection_string:
-        raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set in .env")
-    return CosmosClient.from_connection_string(connection_string)
+    __slots__ = ("_client",)
+
+    def __init__(self, client: CosmosClient):
+        self._client = client
+
+    async def __aenter__(self) -> CosmosClient:
+        return self._client
+
+    async def __aexit__(self, *args):
+        pass  # no-op — singleton lives for the process lifetime
+
+
+_COSMOS_CLIENT: CosmosClient | None = None
+
+def _get_client() -> _CosmosWrapper:
+    """
+    Returns a wrapper around a singleton CosmosClient.
+    The real client is created once on first call (lazy init).
+    Every ``async with _get_client() as client:`` in the codebase
+    receives the SAME underlying client with zero connection overhead.
+    """
+    global _COSMOS_CLIENT
+    if _COSMOS_CLIENT is None:
+        connection_string = os.getenv("AZURE_COSMOS_CONNECTION_STRING")
+        if not connection_string:
+            raise ValueError("AZURE_COSMOS_CONNECTION_STRING is not set in .env")
+        _COSMOS_CLIENT = CosmosClient.from_connection_string(connection_string)
+        print("[cosmos_service] Singleton CosmosClient created")
+    return _CosmosWrapper(_COSMOS_CLIENT)
 
 
 async def ensure_flashcards_container() -> None:

@@ -194,11 +194,19 @@ def _sanitize_and_parse_json(raw: str) -> any:
     return json.loads(escaped)
 
 
+# ── Singleton client — created once, reused across all requests ──────────────
+_CLIENT: genai.Client | None = None
+
 def _get_client() -> genai.Client:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not set in .env")
-    return genai.Client(api_key=api_key)
+    _CLIENT = genai.Client(api_key=api_key)
+    print("[gemini_service] Singleton Gemini client created")
+    return _CLIENT
 
 
 def _call_with_retry(fn, *args, **kwargs):
@@ -425,27 +433,42 @@ def chat_stream(
 
     response = _call_with_retry(_stream)
 
-    # Collect the full response first to check for sentinel.
-    # (Gemini streams token-by-token; __REFUSED__ could come as one or multiple chunks)
-    accumulated = ""
-    sentinel_detected = False
+    # ── True streaming with early refusal detection ──────────────────────
+    # Same strategy as azure_openai_service: buffer first 50 chars to catch
+    # __REFUSED__ (always the very first output when model refuses), then
+    # stream live.  Mid-stream fallback covers the ~0% edge case.
+    _BUF_LIMIT = 50
+    _buf = ""
+    _buf_flushed = False
+    _live_acc = ""
 
     for chunk in response:
         if chunk.text:
-            accumulated += chunk.text
-            # Check early: if we already have the sentinel string, stop streaming
-            if REFUSAL_SENTINEL in accumulated:
-                sentinel_detected = True
-                break
+            token = chunk.text
 
-    if sentinel_detected:
-        yield REFUSAL_MESSAGE
-        return
+            if not _buf_flushed:
+                _buf += token
+                if REFUSAL_SENTINEL in _buf:
+                    yield REFUSAL_MESSAGE
+                    return
+                if len(_buf) >= _BUF_LIMIT:
+                    yield _buf
+                    _buf_flushed = True
+                    _live_acc = _buf
+                    _buf = ""
+            else:
+                _live_acc += token
+                if REFUSAL_SENTINEL in _live_acc:
+                    yield REFUSAL_MESSAGE
+                    return
+                yield token
 
-    # Safe content — yield accumulated text character by character to preserve
-    # streaming behaviour on the frontend.
-    for char in accumulated:
-        yield char
+    # Flush remaining buffer (very short responses)
+    if _buf:
+        if REFUSAL_SENTINEL in _buf:
+            yield REFUSAL_MESSAGE
+            return
+        yield _buf
 
 
 def generate_quiz_questions(context_chunks: List[str], topic: str, num_questions: int = 5, curriculum_context: str = None) -> dict:

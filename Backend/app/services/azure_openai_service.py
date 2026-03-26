@@ -187,27 +187,48 @@ Example: if explaining y = sin(x), after your explanation add a line: PLOT: y = 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+# ── Singleton client — created once, reused across all requests ──────────────
+# The AzureOpenAI SDK uses httpx internally which maintains a persistent
+# connection pool. Reusing the same client avoids paying DNS + TLS + auth
+# overhead (~150-300ms) on every single API call.
+_CLIENT: AzureOpenAI | None = None
+
 def _get_client() -> AzureOpenAI:
-    """Returns a configured AzureOpenAI client, reading credentials at call time."""
+    """Returns a shared AzureOpenAI client, creating it once on first call."""
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     api_key  = os.getenv("AZURE_OPENAI_API_KEY")
     if not endpoint:
         raise ValueError("AZURE_OPENAI_ENDPOINT is not set in .env")
     if not api_key:
         raise ValueError("AZURE_OPENAI_API_KEY is not set in .env")
-    return AzureOpenAI(
+    _CLIENT = AzureOpenAI(
         azure_endpoint=endpoint,
         api_key=api_key,
         api_version=AZURE_API_VERSION,
     )
+    print("[azure_openai_service] Singleton AzureOpenAI client created")
+    return _CLIENT
 
+
+# ── Deployment names — cached once ───────────────────────────────────────────
+_CHAT_DEPLOYMENT: str | None = None
+_EMBEDDING_DEPLOYMENT: str | None = None
 
 def _chat_deployment() -> str:
-    return os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "studybuddy-chat")
+    global _CHAT_DEPLOYMENT
+    if _CHAT_DEPLOYMENT is None:
+        _CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "studybuddy-chat")
+    return _CHAT_DEPLOYMENT
 
 
 def _embedding_deployment() -> str:
-    return os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "studybuddy-embeddings")
+    global _EMBEDDING_DEPLOYMENT
+    if _EMBEDDING_DEPLOYMENT is None:
+        _EMBEDDING_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "studybuddy-embeddings")
+    return _EMBEDDING_DEPLOYMENT
 
 
 def _is_content_filter_error(e: Exception) -> bool:
@@ -498,8 +519,21 @@ def chat_stream(
     try:
         response = _call_with_retry(_stream)
 
-        accumulated = ""
-        sentinel_detected = False
+        # ── True streaming with early refusal detection ──────────────────────
+        # The safety prompt instructs the model to output "__REFUSED__" (10
+        # chars) as the FIRST and ONLY token when refusing.  We buffer a small
+        # window to catch it, then stream live for the rest.
+        #
+        # Fallback: if __REFUSED__ somehow appears AFTER the buffer was already
+        # flushed, we stop yielding content and instead yield REFUSAL_MESSAGE.
+        # The caller (chat.py) detects this in the accumulated reply and saves
+        # the clean refusal to Cosmos.  The user briefly sees partial text
+        # followed by the refusal — acceptable for an edge case that
+        # essentially never fires.
+        _BUF_LIMIT = 50  # chars — 5× the sentinel length, ample margin
+        _buf = ""
+        _buf_flushed = False
+        _live_acc = ""   # tracks post-buffer text for fallback check
 
         for chunk in response:
             if (
@@ -509,25 +543,31 @@ def chat_stream(
                 and chunk.choices[0].delta.content is not None
             ):
                 token = chunk.choices[0].delta.content
-                accumulated += token
 
-                # Check if sentinel has appeared — stop and refuse
-                if REFUSAL_SENTINEL in accumulated:
-                    sentinel_detected = True
-                    break
+                if not _buf_flushed:
+                    _buf += token
+                    if REFUSAL_SENTINEL in _buf:
+                        yield REFUSAL_MESSAGE
+                        return
+                    if len(_buf) >= _BUF_LIMIT:
+                        yield _buf
+                        _buf_flushed = True
+                        _live_acc = _buf
+                        _buf = ""
+                else:
+                    _live_acc += token
+                    # Mid-stream fallback — extremely rare but covered
+                    if REFUSAL_SENTINEL in _live_acc:
+                        yield REFUSAL_MESSAGE
+                        return
+                    yield token
 
-
-        # Mirrors Gemini's exact pattern: accumulate the entire response first,
-        # check for __REFUSED__, then yield character-by-character.
-        # This guarantees the frontend never receives partial tokens followed by a
-        # refusal bolted on at the end — either the student sees a clean answer or
-        # the clean refusal message, never both mixed together.
-        if sentinel_detected:
-            yield REFUSAL_MESSAGE
-            return
-
-        for char in accumulated:
-            yield char
+        # Flush remaining buffer (very short responses < _BUF_LIMIT)
+        if _buf:
+            if REFUSAL_SENTINEL in _buf:
+                yield REFUSAL_MESSAGE
+                return
+            yield _buf
 
     except openai.BadRequestError as e:
         # ── Azure content filter triggered (HTTP 400) ─────────────────────────
