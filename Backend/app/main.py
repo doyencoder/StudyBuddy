@@ -10,6 +10,7 @@ app = FastAPI(title="StudyBuddy API", version="1.0")
 
 # Read frontend URL from .env (optional)
 frontend_url = os.getenv("FRONTEND_URL", "").strip()
+azure_frontend_url = os.getenv("AZURE_FRONTEND_URL", "").strip()
 
 # Start with a sensible dev-origin list for common localhost usage
 # (explicit origins + a regex to cover any localhost / 127.0.0.1 port)
@@ -25,6 +26,14 @@ if frontend_url:
         # if they provided e.g. "localhost:5173", add both http/https variants
         origins.append(f"http://{frontend_url}")
         origins.append(f"https://{frontend_url}")
+
+if azure_frontend_url:
+    parsed = urlparse(azure_frontend_url)
+    if parsed.scheme:
+        origins.append(azure_frontend_url)
+    else:
+        origins.append(f"http://{azure_frontend_url}")
+        origins.append(f"https://{azure_frontend_url}")
 
 # Always allow the common local dev hosts (explicit entries)
 origins.extend(
