@@ -599,9 +599,10 @@ export function EquationsPanel({
     return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
   }, []);
 
-  // Prefetch MathQuill CDN scripts on mount so they're ready when the user
-  // navigates to Nova — avoids the "Loading…" flash on first visit.
-  useMathQuill();
+  // Keep MathQuill warm at panel level and expose readiness so the Math input
+  // can remount once loaded (same effect users currently get by toggling AI/Math).
+  const mathQuill = useMathQuill();
+  const isMathQuillReady = mathQuill !== null;
 
   React.useEffect(() => {
     if (!error) return;
@@ -878,6 +879,7 @@ export function EquationsPanel({
               // Math mode: MathQuill rich math editor
               <div className="flex-1 min-w-0 min-h-[38px] flex items-center rounded-lg border bg-background/70 border-border/60 focus-within:border-primary/50 transition-colors px-2.5 py-1.5 overflow-x-auto shadow-sm">
                 <MathQuillInput
+                  key={isMathQuillReady ? "mq-ready" : "mq-loading"}
                   onChange={(val) => setMqValue(val)}
                   onEmpty={() => setMqValue("")}
                   onSubmit={handleSubmit}

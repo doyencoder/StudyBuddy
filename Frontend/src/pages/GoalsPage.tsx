@@ -22,7 +22,6 @@ import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
 import { useUser } from "@/contexts/UserContext";
 
-const USER_ID = "student-001";
 // ── Daily goals — IST date helpers + localStorage cache ──────────────────────
 // Primary store: backend (POST /settings/daily-goals) — ensures cross-device
 // sync and IST midnight reset regardless of which timezone the browser is in.
