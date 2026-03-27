@@ -18,8 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import CelebrationOverlay, { CelebrationVariant } from "@/components/CelebrationOverlay";
-import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
+import { processSyncQueue } from "@/lib/syncQueue";
 import { useUser } from "@/contexts/UserContext";
 
 // ── Daily goals — IST date helpers + localStorage cache ──────────────────────
@@ -64,6 +64,37 @@ function saveDailyGoalsToCache(goals: DailyGoal[]) {
   localStorage.setItem(DAILY_GOALS_KEY, JSON.stringify(data));
 }
 
+function longTermGoalsCacheKey(userId: string): string {
+  return `studybuddy_longterm_goals_${userId}`;
+}
+
+function loadLongTermGoalsFromCache(userId: string): GoalItem[] {
+  try {
+    const raw = localStorage.getItem(longTermGoalsCacheKey(userId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    const todayIST = getTodayIST();
+    return parsed.filter((goal: any) => {
+      if (!goal || typeof goal !== "object") return false;
+      if (typeof goal.goal_id !== "string") return false;
+      if (!goal.end_date) return true;
+      return String(goal.end_date) >= todayIST;
+    }) as GoalItem[];
+  } catch {
+    return [];
+  }
+}
+
+function saveLongTermGoalsToCache(userId: string, goals: GoalItem[]) {
+  try {
+    localStorage.setItem(longTermGoalsCacheKey(userId), JSON.stringify(goals));
+  } catch {
+    // Best-effort persistence only
+  }
+}
+
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -102,6 +133,40 @@ interface GoalItem {
   created_at: string;
 }
 
+type GoalsTab = "daily" | "longterm";
+
+interface GoalsUIState {
+  activeTab: GoalsTab;
+  expandedGoalIds: string[];
+}
+
+function goalsUIStateKey(userId: string): string {
+  return `studybuddy_goals_ui_${userId}`;
+}
+
+function loadGoalsUIState(userId: string): GoalsUIState {
+  try {
+    const raw = localStorage.getItem(goalsUIStateKey(userId));
+    if (!raw) return { activeTab: "daily", expandedGoalIds: [] };
+    const parsed = JSON.parse(raw) as Partial<GoalsUIState>;
+    const activeTab: GoalsTab = parsed.activeTab === "longterm" ? "longterm" : "daily";
+    const expandedGoalIds = Array.isArray(parsed.expandedGoalIds)
+      ? parsed.expandedGoalIds.filter((id): id is string => typeof id === "string")
+      : [];
+    return { activeTab, expandedGoalIds };
+  } catch {
+    return { activeTab: "daily", expandedGoalIds: [] };
+  }
+}
+
+function saveGoalsUIState(userId: string, state: GoalsUIState): void {
+  try {
+    localStorage.setItem(goalsUIStateKey(userId), JSON.stringify(state));
+  } catch {
+    // Best-effort persistence only
+  }
+}
+
 // ── Helper: compute progress from completed tasks ────────────────────────────
 
 function computeProgress(
@@ -118,17 +183,19 @@ function computeProgress(
 
 const GoalCard = ({
   goal,
+  expanded,
+  onToggleExpanded,
   onDelete,
   onToggleReminder,
   onToggleTask,
 }: {
   goal: GoalItem;
+  expanded: boolean;
+  onToggleExpanded: (goalId: string) => void;
   onDelete: (goalId: string) => void;
   onToggleReminder: (goalId: string, enabled: boolean) => void;
   onToggleTask: (goalId: string, taskKey: string, done: boolean) => void;
 }) => {
-  const [expanded, setExpanded] = useState(false);
-
   const daysLeft = Math.max(
     0,
     Math.ceil(
@@ -232,7 +299,7 @@ const GoalCard = ({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setExpanded((v) => !v)}
+              onClick={() => onToggleExpanded(goal.goal_id)}
               className="w-full text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 gap-1"
             >
               {expanded ? (
@@ -310,12 +377,17 @@ const GoalsPage = () => {
   // Daily goals — initialized from local cache, then hydrated from backend
   const { currentUser } = useUser();
   const USER_ID = currentUser.id;
+  const initialUIState = loadGoalsUIState(USER_ID);
+  const [activeTab, setActiveTab] = useState<GoalsTab>(initialUIState.activeTab);
+  const [expandedGoalIds, setExpandedGoalIds] = useState<string[]>(initialUIState.expandedGoalIds);
   const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>(loadDailyGoalsFromCache);
   const [newGoal, setNewGoal] = useState("");
   const [dailyGoalsLoading, setDailyGoalsLoading] = useState(true);
 
-  // Long-term goals (from backend)
-  const [longTermGoals, setLongTermGoals] = useState<GoalItem[]>([]);
+  // Long-term goals (hydrate from cache first, then refresh from backend)
+  const [longTermGoals, setLongTermGoals] = useState<GoalItem[]>(() =>
+    loadLongTermGoalsFromCache(USER_ID)
+  );
   const [loadingGoals, setLoadingGoals] = useState(false);
 
   // Celebration overlay state
@@ -405,6 +477,7 @@ const GoalsPage = () => {
   // Fire checkin + re-hydrate from backend when coming back online
   useEffect(() => {
     const handler = async () => {
+      processSyncQueue().catch(() => {});
       setTimeout(sendCheckin, 1500);
       try {
         const resp = await fetch(`${API_BASE}/settings/daily-goals?user_id=${USER_ID}`);
@@ -419,6 +492,15 @@ const GoalsPage = () => {
     window.addEventListener("online", handler);
     return () => window.removeEventListener("online", handler);
   }, [sendCheckin]);
+
+  // If user reloads while already online, replay any pending queued goal updates.
+  useEffect(() => {
+    if (!navigator.onLine) return;
+    const timer = window.setTimeout(() => {
+      processSyncQueue().catch(() => {});
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // IST midnight reset — runs every 60 seconds, compares IST date strings
   // Fires exactly at midnight IST regardless of the browser's local timezone
@@ -441,19 +523,48 @@ const GoalsPage = () => {
     return () => clearInterval(interval);
   }, [persistDailyGoals]);
 
-  // ── Fetch long-term goals (offline-aware) ──────────────────────────────────
+  // ── Fetch long-term goals from backend (refreshes cache on success) ───────
 
   const fetchGoals = useCallback(async () => {
     setLoadingGoals(true);
     try {
-      const { data } = await offlineFetch(`${API_BASE}/goals/?user_id=${USER_ID}`);
-      setLongTermGoals(data.goals || []);
+      const resp = await fetch(`${API_BASE}/goals/?user_id=${USER_ID}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const goals: GoalItem[] = data.goals || [];
+
+      // Defensive client-side filter: hide any goal whose end_date is in the
+      // past (backend also deletes them, but this guards against stale cache)
+      const todayIST = getTodayIST();
+      const active = goals.filter((g) => !g.end_date || g.end_date >= todayIST);
+      setLongTermGoals(active);
+      saveLongTermGoalsToCache(USER_ID, active);
     } catch (err: any) {
       console.error("Failed to fetch goals:", err);
+      // Don't wipe existing goals on network error — keep whatever is displayed
     } finally {
       setLoadingGoals(false);
     }
-  }, []);
+  }, [USER_ID]);  // USER_ID is now a dep so stale closure can't occur
+
+  // Persist Goals UI state (active tab + expanded long-term cards)
+  useEffect(() => {
+    saveGoalsUIState(USER_ID, { activeTab, expandedGoalIds });
+  }, [USER_ID, activeTab, expandedGoalIds]);
+
+  // Persist long-term goals cache whenever list changes.
+  useEffect(() => {
+    saveLongTermGoalsToCache(USER_ID, longTermGoals);
+  }, [USER_ID, longTermGoals]);
+
+  // Drop expanded IDs that no longer exist in current goals list.
+  useEffect(() => {
+    setExpandedGoalIds((prev) => {
+      const validIds = new Set(longTermGoals.map((g) => g.goal_id));
+      const next = prev.filter((id) => validIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [longTermGoals]);
 
   useEffect(() => {
     fetchGoals();
@@ -565,16 +676,25 @@ const GoalsPage = () => {
     taskKey: string,
     done: boolean
   ) => {
-    // Optimistic update: toggle task, recompute progress
-    setLongTermGoals((prev) =>
-      prev.map((g) => {
+    // Optimistic update: toggle task, recompute progress, AND capture the new
+    // completed_tasks + progress for the backend call — all from the same
+    // functional update so we never read stale closure state.
+    let newCompleted: Record<string, boolean> = {};
+    let newProgress = 0;
+
+    setLongTermGoals((prev) => {
+      const next = prev.map((g) => {
         if (g.goal_id !== goalId) return g;
-        const newCompleted = { ...(g.completed_tasks || {}), [taskKey]: done };
-        if (!done) delete newCompleted[taskKey];
-        const newProgress = computeProgress(g.weekly_plan, newCompleted);
+        const updated = { ...(g.completed_tasks || {}), [taskKey]: done };
+        if (!done) delete updated[taskKey];
+        const progress = computeProgress(g.weekly_plan, updated);
+
+        // Capture for the backend call below
+        newCompleted = updated;
+        newProgress = progress;
 
         // Fire celebration exactly once when this goal first reaches 100%
-        if (newProgress === 100 && !longTermCelebFiredRef.current.has(goalId)) {
+        if (progress === 100 && !longTermCelebFiredRef.current.has(goalId)) {
           longTermCelebFiredRef.current.add(goalId);
           setTimeout(() => {
             setCelebrationVariant("long_term_goal");
@@ -582,20 +702,14 @@ const GoalsPage = () => {
           }, 350);
         }
 
-        return { ...g, completed_tasks: newCompleted, progress: newProgress };
-      })
-    );
+        return { ...g, completed_tasks: updated, progress };
+      });
+      return next;
+    });
 
-    // Sync to backend in background
-    const goal = longTermGoals.find((g) => g.goal_id === goalId);
-    if (!goal) return;
-
-    const newCompleted = { ...(goal.completed_tasks || {}), [taskKey]: done };
-    if (!done) delete newCompleted[taskKey];
-    const newProgress = computeProgress(goal.weekly_plan, newCompleted);
-
+    // Sync to backend using the values captured inside the updater above
     try {
-      await fetch(`${API_BASE}/goals/${goalId}?user_id=${USER_ID}`, {
+      const resp = await fetch(`${API_BASE}/goals/${goalId}?user_id=${USER_ID}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -603,8 +717,13 @@ const GoalsPage = () => {
           progress: newProgress,
         }),
       });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        throw new Error(errText || `HTTP ${resp.status}`);
+      }
     } catch {
-      // Offline — queue for later sync
+      // Offline or backend failed — queue for later sync
       addToSyncQueue({
         type: "goal_update",
         url: `${API_BASE}/goals/${goalId}?user_id=${USER_ID}`,
@@ -612,7 +731,14 @@ const GoalsPage = () => {
         body: JSON.stringify({ completed_tasks: newCompleted, progress: newProgress }),
         createdAt: new Date().toISOString(),
       }).catch(() => {});
+      toast.info("Task saved locally and queued to sync.");
     }
+  };
+
+  const toggleExpandedGoal = (goalId: string) => {
+    setExpandedGoalIds((prev) =>
+      prev.includes(goalId) ? prev.filter((id) => id !== goalId) : [...prev, goalId]
+    );
   };
 
   // ── Manual goal creation ──────────────────────────────────────────────────
@@ -724,7 +850,7 @@ const GoalsPage = () => {
         </p>
       </div>
 
-      <Tabs defaultValue="daily">
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as GoalsTab)}>
         <TabsList className="bg-secondary border border-border">
           <TabsTrigger
             value="daily"
@@ -879,6 +1005,8 @@ const GoalsPage = () => {
               <GoalCard
                 key={goal.goal_id}
                 goal={goal}
+                expanded={expandedGoalIds.includes(goal.goal_id)}
+                onToggleExpanded={toggleExpandedGoal}
                 onDelete={handleDeleteGoal}
                 onToggleReminder={handleToggleReminder}
                 onToggleTask={handleToggleTask}

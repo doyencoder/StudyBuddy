@@ -79,8 +79,15 @@ async def create_goal(
 
 async def list_goals(user_id: str) -> List[Dict[str, Any]]:
     """
-    Returns all goals for a given user, sorted by end_date ascending (nearest first).
+    Returns all ACTIVE goals for a given user (end_date >= today IST),
+    sorted by end_date ascending (nearest first).
+
+    Goals whose end_date has already passed are permanently deleted from
+    Cosmos DB at query time so they never appear again.
     """
+    from datetime import timedelta
+    today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(GOALS_CONTAINER)
@@ -91,14 +98,30 @@ async def list_goals(user_id: str) -> List[Dict[str, Any]]:
         )
         parameters = [{"name": "@user_id", "value": user_id}]
 
-        results = []
+        all_goals = []
         async for item in container.query_items(
             query=query,
             parameters=parameters,
         ):
-            results.append(item)
+            all_goals.append(item)
 
-        return results
+        active_goals = []
+        for goal in all_goals:
+            end_date = goal.get("end_date", "")
+            if end_date and end_date < today_ist:
+                # Expired — delete permanently from Cosmos DB
+                try:
+                    await container.delete_item(
+                        item=goal["id"],
+                        partition_key=user_id,
+                    )
+                    print(f"[goals_service] Auto-deleted expired goal '{goal.get('title')}' (end_date={end_date})")
+                except Exception as e:
+                    print(f"[goals_service] Failed to delete expired goal {goal['id']}: {e}")
+            else:
+                active_goals.append(goal)
+
+        return active_goals
 
 
 async def get_goal(goal_id: str, user_id: str) -> Dict[str, Any]:
@@ -131,7 +154,7 @@ async def update_goal(
             if key in updates and updates[key] is not None:
                 item[key] = updates[key]
 
-        await container.replace_item(item=goal_id, body=item, partition_key=user_id)
+        await container.replace_item(item=goal_id, body=item)
         return item
 
 
