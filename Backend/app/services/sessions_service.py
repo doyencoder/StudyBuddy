@@ -23,6 +23,16 @@ load_dotenv()
 DB_NAME         = os.getenv("AZURE_COSMOS_DB_NAME", "studybuddy")
 SESSIONS_CONTAINER = "sessions"
 
+# ── IST helpers (matching coins_service for streak consistency) ───────────────
+_IST_OFFSET = timedelta(hours=5, minutes=30)
+
+def _today_ist() -> str:
+    """Return today's date string in IST (YYYY-MM-DD)."""
+    return (datetime.now(timezone.utc) + _IST_OFFSET).strftime("%Y-%m-%d")
+
+def _ist_date_n_days_ago(n: int) -> str:
+    return (datetime.now(timezone.utc) + _IST_OFFSET - timedelta(days=n)).strftime("%Y-%m-%d")
+
 
 class _CosmosWrapper:
     __slots__ = ("_client",)
@@ -62,10 +72,10 @@ async def ensure_sessions_container():
 
 async def record_heartbeat(user_id: str) -> int:
     """
-    Increments today's minute counter for the user by 1.
+    Increments today's minute counter for the user by 1 (IST date).
     Returns the new total minutes for today.
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = _today_ist()
     doc_id = f"{user_id}_{today}"
 
     async with _get_client() as client:
@@ -92,10 +102,12 @@ async def record_heartbeat(user_id: str) -> int:
 async def get_weekly_minutes(user_id: str) -> dict:
     """
     Returns total study minutes and a per-day breakdown for the last 7 days.
+    All dates are in IST.
     """
-    today = datetime.now(timezone.utc)
-    # Build the list of last 7 days as strings
-    days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+    # Build the last 7 days in IST
+    days = [_ist_date_n_days_ago(i) for i in range(6, -1, -1)]
+    today_ist = _today_ist()
+    yesterday_ist = _ist_date_n_days_ago(1)
 
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
@@ -117,19 +129,17 @@ async def get_weekly_minutes(user_id: str) -> dict:
             minutes_by_day[day] = mins
             daily.append({"date": day, "minutes": mins})
 
-        anchor_day = None
-        today_key = today.strftime("%Y-%m-%d")
-        yesterday_key = (today - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        if minutes_by_day.get(today_key, 0) > 0:
-            anchor_day = today
-        elif minutes_by_day.get(yesterday_key, 0) > 0:
-            anchor_day = today - timedelta(days=1)
+        anchor_day_str = None
+        if minutes_by_day.get(today_ist, 0) > 0:
+            anchor_day_str = today_ist
+        elif minutes_by_day.get(yesterday_ist, 0) > 0:
+            anchor_day_str = yesterday_ist
 
         study_streak = 0
-        if anchor_day is not None:
+        if anchor_day_str is not None:
+            anchor_dt = datetime.strptime(anchor_day_str, "%Y-%m-%d")
             for offset in range(365):
-                day = (anchor_day - timedelta(days=offset)).strftime("%Y-%m-%d")
+                day = (anchor_dt - timedelta(days=offset)).strftime("%Y-%m-%d")
                 doc_id = f"{user_id}_{day}"
 
                 if day in minutes_by_day:

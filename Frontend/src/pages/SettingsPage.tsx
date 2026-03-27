@@ -385,20 +385,9 @@ const SettingsPage = () => {
   // ── Plan Upgrade ─────────────────────────────────────────────────────────
 
   const handleUpgrade = async (planId: string) => {
-    try {
-      const res = await fetch(`${API_BASE}/settings/billing/upgrade?user_id=${USER_ID}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan_id: planId }),
-      });
-      if (res.ok) {
-        
-        setShowPlansDialog(false);
-        await fetchBilling();
-      }
-    } catch {
-
-    }
+    const selectedPlan = billingPlans.find((plan) => plan.id === planId);
+    const planName = selectedPlan?.name ?? "This";
+    toast.info(`${planName} plan upgrade is coming soon.`);
   };
 
   // ── Copy Org ID ──────────────────────────────────────────────────────────

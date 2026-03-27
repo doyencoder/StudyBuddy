@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { X, Flame, Gift, Sparkles, TrendingUp } from "lucide-react";
 import { useCoins } from "@/contexts/CoinContext";
+import { toast } from "sonner";
 
 const CoinSVG = ({ size = 40, className = "" }: { size?: number; className?: string }) => (
   <svg width={size} height={size} viewBox="0 0 40 40" className={className}>
@@ -44,8 +45,16 @@ export const DailyLoginReward = () => {
             setReward(r);
             setVisible(true);
           }
+          // r === null means already claimed today — no popup needed, that's fine
         })
-        .catch(() => {});
+        .catch((err) => {
+          // Surface the error so the user knows coins weren't awarded
+          console.error("[DailyLoginReward] claim failed:", err);
+          toast.error("Couldn't award daily coins — please try refreshing.", {
+            description: "Your streak and balance will update once the connection is restored.",
+            duration: 6000,
+          });
+        });
     }, 800);
 
     return () => clearTimeout(t);

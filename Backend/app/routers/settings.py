@@ -371,3 +371,43 @@ async def dismiss_weak_topic(
     except Exception as e:
         print(f"[settings/dismissed-weak-topics/post] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ── Daily Goals (backend-stored, IST date boundary) ───────────────────────────
+
+class DailyGoal(BaseModel):
+    id: str
+    text: str
+    completed: bool
+
+class SaveDailyGoalsRequest(BaseModel):
+    user_id: str
+    goals: list[DailyGoal]
+
+@router.get("/daily-goals")
+async def get_daily_goals_endpoint(user_id: str = Query(...)):
+    """
+    Returns the user's daily goals for today in IST.
+    If stored goals are from a previous day, returns an empty list automatically.
+    """
+    try:
+        from app.services.settings_service import get_daily_goals
+        return await get_daily_goals(user_id)
+    except Exception as e:
+        print(f"[settings/daily-goals/get] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/daily-goals")
+async def save_daily_goals_endpoint(request: SaveDailyGoalsRequest):
+    """
+    Saves the user's current daily goals to Cosmos DB with today's IST date stamp.
+    Call this whenever goals are created, updated, toggled, or deleted.
+    """
+    try:
+        from app.services.settings_service import save_daily_goals
+        goals_dicts = [g.model_dump() for g in request.goals]
+        await save_daily_goals(request.user_id, goals_dicts)
+        return {"status": "ok", "count": len(goals_dicts)}
+    except Exception as e:
+        print(f"[settings/daily-goals/post] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -61,7 +61,8 @@ def get_scheduler():
 async def send_daily_reminders():
     """Runs at 9 PM IST. Sends goal reminder + streak alert emails."""
     print("[notifications] Running daily reminder job...")
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    from datetime import timedelta
+    today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
 
     try:
         users = await get_all_users_for_notifications()
@@ -95,7 +96,7 @@ async def send_daily_reminders():
         # ── Study streak alert ───────────────────────────────────────────────
         if notifs.get("study_streak_alerts", False):
             last_active = user.get("last_active_date", "")
-            if last_active != today:
+            if last_active != today_ist:    # both now IST — consistent comparison
                 try:
                     send_streak_alert(to_email=email, display_name=display_name)
                 except Exception as e:

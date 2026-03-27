@@ -568,7 +568,6 @@ const DashboardPage = () => {
   const [displayName, setDisplayName]       = useState("");
   const [dismissedTopics, setDismissedTopics] = useState<string[]>([]);
   const [weeklyMinutes, setWeeklyMinutes] = useState<number | null>(null);
-  const [studyStreak, setStudyStreak] = useState(0);
   const { coinState } = useCoins();
   const navigate = useNavigate();
 
@@ -618,7 +617,6 @@ const DashboardPage = () => {
       .then(({ data: d }) => {
         if (!d) return;
         setWeeklyMinutes(d.total_minutes);
-        setStudyStreak(typeof d.study_streak === "number" ? d.study_streak : 0);
       })
       .catch(() => {});
   }, []);
@@ -790,17 +788,7 @@ const DashboardPage = () => {
       index: 3,
       onClick: () => navigate("/store?tab=earn"),
     },
-    {
-      label: "Study Streak",
-      value: studyStreak.toString(),
-      suffix: studyStreak !== 1 ? "days" : "day",
-      change: studyStreak >= 7 ? "Personal best!" : studyStreak > 0 ? "Keep it up!" : "Study today to begin",
-      trend: studyStreak > 0 ? "up" : "neutral",
-      icon: Clock,
-      index: 4,
-      onClick: () => navigate("/quizzes"),
-    },
-  ], [totalQuizzes, avgScore, uniqueTopics, dailyStreak, studyStreak, thisWeekCount, scoreChangeText, navigate]);
+  ], [totalQuizzes, avgScore, uniqueTopics, dailyStreak, thisWeekCount, scoreChangeText, navigate]);
 
   const scoreData = useMemo(() =>
     [...submittedQuizzes].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).slice(-15)
@@ -1086,7 +1074,7 @@ if (loading) {
         </AnimatedWrapper>
 
         {/* Stat Cards */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {statsCards.map(s => <StatCard key={s.label} {...s} />)}
         </section>
 

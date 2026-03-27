@@ -22,32 +22,36 @@ import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
 import { useUser } from "@/contexts/UserContext";
 
-
-// ── Daily goals localStorage helpers ─────────────────────────────────────────
+const USER_ID = "student-001";
+// ── Daily goals — IST date helpers + localStorage cache ──────────────────────
+// Primary store: backend (POST /settings/daily-goals) — ensures cross-device
+// sync and IST midnight reset regardless of which timezone the browser is in.
+// LocalStorage is used as a fast read-cache only; the backend is always the
+// source of truth for the IST date boundary.
 
 const DAILY_GOALS_KEY = "studybuddy_daily_goals";
 
 interface StoredDailyGoals {
-  date: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD in IST
   goals: DailyGoal[];
 }
 
-function getTodayStr(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+/** Returns today's date string in IST (YYYY-MM-DD), regardless of browser tz. */
+function getTodayIST(): string {
+  const now = new Date();
+  // Add IST offset (+5:30) to UTC, then slice the date portion
+  const istMs = now.getTime() + 5.5 * 60 * 60 * 1000;
+  return new Date(istMs).toISOString().slice(0, 10);
 }
 
-function loadDailyGoals(): DailyGoal[] {
+function loadDailyGoalsFromCache(): DailyGoal[] {
   try {
     const raw = localStorage.getItem(DAILY_GOALS_KEY);
     if (!raw) return [];
     const stored: StoredDailyGoals = JSON.parse(raw);
-    if (stored.date !== getTodayStr()) {
-      // New day → clear all goals (fresh start)
-      saveDailyGoals([]);
+    // Only use cache if the stored IST date matches today's IST date
+    if (stored.date !== getTodayIST()) {
+      localStorage.removeItem(DAILY_GOALS_KEY);
       return [];
     }
     return stored.goals;
@@ -56,8 +60,8 @@ function loadDailyGoals(): DailyGoal[] {
   }
 }
 
-function saveDailyGoals(goals: DailyGoal[]) {
-  const data: StoredDailyGoals = { date: getTodayStr(), goals };
+function saveDailyGoalsToCache(goals: DailyGoal[]) {
+  const data: StoredDailyGoals = { date: getTodayIST(), goals };
   localStorage.setItem(DAILY_GOALS_KEY, JSON.stringify(data));
 }
 
@@ -304,11 +308,12 @@ const GoalCard = ({
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 const GoalsPage = () => {
-  // Daily goals (localStorage-backed)
+  // Daily goals — initialized from local cache, then hydrated from backend
   const { currentUser } = useUser();
   const USER_ID = currentUser.id;
-  const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>(loadDailyGoals);
+  const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>(loadDailyGoalsFromCache);
   const [newGoal, setNewGoal] = useState("");
+  const [dailyGoalsLoading, setDailyGoalsLoading] = useState(true);
 
   // Long-term goals (from backend)
   const [longTermGoals, setLongTermGoals] = useState<GoalItem[]>([]);
@@ -323,20 +328,61 @@ const GoalsPage = () => {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createForm, setCreateForm] = useState({
     title: "",
-    start_date: getTodayStr(),
+    start_date: getTodayIST(),
     end_date: "",
     numWeeks: 1,
-    weeklyTasks: [[""]] as string[][],  // array of weeks, each an array of task strings
+    weeklyTasks: [[""]] as string[][],
   });
   const [isCreating, setIsCreating] = useState(false);
 
-  // Persist daily goals to localStorage whenever they change
+  // ── Backend daily goals sync ───────────────────────────────────────────────
+
+  /** Persist goals to backend + update local cache. */
+  const persistDailyGoals = useCallback(async (goals: DailyGoal[]) => {
+    saveDailyGoalsToCache(goals);
+    if (!navigator.onLine) return;
+    try {
+      await fetch(`${API_BASE}/settings/daily-goals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: USER_ID, goals }),
+      });
+    } catch {
+      // Non-fatal: cache is already updated; will reconcile on next load
+    }
+  }, []);
+
+  /** On mount: fetch today's goals from backend (IST date aware). */
   useEffect(() => {
-    saveDailyGoals(dailyGoals);
-  }, [dailyGoals]);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/settings/daily-goals?user_id=${USER_ID}`);
+        if (!resp.ok) throw new Error("fetch failed");
+        const data: { date: string; goals: DailyGoal[] } = await resp.json();
+        if (cancelled) return;
+
+        const todayIST = getTodayIST();
+        if (data.date === todayIST) {
+          setDailyGoals(data.goals);
+          saveDailyGoalsToCache(data.goals);
+        } else {
+          // Backend returned stale date — new IST day, start fresh
+          setDailyGoals([]);
+          saveDailyGoalsToCache([]);
+          await persistDailyGoals([]);
+        }
+      } catch {
+        // Offline or backend error — keep local cache
+      } finally {
+        if (!cancelled) setDailyGoalsLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [persistDailyGoals]);
 
   // Send checkin to backend (for 9 PM notification scheduler)
-  // Fires: on mount, on goal change, and when coming back online
   const sendCheckin = useCallback(() => {
     if (!navigator.onLine) return;
     const total = dailyGoals.length;
@@ -357,35 +403,44 @@ const GoalsPage = () => {
     return () => clearTimeout(t);
   }, [sendCheckin]);
 
-  // Fire checkin when coming back online
+  // Fire checkin + re-hydrate from backend when coming back online
   useEffect(() => {
-    const handler = () => setTimeout(sendCheckin, 1500);
+    const handler = async () => {
+      setTimeout(sendCheckin, 1500);
+      try {
+        const resp = await fetch(`${API_BASE}/settings/daily-goals?user_id=${USER_ID}`);
+        if (!resp.ok) return;
+        const data: { date: string; goals: DailyGoal[] } = await resp.json();
+        if (data.date === getTodayIST()) {
+          setDailyGoals(data.goals);
+          saveDailyGoalsToCache(data.goals);
+        }
+      } catch { /* ignore */ }
+    };
     window.addEventListener("online", handler);
     return () => window.removeEventListener("online", handler);
   }, [sendCheckin]);
 
-  // Midnight reset check — runs every minute
-  // At midnight: all previous day's goals are cleared (empty slate for the new day)
+  // IST midnight reset — runs every 60 seconds, compares IST date strings
+  // Fires exactly at midnight IST regardless of the browser's local timezone
   useEffect(() => {
-    const interval = setInterval(() => {
-      const stored = localStorage.getItem(DAILY_GOALS_KEY);
-      if (stored) {
+    const interval = setInterval(async () => {
+      const todayIST = getTodayIST();
+      const cached = localStorage.getItem(DAILY_GOALS_KEY);
+      if (cached) {
         try {
-          const data: StoredDailyGoals = JSON.parse(stored);
-          if (data.date !== getTodayStr()) {
-            // New day — wipe the list entirely so the user starts fresh
-            const empty: DailyGoal[] = [];
-            saveDailyGoals(empty);
-            setDailyGoals(empty);
+          const data: StoredDailyGoals = JSON.parse(cached);
+          if (data.date !== todayIST) {
+            setDailyGoals([]);
+            saveDailyGoalsToCache([]);
+            await persistDailyGoals([]);
             toast.info("It's a new day! Your daily goals have been cleared. Add new ones for today.");
           }
-        } catch {
-          /* ignore */
-        }
+        } catch { /* ignore */ }
       }
     }, 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [persistDailyGoals]);
 
   // ── Fetch long-term goals (offline-aware) ──────────────────────────────────
 
@@ -419,22 +474,28 @@ const GoalsPage = () => {
           setShowCelebration(true);
         }, 350);
       }
+      // Persist to backend (fire-and-forget, non-blocking)
+      persistDailyGoals(updated).catch(() => {});
       return updated;
     });
   };
 
   const addDailyGoal = () => {
     if (!newGoal.trim()) return;
-    setDailyGoals((prev) => [
-      ...prev,
+    const updated = [
+      ...dailyGoals,
       { id: Date.now().toString(), text: newGoal, completed: false },
-    ]);
+    ];
+    setDailyGoals(updated);
+    persistDailyGoals(updated).catch(() => {});
     setNewGoal("");
     toast.success("Goal added!");
   };
 
   const deleteDailyGoal = (id: string) => {
-    setDailyGoals((prev) => prev.filter((g) => g.id !== id));
+    const updated = dailyGoals.filter((g) => g.id !== id);
+    setDailyGoals(updated);
+    persistDailyGoals(updated).catch(() => {});
   };
 
   // ── Long-term goal handlers (optimistic UI) ──────────────────────────────
@@ -616,7 +677,7 @@ const GoalsPage = () => {
         };
         setLongTermGoals((prev) => [...prev, tempGoal]);
         setShowCreateDialog(false);
-        setCreateForm({ title: "", start_date: getTodayStr(), end_date: "", numWeeks: 1, weeklyTasks: [[""]] });
+        setCreateForm({ title: "", start_date: getTodayIST(), end_date: "", numWeeks: 1, weeklyTasks: [[""]] });
         toast.success("📡 Goal queued — will be created when you're back online");
         return;
       }
@@ -633,7 +694,7 @@ const GoalsPage = () => {
       setShowCreateDialog(false);
       setCreateForm({
         title: "",
-        start_date: getTodayStr(),
+        start_date: getTodayIST(),
         end_date: "",
         numWeeks: 1,
         weeklyTasks: [[""]],

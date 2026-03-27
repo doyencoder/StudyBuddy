@@ -9,7 +9,6 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from azure.core import MatchConditions
 from azure.cosmos import PartitionKey
 from azure.cosmos.aio import CosmosClient
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
@@ -342,7 +341,6 @@ async def bootstrap_coin_state(
                 await container.replace_item(
                     item=existing["id"],
                     body=migrated,
-                    partition_key=user_id,
                 )
                 return _public_coin_state(migrated)
 
@@ -400,9 +398,6 @@ async def _mutate_coin_state(
                     await container.replace_item(
                         item=current["id"],
                         body=working,
-                        partition_key=user_id,
-                        etag=current.get("_etag"),
-                        match_condition=MatchConditions.IfNotModified,
                     )
                 return _public_coin_state(working), payload
             except Exception as exc:
@@ -477,7 +472,20 @@ async def claim_daily_login(user_id: str) -> Tuple[Dict[str, Any], Optional[Dict
             "streak_milestone": streak_milestone,
         }
 
-    return await _mutate_coin_state(user_id, mutator)
+    coin_state, reward = await _mutate_coin_state(user_id, mutator)
+
+    # ── Keep study_streak in sync with login_streak ───────────────────────────
+    # If a reward was given (first login of this IST day), ensure the sessions
+    # container also has a record for today so the dashboard study_streak matches.
+    if reward is not None:
+        try:
+            from app.services.sessions_service import record_heartbeat
+            await record_heartbeat(user_id)
+        except Exception as e:
+            # Non-fatal — streak will catch up on next heartbeat
+            print(f"[coins] Session heartbeat on daily login failed (non-fatal): {e}")
+
+    return coin_state, reward
 
 
 async def complete_mission(user_id: str, mission_id: str) -> Tuple[Dict[str, Any], int]:

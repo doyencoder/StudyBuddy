@@ -255,8 +255,9 @@ async def update_plan(user_id: str, plan_id: str) -> Dict[str, Any]:
         return item
 
 async def record_checkin(user_id: str, daily_goals_total: int, daily_goals_done: int) -> None:
-    """Record that a user is active today and their daily goal completion status."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Record that a user is active today (IST) and their daily goal completion status."""
+    from datetime import timedelta
+    today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     async with _get_client() as client:
         db = client.get_database_client(DB_NAME)
         container = db.get_container_client(SETTINGS_CONTAINER)
@@ -270,9 +271,63 @@ async def record_checkin(user_id: str, daily_goals_total: int, daily_goals_done:
                 "connectors": [c.copy() for c in DEFAULT_CONNECTORS],
                 "current_plan": "free",
             }
-        item["last_active_date"] = today
+        item["last_active_date"] = today_ist          # IST date (was UTC — fixed)
         item["daily_goals_total"] = daily_goals_total
         item["daily_goals_done"] = daily_goals_done
+        item["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await container.upsert_item(body=item)
+
+
+# ── Daily Goals (backend-stored, IST date boundary) ───────────────────────────
+
+async def get_daily_goals(user_id: str) -> Dict[str, Any]:
+    """
+    Returns the user's daily goals for today (IST).
+    If the stored goals are from a previous IST day, returns an empty list
+    (the frontend should then persist [] back so the old goals are erased).
+    """
+    from datetime import timedelta
+    today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(SETTINGS_CONTAINER)
+        try:
+            item = await container.read_item(item=user_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            return {"date": today_ist, "goals": []}
+
+        stored_date = item.get("daily_goals_date", "")
+        stored_goals = item.get("daily_goals_list", [])
+
+        if stored_date != today_ist:
+            # New IST day — return empty (stale goals from yesterday)
+            return {"date": today_ist, "goals": []}
+
+        return {"date": today_ist, "goals": stored_goals}
+
+
+async def save_daily_goals(user_id: str, goals: list) -> None:
+    """
+    Persists the user's daily goals for today (IST date stamped).
+    Creates the settings doc if it doesn't exist.
+    """
+    from datetime import timedelta
+    today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(SETTINGS_CONTAINER)
+        try:
+            item = await container.read_item(item=user_id, partition_key=user_id)
+        except CosmosResourceNotFoundError:
+            item = {
+                "id": user_id,
+                "user_id": user_id,
+                **copy.deepcopy(DEFAULT_SETTINGS),
+                "connectors": [c.copy() for c in DEFAULT_CONNECTORS],
+                "current_plan": "free",
+            }
+        item["daily_goals_date"] = today_ist
+        item["daily_goals_list"] = goals
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         await container.upsert_item(body=item)
 
