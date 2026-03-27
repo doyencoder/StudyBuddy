@@ -328,31 +328,72 @@ function latexToMathjs(latex: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// useMathQuill — loads jQuery (CDN) then MathQuill (npm package via Vite)
-// Both are loaded once and cached. Returns MQ interface or null while loading.
+// useMathQuill — loads jQuery then MathQuill (npm package via Vite)
+// Both are loaded once and cached. Exposes explicit load status.
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _mqPromise: Promise<MQStatic> | null = null;
+const _scriptPromises = new Map<string, Promise<void>>();
 
-function loadScript(src: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${src}"]`);
-    if (existing) { resolve(); return; }
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload  = () => resolve();
-    s.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(s);
-  });
+function getJQueryMajorVersion(): number | null {
+  const version = (window as any).jQuery?.fn?.jquery as string | undefined;
+  if (!version) return null;
+  const major = Number.parseInt(version.split(".")[0], 10);
+  return Number.isFinite(major) ? major : null;
 }
 
-function useMathQuill(): MQStatic | null {
+function loadScript(src: string): Promise<void> {
+  const cached = _scriptPromises.get(src);
+  if (cached) return cached;
+
+  const promise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      if (existing.dataset.loaded === "true") {
+        resolve();
+        return;
+      }
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => {
+        _scriptPromises.delete(src);
+        reject(new Error(`Failed to load ${src}`));
+      }, { once: true });
+      return;
+    }
+
+    const s = document.createElement("script");
+    s.src = src;
+    s.async = true;
+    s.onload = () => {
+      s.dataset.loaded = "true";
+      resolve();
+    };
+    s.onerror = () => {
+      _scriptPromises.delete(src);
+      reject(new Error(`Failed to load ${src}`));
+    };
+    document.head.appendChild(s);
+  });
+
+  _scriptPromises.set(src, promise);
+  return promise;
+}
+
+function useMathQuill(): { mq: MQStatic | null; status: "loading" | "ready" | "error" } {
   const [mq, setMq] = React.useState<MQStatic | null>(() =>
-    window.MathQuill ? window.MathQuill.getInterface(2) : null
+    window.MathQuill ? window.MathQuill.getInterface(2) : null,
+  );
+  const [status, setStatus] = React.useState<"loading" | "ready" | "error">(
+    window.MathQuill ? "ready" : "loading",
   );
 
   React.useEffect(() => {
-    if (mq) return;
+    if (mq) {
+      setStatus("ready");
+      return;
+    }
+    setStatus("loading");
+
     if (!_mqPromise) {
       _mqPromise = (async () => {
         // Prefer local bundled dependencies so Math mode works even when CDN is blocked.
@@ -362,6 +403,13 @@ function useMathQuill(): MQStatic | null {
             const jq = (jqueryModule as any).default ?? jqueryModule;
             (window as any).jQuery = jq;
             (window as any).$ = jq;
+
+            // MathQuill is not compatible with jQuery 4.x.
+            const jqMajor = getJQueryMajorVersion();
+            if (jqMajor !== null && jqMajor >= 4) {
+              throw new Error("Incompatible jQuery major version");
+            }
+
             await import("mathquill/build/mathquill.js");
           }
 
@@ -372,7 +420,10 @@ function useMathQuill(): MQStatic | null {
           // Fall back to CDN loading if local bundling fails for any reason.
         }
 
-        if (!(window as any).jQuery) {
+        const jqMajor = getJQueryMajorVersion();
+        if (jqMajor === null || jqMajor >= 4) {
+          (window as any).jQuery = undefined;
+          (window as any).$ = undefined;
           await loadScript(
             "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
           );
@@ -386,10 +437,18 @@ function useMathQuill(): MQStatic | null {
         return window.MathQuill.getInterface(2);
       })();
     }
-    _mqPromise.then(setMq).catch(() => { _mqPromise = null; });
+    _mqPromise
+      .then((loadedMq) => {
+        setMq(loadedMq);
+        setStatus("ready");
+      })
+      .catch(() => {
+        _mqPromise = null;
+        setStatus("error");
+      });
   }, [mq]);
 
-  return mq;
+  return { mq, status };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -413,7 +472,7 @@ interface MathQuillInputProps {
 function MathQuillInput({
   onSubmit, onChange, onEmpty, placeholder, disabled, className, initialLatex, autoFocus,
 }: MathQuillInputProps) {
-  const mq        = useMathQuill();
+  const { mq, status } = useMathQuill();
   const spanRef   = React.useRef<HTMLSpanElement>(null);
   const mqRef     = React.useRef<MQMathField | null>(null);
   const lastVal   = React.useRef("");
@@ -483,31 +542,20 @@ function MathQuillInput({
     };
   }, [mq]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // If MQ hasn't loaded yet (CDN offline or first load), show a working plain input
+  // Never silently degrade to plain input in Math mode.
   if (!mq) {
     return (
-      <input
-        value={fallbackValue}
-        onChange={(event) => {
-          const next = event.target.value;
-          setFallbackValue(next);
-          lastVal.current = next;
-          onChangeRef.current(next);
-          if (!next.trim()) onEmptyRef.current?.();
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          submitFallback();
-        }}
-        placeholder={placeholder}
-        disabled={disabled}
-        spellCheck={false}
+      <div
         className={cn(
-          "flex-1 min-w-0 bg-transparent text-xs font-mono text-foreground outline-none placeholder:text-muted-foreground/60",
+          "flex-1 min-w-0 text-[11px] text-muted-foreground/90",
           className,
         )}
-      />
+        aria-live="polite"
+      >
+        {status === "error"
+          ? "Math editor unavailable. Refresh to retry."
+          : (placeholder ? `Loading math editor (${placeholder})...` : "Loading math editor...")}
+      </div>
     );
   }
 
@@ -601,8 +649,8 @@ export function EquationsPanel({
 
   // Keep MathQuill warm at panel level and expose readiness so the Math input
   // can remount once loaded (same effect users currently get by toggling AI/Math).
-  const mathQuill = useMathQuill();
-  const isMathQuillReady = mathQuill !== null;
+  const { status: mathQuillStatus } = useMathQuill();
+  const isMathQuillReady = mathQuillStatus === "ready";
 
   React.useEffect(() => {
     if (!error) return;

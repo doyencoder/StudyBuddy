@@ -129,7 +129,7 @@ const StorePage = () => {
   );
 };
 
-// ── Redeem — all items Coming Soon ──────────────────────────────────────────
+// ── Redeem ──────────────────────────────────────────────────────────────────
 const RedeemSection = ({ coinState }: { coinState: CoinState }) => {
   const cats = [
     { key: "boost", label: "Study Boosts", desc: "Enhance your learning experience" },
@@ -148,11 +148,9 @@ const RedeemSection = ({ coinState }: { coinState: CoinState }) => {
                   <div className={`h-28 bg-gradient-to-br ${item.gradient} flex items-center justify-center relative`}>
                     <div className="text-primary/60 group-hover:scale-110 transition-transform">{getIcon(item.iconKey)}</div>
                     {item.limited && <Badge className="absolute top-2 right-2 bg-primary/80 text-primary-foreground text-[10px] px-1.5 py-0.5 border-0">Limited</Badge>}
-                    {/* Coming soon overlay */}
                     <div className="absolute inset-0 bg-card/60 backdrop-blur-[1px] flex items-center justify-center">
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/15 border border-primary/25">
+                      <div className="flex items-center justify-center w-8 h-8 rounded-full bg-primary/15 border border-primary/25">
                         <Lock className="w-3.5 h-3.5 text-primary" />
-                        <span className="text-xs font-semibold text-primary">Coming Soon</span>
                       </div>
                     </div>
                   </div>
@@ -160,7 +158,7 @@ const RedeemSection = ({ coinState }: { coinState: CoinState }) => {
                     <div><h3 className="font-semibold text-sm text-foreground">{item.name}</h3><p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{item.description}</p></div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5"><CoinIcon size={18} /><span className="font-bold text-sm text-primary">{item.cost.toLocaleString()}</span></div>
-                      <Button size="sm" disabled className="text-xs h-8 bg-secondary text-muted-foreground">Coming Soon</Button>
+                      <Button size="sm" disabled className="text-xs h-8 bg-secondary text-muted-foreground">Locked</Button>
                     </div>
                   </CardContent>
                 </Card>
