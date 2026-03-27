@@ -176,6 +176,7 @@ interface Message {
   role: "user" | "assistant" | "quiz" | "diagram" | "study_plan" | "image";
   attachments?: { name: string; blobUrl: string; fileType: "image" | "pdf" | "document" }[];
   intentHint?: string;
+  retakeOfQuizId?: string;
   content: string;
   quizData?: QuizData;
   quizVersions?: QuizData[];    // all attempts including original — for version navigator
@@ -2729,6 +2730,32 @@ const ChatPage = () => {
             };
           }
 
+          if (parsed?.__type === "regen_text_answer") {
+            const rawContent = parsed.content ?? "";
+            const isRefusalAnswer = isSafetyRefusalText(rawContent);
+            const regenVersions = Array.isArray(parsed.regen_versions)
+              ? parsed.regen_versions
+                  .map((v: any) => ({
+                    content: typeof v?.content === "string" ? v.content : "",
+                  }))
+                  .filter((v: any) => typeof v.content === "string" && v.content.length > 0)
+              : undefined;
+            const activeRegenVersionIdx =
+              typeof parsed.active_regen_version_idx === "number" && regenVersions && regenVersions.length > 0
+                ? Math.max(0, Math.min(parsed.active_regen_version_idx, regenVersions.length - 1))
+                : regenVersions && regenVersions.length > 0
+                  ? regenVersions.length - 1
+                  : undefined;
+            return {
+              id: m.id,
+              role: "assistant" as const,
+              content: isRefusalAnswer ? rawContent.replace(/^__REFUSED__\s*/i, "") : rawContent,
+              regenVersions,
+              activeRegenVersionIdx,
+              timestamp: new Date(m.timestamp),
+            };
+          }
+
           // Detect user messages with attachments and/or intent chip
           if (
             m.role === "user" &&
@@ -2748,6 +2775,7 @@ const ChatPage = () => {
                   role: "user" as const,
                   content: parsed.text ?? "",
                   intentHint: parsed.intent_hint ?? undefined,
+                  retakeOfQuizId: parsed.retake_of_quiz_id ?? undefined,
                   attachments: (parsed.attachments ?? []).map((a: any) => ({
                     name: a.name,
                     // Prefer blob_name (host-agnostic) → rebuild proxy URL with current API_BASE
@@ -2775,27 +2803,67 @@ const ChatPage = () => {
         });
 
         // ── Post-process: merge retake quiz messages into their parent's quizVersions ──
-        // The backend saves a "Generate a fresh quiz on: <topic>" user message + quiz
-        // assistant message for every retake. On reload we collapse those back into a
-        // single card with a version navigator instead of separate cards.
+        // Newer retakes carry an explicit retakeOfQuizId marker. Older history may still
+        // use the legacy "Generate a fresh quiz on: <topic>" prefix, so keep a tight
+        // fallback heuristic for backward compatibility on reload/offline restore.
         const RETAKE_PREFIX = "Generate a fresh quiz on:";
+        const normalizeQuizKey = (value?: string | null) =>
+          (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+        const getQuizConfig = (quiz?: QuizData) => ({
+          topic: normalizeQuizKey(quiz?.topic),
+          numQuestions: quiz?.num_questions ?? quiz?.questions.length ?? 0,
+          timerSeconds: quiz?.timer_seconds ?? null,
+        });
+        const findRetakeParentIndex = (nextQuiz: QuizData, marker?: string) => {
+          const nextConfig = getQuizConfig(nextQuiz);
+          for (let j = mergedMessages.length - 1; j >= 0; j--) {
+            const candidate = mergedMessages[j];
+            if (candidate.role !== "quiz") continue;
+            const versions: QuizData[] = candidate.quizVersions ?? (candidate.quizData ? [candidate.quizData] : []);
+            if (versions.length === 0) continue;
+
+            if (marker && versions.some((v) => v.quiz_id === marker)) {
+              return j;
+            }
+
+            if (!marker) {
+              const hasMatchingConfig = versions.some((v) => {
+                const cfg = getQuizConfig(v);
+                return (
+                  cfg.topic === nextConfig.topic &&
+                  cfg.numQuestions === nextConfig.numQuestions &&
+                  cfg.timerSeconds === nextConfig.timerSeconds
+                );
+              });
+              if (hasMatchingConfig) return j;
+            }
+          }
+          return -1;
+        };
         const mergedMessages: Message[] = [];
         for (let i = 0; i < loadedMessages.length; i++) {
           const msg = loadedMessages[i];
           const nextMsg = loadedMessages[i + 1];
-          if (
+          const isLegacyRetake =
             msg.role === "user" &&
             typeof msg.content === "string" &&
-            msg.content.startsWith(RETAKE_PREFIX) &&
+            msg.content.startsWith(RETAKE_PREFIX);
+          const isHeuristicRetake =
+            msg.role === "user" &&
+            msg.intentHint === "quiz" &&
             nextMsg?.role === "quiz" &&
-            nextMsg.quizData
+            !!nextMsg.quizData &&
+            normalizeQuizKey(msg.content) === normalizeQuizKey(nextMsg.quizData.topic);
+          if (
+            msg.role === "user" &&
+            nextMsg?.role === "quiz" &&
+            nextMsg.quizData &&
+            (isLegacyRetake || !!msg.retakeOfQuizId || isHeuristicRetake)
           ) {
-            // Find the most recent quiz card in already-merged output
-            // findLastIndex is ES2023 — use a backwards loop for compatibility
-            let lastQuizIdx = -1;
-            for (let j = mergedMessages.length - 1; j >= 0; j--) {
-              if (mergedMessages[j].role === "quiz") { lastQuizIdx = j; break; }
-            }
+            const lastQuizIdx = findRetakeParentIndex(
+              nextMsg.quizData,
+              msg.retakeOfQuizId || undefined,
+            );
             if (lastQuizIdx >= 0) {
               const parent = mergedMessages[lastQuizIdx];
               const existingVersions: QuizData[] = parent.quizVersions ?? [parent.quizData!];
@@ -3207,6 +3275,7 @@ const ChatPage = () => {
           conversation_id: convId,
           message: retakeMessage,
           intent_hint: "quiz",
+          retake_of_quiz_id: originalQuizData.quiz_id,
           num_questions_override: originalQuizData.num_questions ?? originalQuizData.questions.length,
           timer_seconds_override: originalQuizData.timer_seconds ?? null,
           model_provider: modelProvider,

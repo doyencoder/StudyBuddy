@@ -25,6 +25,7 @@ import re
 from typing import List, Generator
 from openai import AzureOpenAI
 import openai
+from app.utils.message_content import extract_message_text_content
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MAX_RETRIES = 3
@@ -484,14 +485,15 @@ def chat_stream(
     ANCHOR_COUNT = 4
     RECENT_COUNT = 10
 
-    def _is_rich_card(msg: dict) -> bool:
-        c = str(msg.get("content", ""))
-        return msg.get("role") == "assistant" and c.startswith('{"__type":')
-
     messages = [{"role": "system", "content": system_instruction}]
 
     if history:
-        readable = [m for m in history if not _is_rich_card(m)]
+        readable = []
+        for msg in history:
+            text = extract_message_text_content(msg.get("content", ""))
+            if not text:
+                continue
+            readable.append({**msg, "content": text})
         anchor = readable[:ANCHOR_COUNT]
         recent_start = max(0, len(readable) - RECENT_COUNT)
         seen = set(range(len(anchor)))
@@ -1257,11 +1259,14 @@ def classify_intent(
     client = _get_client()
     deployment = _chat_deployment()
 
-    readable = [
-        m for m in (conversation_history or [])[-6:]
-        if m.get("role") in ("user", "assistant")
-        and not str(m.get("content", "")).startswith('{"__type":')
-    ]
+    readable = []
+    for msg in (conversation_history or [])[-6:]:
+        if msg.get("role") not in ("user", "assistant"):
+            continue
+        text = extract_message_text_content(msg.get("content", ""))
+        if not text:
+            continue
+        readable.append({**msg, "content": text})
     history_text = "\n".join(
         f"{'Student' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:250]}"
         for m in readable

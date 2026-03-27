@@ -51,6 +51,7 @@ from app.services.web_search_service import web_search, build_search_context, im
 from app.utils.document_resolver import resolve_document_filter
 from app.services.settings_service import get_settings
 from app.utils.curriculum_profiles import get_curriculum_context
+from app.utils.message_content import extract_message_text_content, parse_structured_message
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -171,6 +172,46 @@ def _build_web_search_answer_payload(
     return json.dumps(payload)
 
 
+def _build_regen_text_answer_payload(*, answer: str, previous_raw: Optional[str] = None) -> str:
+    """
+    Builds the persisted JSON payload for regenerated plain-text answers.
+
+    The current answer stays at top-level `content` for fast reads while the
+    full version history lives in `regen_versions` so reload/offline restore can
+    rebuild the response switcher without extra backend calls.
+    """
+    payload = {
+        "__type": "regen_text_answer",
+        "content": answer,
+    }
+
+    if not previous_raw:
+        return json.dumps(payload)
+
+    parsed_prev = parse_structured_message(previous_raw)
+    versions = (
+        parsed_prev.get("regen_versions")
+        if isinstance(parsed_prev, dict) and isinstance(parsed_prev.get("regen_versions"), list)
+        else None
+    )
+
+    if not versions:
+        previous_text = (
+            extract_message_text_content(previous_raw)
+            or (
+                str(parsed_prev.get("content", "") or "").strip()
+                if isinstance(parsed_prev, dict)
+                else ""
+            )
+        )
+        versions = [{"content": previous_text}] if previous_text else []
+
+    versions.append({"content": answer})
+    payload["regen_versions"] = versions
+    payload["active_regen_version_idx"] = max(0, len(versions) - 1)
+    return json.dumps(payload)
+
+
 # ── Request models ────────────────────────────────────────────────────────────
 
 class TranslateRequest(BaseModel):
@@ -249,13 +290,7 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
     if not preceding_user:
         raise HTTPException(status_code=400, detail="No preceding user message found.")
 
-    user_text = preceding_user.get("content", "")
-    if user_text.startswith('{"__type":'):
-        try:
-            parsed_user = json.loads(user_text)
-            user_text = parsed_user.get("text") or user_text
-        except Exception:
-            pass
+    user_text = extract_message_text_content(preceding_user.get("content", ""))
 
     prev_response = all_messages[target_idx].get("content", "")
 
@@ -361,12 +396,18 @@ async def regenerate_message_endpoint(request: RegenerateRequest):
         if _REFUSAL_MESSAGE in full_reply and full_reply.strip() != _REFUSAL_MESSAGE:
             full_reply = _REFUSAL_MESSAGE
 
+        new_content = _build_regen_text_answer_payload(
+            answer=full_reply,
+            previous_raw=prev_response,
+        )
+
         await update_message_content(
             conversation_id=request.conversation_id,
             user_id=request.user_id,
             message_id=request.message_id,
-            new_content=full_reply,
+            new_content=new_content,
         )
+        yield f"data: {json.dumps({'type': 'message_saved', 'message_id': request.message_id})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -659,7 +700,7 @@ async def chat_message(request: ChatRequest):
     has_att  = bool(request.attachments)
 
     if has_chip and has_att:
-        user_content = json.dumps({
+        user_payload = {
             "__type": "user_with_intent_and_attachments",
             "text": request.message,
             "intent_hint": request.intent_hint,
@@ -667,13 +708,19 @@ async def chat_message(request: ChatRequest):
                 {"name": a.name, "blob_name": a.blob_name, "blob_url": a.blob_url, "file_type": a.file_type}
                 for a in request.attachments
             ],
-        })
+        }
+        if request.retake_of_quiz_id:
+            user_payload["retake_of_quiz_id"] = request.retake_of_quiz_id
+        user_content = json.dumps(user_payload)
     elif has_chip:
-        user_content = json.dumps({
+        user_payload = {
             "__type": "user_with_intent",
             "text": request.message,
             "intent_hint": request.intent_hint,
-        })
+        }
+        if request.retake_of_quiz_id:
+            user_payload["retake_of_quiz_id"] = request.retake_of_quiz_id
+        user_content = json.dumps(user_payload)
     elif has_att:
         user_content = json.dumps({
             "__type": "user_with_attachments",

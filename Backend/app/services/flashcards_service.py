@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 from app.services.ai_service import generate_flashcards, get_provider
 from app.services.cosmos_service import get_conversation_full, save_flashcard_deck
 from app.services.search_service import retrieve_all_chunks_ordered
+from app.utils.message_content import extract_message_text_content
 
 FLASHCARD_TITLE_MAX_CHARS = 90
 FLASHCARD_DESCRIPTION_MAX_CHARS = 140
@@ -12,15 +13,11 @@ def _extract_text_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str
     cleaned: List[Dict[str, str]] = []
     for message in messages:
         role = str(message.get("role", "")).strip().lower()
-        raw = str(message.get("content", "") or "").strip()
-        if not raw:
+        text = extract_message_text_content(message.get("content", ""))
+        if not text:
             continue
 
-        # Skip structured assistant payloads such as quiz/diagram cards.
-        if raw.startswith('{"__type":'):
-            continue
-
-        cleaned.append({"role": role or "assistant", "content": raw})
+        cleaned.append({"role": role or "assistant", "content": text})
     return cleaned
 
 

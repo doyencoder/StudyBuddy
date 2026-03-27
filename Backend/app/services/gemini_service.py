@@ -17,6 +17,7 @@ import time
 from typing import List, Generator
 from google import genai
 from google.genai import types
+from app.utils.message_content import extract_message_text_content
 
 EMBEDDING_MODEL = "gemini-embedding-001"
 CHAT_MODEL = "gemini-2.5-flash"
@@ -385,15 +386,15 @@ def chat_stream(
     ANCHOR_COUNT = 4   # always include this many messages from the start
     RECENT_COUNT = 10  # always include this many messages from the end
 
-    def _is_rich_card(msg: dict) -> bool:
-        """Returns True for JSON-embedded quiz/diagram/study_plan assistant messages."""
-        c = str(msg.get("content", ""))
-        return msg.get("role") == "assistant" and c.startswith('{"__type":')
-
     contents = []
 
     if history:
-        readable = [m for m in history if not _is_rich_card(m)]
+        readable = []
+        for msg in history:
+            text = extract_message_text_content(msg.get("content", ""))
+            if not text:
+                continue
+            readable.append({**msg, "content": text})
 
         anchor  = readable[:ANCHOR_COUNT]
         recent  = readable[-RECENT_COUNT:] if len(readable) > ANCHOR_COUNT else []
@@ -1096,11 +1097,14 @@ def classify_intent(
     """
     client = _get_client()
 
-    readable = [
-        m for m in (conversation_history or [])[-6:]
-        if m.get("role") in ("user", "assistant")
-        and not str(m.get("content", "")).startswith('{"__type":')
-    ]
+    readable = []
+    for msg in (conversation_history or [])[-6:]:
+        if msg.get("role") not in ("user", "assistant"):
+            continue
+        text = extract_message_text_content(msg.get("content", ""))
+        if not text:
+            continue
+        readable.append({**msg, "content": text})
     history_text = "\n".join(
         f"{'Student' if m['role'] == 'user' else 'Assistant'}: {str(m.get('content', ''))[:250]}"
         for m in readable
