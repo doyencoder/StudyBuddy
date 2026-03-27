@@ -49,7 +49,15 @@ async def create_study_plan(
     # ── Attempt to retrieve context chunks ────────────────────────────────────
     context_chunks = []
 
-    if conversation_id:
+    # ── Relevance threshold for scope=topic with a specific topic ─────────
+    # Study plan uses pure vector search → cosine score range 0.0-1.0.
+    # Adjust this value if filtering is too aggressive or too loose.
+    _COSINE_THRESHOLD = 0.65
+
+    if conversation_id and scope != "general":
+        # scope=="general" means the topic is answerable from general knowledge
+        # (e.g. "study plan for photosynthesis" when antenna notes are uploaded).
+        # Skip document retrieval entirely in that case.
         try:
             has_docs = conversation_has_documents(
                 user_id=user_id,
@@ -59,23 +67,49 @@ async def create_study_plan(
             has_docs = False
 
         if has_docs:
-            try:
-                query_text = topic or "key concepts and important topics"
-                query_embedding = embed_query(query_text)
+            if scope in ("document", "page"):
+                # User explicitly asked for document content or specific pages —
+                # always retrieve, no score check.
+                try:
+                    query_text = topic or "key concepts and important topics"
+                    query_embedding = embed_query(query_text)
 
-                # Detect if user referred to a specific file ("document 2", "file 1" etc.)
-                filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                filename_filter = resolve_document_filter(topic or "", filenames)
-                if filename_filter:
-                    print(f"[StudyPlan] Filtering to file: {filename_filter}")
+                    filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                    filename_filter = resolve_document_filter(topic or "", filenames)
+                    if filename_filter:
+                        print(f"[StudyPlan] Filtering to file: {filename_filter}")
 
-                if scope == "document":
-                    from app.services.search_service import retrieve_all_chunks_ordered
-                    raw_chunks = retrieve_all_chunks_ordered(
-                        user_id=user_id,
-                        conversation_id=conversation_id,
-                    )
-                else:
+                    if scope == "document":
+                        from app.services.search_service import retrieve_all_chunks_ordered
+                        raw_chunks = retrieve_all_chunks_ordered(
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                        )
+                    else:
+                        raw_chunks = retrieve_chunks_smart(
+                            query_embedding=query_embedding,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            top_k=10,
+                            filename_filter=filename_filter,
+                            page_numbers=page_numbers if page_numbers else None,
+                        )
+                    context_chunks = [text for text, *_ in raw_chunks]
+                    print(f"[StudyPlan] Retrieved {len(context_chunks)} chunks for plan")
+                except Exception as e:
+                    print(f"[StudyPlan] Chunk retrieval failed: {e}")
+                    context_chunks = []
+            else:
+                # scope == "topic" (or None/unknown)
+                try:
+                    query_text = topic or "key concepts and important topics"
+                    query_embedding = embed_query(query_text)
+
+                    filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                    filename_filter = resolve_document_filter(topic or "", filenames)
+                    if filename_filter:
+                        print(f"[StudyPlan] Filtering to file: {filename_filter}")
+
                     raw_chunks = retrieve_chunks_smart(
                         query_embedding=query_embedding,
                         user_id=user_id,
@@ -84,11 +118,24 @@ async def create_study_plan(
                         filename_filter=filename_filter,
                         page_numbers=page_numbers if page_numbers else None,
                     )
-                context_chunks = [text for text, *_ in raw_chunks]
-                print(f"[StudyPlan] Retrieved {len(context_chunks)} chunks for plan")
-            except Exception as e:
-                print(f"[StudyPlan] Chunk retrieval failed: {e}")
-                context_chunks = []
+
+                    if topic:
+                        # Specific topic — check if doc content is relevant.
+                        relevant = [r for r in raw_chunks if r[3] >= _COSINE_THRESHOLD]
+                        if relevant:
+                            context_chunks = [text for text, *_ in relevant]
+                        else:
+                            print(f"[StudyPlan] All chunk scores below {_COSINE_THRESHOLD} for topic '{topic}' — falling back to general knowledge")
+                            # context_chunks stays []
+                    else:
+                        # No specific topic — user wants plan from doc content.
+                        context_chunks = [text for text, *_ in raw_chunks]
+
+                    if context_chunks:
+                        print(f"[StudyPlan] Retrieved {len(context_chunks)} chunks for plan")
+                except Exception as e:
+                    print(f"[StudyPlan] Chunk retrieval failed: {e}")
+                    context_chunks = []
 
     # ── Generate the plan via the request-scoped AI provider ─────────────────
     # get_provider() falls back to the server default when model_provider is None.

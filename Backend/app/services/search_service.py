@@ -317,7 +317,7 @@ def retrieve_chunks_smart(
         top=top_k,
     )
 
-    return [(r["chunk_text"], r.get("page_number", 0), r.get("filename", "")) for r in results]
+    return [(r["chunk_text"], r.get("page_number", 0), r.get("filename", ""), r.get("@search.score", 0)) for r in results]
 
 
 def conversation_has_documents(user_id: str, conversation_id: str) -> bool:

@@ -438,24 +438,33 @@ async def chat_message(request: ChatRequest):
     if not conversation_id:
         conversation_id = await create_conversation(request.user_id)
 
-    # ── History + pending_intent (single Cosmos read) ─────────────────────────
-    conv_data = await get_conversation_full(conversation_id)
+    # ── History + Settings in parallel (two independent Cosmos containers) ────
+    # get_conversation_full → conversations container (keyed by conversation_id)
+    # get_settings           → settings container (keyed by user_id)
+    # Zero data dependency — safe to run simultaneously. Saves ~50-80ms.
+    async def _fetch_settings_safe():
+        try:
+            return await get_settings(request.user_id)
+        except Exception:
+            return None
+
+    conv_data, _user_settings = await asyncio.gather(
+        get_conversation_full(conversation_id),
+        _fetch_settings_safe(),
+    )
+
     prior_messages = conv_data["messages"]
     pending_intent = conv_data["pending_intent"]
 
-    # ── Curriculum context (piggybacks on settings read, zero extra latency) ──
-    # get_settings() reads the same Cosmos container as other settings calls.
-    # get_curriculum_context() is a pure dict lookup — ~0.01ms, no I/O.
-    # Wrapped in try/except so a settings failure never breaks the chat path.
+    # ── Curriculum context (pure dict lookup — ~0.01ms, no I/O) ──────────────
     try:
-        _user_settings = await get_settings(request.user_id)
         _curr_context: str | None = get_curriculum_context(
-            board=_user_settings.get("curriculum_board"),
-            grade=_user_settings.get("curriculum_grade"),
-            enabled=bool(_user_settings.get("curriculum_enabled", False)),
-        )
+            board=(_user_settings or {}).get("curriculum_board"),
+            grade=(_user_settings or {}).get("curriculum_grade"),
+            enabled=bool((_user_settings or {}).get("curriculum_enabled", False)),
+        ) if _user_settings else None
     except Exception:
-        _curr_context = None  # never crash the chat path over a settings failure
+        _curr_context = None
     print(f"[CURRICULUM] user={request.user_id} | context={'SET (' + _curr_context[:60] + '...)' if _curr_context else 'None'}")
 
     # ── Resolve request-scoped AI provider ────────────────────────────────────
@@ -986,7 +995,7 @@ async def chat_message(request: ChatRequest):
             return
 
         if intent == "image":
-            async for evt in _dispatch_image(request.user_id, conversation_id, topic, prior_messages):
+            async for evt in _dispatch_image(request.user_id, conversation_id, topic, prior_messages, scope=scope):
                 yield evt
             return
 
@@ -1056,31 +1065,82 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
     # provider defaults to the module-level import (server default) when not supplied.
     from app.services.ai_service import get_provider as _gp
     _p = provider or _gp(None)
-    try:
-        has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
-        if not has_docs:
-            context_chunks = []
-        filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-        filename_filter = resolve_document_filter(topic or "", filenames)
 
-        if scope == "document":
-            raw_chunks = retrieve_all_chunks_ordered(
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
+    # ── Relevance threshold for scope=topic with a specific topic ─────────
+    # Quiz uses use_hybrid=bool(topic) → when topic exists, hybrid is ON
+    # → scores are RRF range (~0.01-0.03). Matches retrieve_chunks_hybrid.
+    # Adjust this value if filtering is too aggressive or too loose.
+    _RRF_THRESHOLD = 0.030
+
+    try:
+        if scope == "general":
+            # General knowledge topic — skip document retrieval entirely.
+            context_chunks = []
+        elif scope in ("document", "page"):
+            # User explicitly asked for document content or specific pages —
+            # always retrieve, no score check.
+            has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
+
+            if has_docs:
+                filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                filename_filter = resolve_document_filter(topic or "", filenames)
+
+                if scope == "document":
+                    raw_chunks = retrieve_all_chunks_ordered(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                    )
+                else:
+                    q_emb = embed_query(topic or "key concepts and important topics")
+                    raw_chunks = retrieve_chunks_smart(
+                        query_embedding=q_emb,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        top_k=10,
+                        use_hybrid=bool(topic),
+                        keywords=[topic] if topic else None,
+                        filename_filter=filename_filter,
+                        page_numbers=page_numbers if page_numbers else None,
+                    )
+                context_chunks = [text for text, *_ in raw_chunks]
+            else:
+                context_chunks = []
         else:
-            q_emb = embed_query(topic or "key concepts and important topics")
-            raw_chunks = retrieve_chunks_smart(
-                query_embedding=q_emb,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                top_k=10,
-                use_hybrid=bool(topic),
-                keywords=[topic] if topic else None,
-                filename_filter=filename_filter,
-                page_numbers=page_numbers if page_numbers else None,
-            )
-        context_chunks = [text for text, *_ in raw_chunks]
+            # scope == "topic" (or None/unknown — treat same as topic)
+            has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
+
+            if has_docs:
+                filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                filename_filter = resolve_document_filter(topic or "", filenames)
+
+                q_emb = embed_query(topic or "key concepts and important topics")
+                raw_chunks = retrieve_chunks_smart(
+                    query_embedding=q_emb,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    top_k=10,
+                    use_hybrid=bool(topic),
+                    keywords=[topic] if topic else None,
+                    filename_filter=filename_filter,
+                    page_numbers=page_numbers if page_numbers else None,
+                )
+
+                if topic:
+                    # Specific topic provided — check if doc content is relevant.
+                    # If all scores below threshold, topic isn't in the doc →
+                    # fall back to general knowledge.
+                    relevant = [r for r in raw_chunks if r[3] >= _RRF_THRESHOLD]
+                    if relevant:
+                        context_chunks = [text for text, *_ in relevant]
+                    else:
+                        print(f"[QUIZ] All chunk scores below {_RRF_THRESHOLD} for topic '{topic}' — falling back to general knowledge")
+                        context_chunks = []
+                else:
+                    # No specific topic — user wants quiz from doc content.
+                    # Keep all chunks, no score filtering.
+                    context_chunks = [text for text, *_ in raw_chunks]
+            else:
+                context_chunks = []
 
         result = _p.generate_quiz_questions(
             context_chunks=context_chunks,
@@ -1156,27 +1216,70 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         else:
             layout_hint = None
 
+        # ── Relevance threshold for scope=topic with a specific topic ─────
+        # Diagram uses pure vector search (no hybrid) → cosine score range
+        # 0.0-1.0.  Matches retrieve_chunks threshold.
+        # Adjust this value if filtering is too aggressive or too loose.
+        _COSINE_THRESHOLD = 0.65
+
         chunks = []
         try:
-            filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-            filename_filter = resolve_document_filter(effective, filenames)
+            if scope == "general":
+                # General knowledge topic — skip document retrieval.
+                pass  # chunks stays []
+            elif scope in ("document", "page"):
+                # User explicitly asked for document content or specific pages.
+                has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
 
-            if scope == "document":
-                raw_chunks = retrieve_all_chunks_ordered(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                )
+                if has_docs:
+                    filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                    filename_filter = resolve_document_filter(effective, filenames)
+
+                    if scope == "document":
+                        raw_chunks = retrieve_all_chunks_ordered(
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                        )
+                    else:
+                        q_emb = embed_query(effective)
+                        raw_chunks = retrieve_chunks_smart(
+                            query_embedding=q_emb,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            top_k=8,
+                            filename_filter=filename_filter,
+                            page_numbers=page_numbers if page_numbers else None,
+                        )
+                    chunks = [text for text, *_ in raw_chunks]
             else:
-                q_emb = embed_query(effective)
-                raw_chunks = retrieve_chunks_smart(
-                    query_embedding=q_emb,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    top_k=8,
-                    filename_filter=filename_filter,
-                    page_numbers=page_numbers if page_numbers else None,
-                )
-            chunks = [text for text, *_ in raw_chunks]
+                # scope == "topic" (or None/unknown)
+                has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
+
+                if has_docs:
+                    filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
+                    filename_filter = resolve_document_filter(effective, filenames)
+
+                    q_emb = embed_query(effective)
+                    raw_chunks = retrieve_chunks_smart(
+                        query_embedding=q_emb,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        top_k=8,
+                        filename_filter=filename_filter,
+                        page_numbers=page_numbers if page_numbers else None,
+                    )
+
+                    if topic:
+                        # Specific topic — check if doc content is relevant.
+                        relevant = [r for r in raw_chunks if r[3] >= _COSINE_THRESHOLD]
+                        if relevant:
+                            chunks = [text for text, *_ in relevant]
+                        else:
+                            print(f"[DIAGRAM] All chunk scores below {_COSINE_THRESHOLD} for topic '{effective}' — falling back to general knowledge")
+                            # chunks stays []
+                    else:
+                        # No specific topic — user wants from doc content.
+                        chunks = [text for text, *_ in raw_chunks]
         except Exception:
             pass
 
@@ -1216,16 +1319,26 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_image(user_id, conversation_id, topic, prior_messages):
+async def _dispatch_image(user_id, conversation_id, topic, prior_messages, scope=None):
     try:
         effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
         chunks = []
         try:
-            q_emb = embed_query(effective)
-            chunks = retrieve_chunks(
-                query_embedding=q_emb, user_id=user_id,
-                conversation_id=conversation_id, top_k=3, score_threshold=0.5,
-            )
+            if scope == "general":
+                # General knowledge topic — skip document retrieval even if
+                # docs exist in this conversation.
+                pass  # chunks stays []
+            else:
+                has_docs = conversation_has_documents(user_id=user_id, conversation_id=conversation_id)
+
+                if has_docs:
+                    # Docs exist and scope is topic/page/document — retrieve context
+                    q_emb = embed_query(effective)
+                    chunks = retrieve_chunks(
+                        query_embedding=q_emb, user_id=user_id,
+                        conversation_id=conversation_id, top_k=3, score_threshold=0.5,
+                    )
+                # else: no docs — chunks stays []
         except Exception:
             pass
 
