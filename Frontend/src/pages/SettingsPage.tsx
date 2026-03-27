@@ -28,10 +28,10 @@ import {
   REWARDS,
 } from "@/lib/coinStore";
 import { useCoins } from "@/contexts/CoinContext";
+import { useUser } from "@/contexts/UserContext";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const USER_ID = "student-001";
 
 type SettingsTab = "general" | "account" | "billing" | "connectors";
 
@@ -168,6 +168,8 @@ const CONNECTOR_ICON_MAP: Record<string, React.ReactNode> = {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 const SettingsPage = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
   const { setColorMode, setChatFont, setVoice } = useAppearance();
   const [searchParams] = useSearchParams();
   const urlTab = searchParams.get("tab") as SettingsTab | null;

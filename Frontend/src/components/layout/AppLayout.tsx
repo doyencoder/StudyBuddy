@@ -6,9 +6,8 @@ import { Outlet } from "react-router-dom";
 import { API_BASE } from "@/config/api";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { DailyLoginReward } from "@/components/DailyLoginReward";
+import { useUser } from "@/contexts/UserContext";
 
-// ── Heartbeat + Checkin: fires every 60s while the tab is active ────────────
-const USER_ID = "student-001";
 const DAILY_GOALS_KEY = "studybuddy_daily_goals";
 
 /** Read daily goals from localStorage and return total/done counts */
@@ -17,7 +16,6 @@ function getDailyGoalCounts(): { total: number; done: number } {
     const raw = localStorage.getItem(DAILY_GOALS_KEY);
     if (!raw) return { total: 0, done: 0 };
     const stored = JSON.parse(raw);
-    // Check if goals are from today (local date, not UTC)
     const d = new Date();
     const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     if (stored.date !== today) return { total: 0, done: 0 };
@@ -28,33 +26,28 @@ function getDailyGoalCounts(): { total: number; done: number } {
   }
 }
 
-function useStudyHeartbeat() {
+function useStudyHeartbeat(userId: string) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const sendBeat = () => {
     if (document.visibilityState !== "visible") return;
     if (!navigator.onLine) return;
 
-    // 1) Session heartbeat
     fetch(`${API_BASE}/sessions/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: USER_ID }),
+      body: JSON.stringify({ user_id: userId }),
     }).catch(() => {});
 
-    // 2) Notification checkin — sends daily goals status so the 9 PM
-    //    scheduler knows whether to send the reminder email.
-    //    This runs every 60s from ANY page, not just GoalsPage.
     const { total, done } = getDailyGoalCounts();
     fetch(`${API_BASE}/notifications/checkin`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: USER_ID, daily_goals_total: total, daily_goals_done: done }),
+      body: JSON.stringify({ user_id: userId, daily_goals_total: total, daily_goals_done: done }),
     }).catch(() => {});
   };
 
   useEffect(() => {
-    // Send immediately on mount, then every 60s
     sendBeat();
     intervalRef.current = setInterval(sendBeat, 60_000);
 
@@ -62,7 +55,6 @@ function useStudyHeartbeat() {
       if (document.visibilityState === "hidden") {
         if (intervalRef.current) clearInterval(intervalRef.current);
       } else {
-        // Send immediately when tab becomes visible again
         sendBeat();
         intervalRef.current = setInterval(sendBeat, 60_000);
       }
@@ -73,23 +65,33 @@ function useStudyHeartbeat() {
       if (intervalRef.current) clearInterval(intervalRef.current);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, []);
+  }, [userId]); // re-register when user changes so heartbeats use the correct user_id
 }
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 const AppLayout = () => {
-  useStudyHeartbeat();
+  const { currentUser } = useUser();
+  useStudyHeartbeat(currentUser.id);
+
   return (
     <SidebarProvider>
       <DailyLoginReward />
       <div className="flex w-full overflow-hidden" style={{ height: "100dvh" }}>
-        <AppSidebar />
+        <AppSidebar key={currentUser.id}/>
         <div className="flex-1 flex flex-col min-w-0" style={{ height: "100dvh" }}>
           <OfflineBanner />
           <AppHeader />
-          <main className="flex-1 flex flex-col overflow-hidden">
-            <Outlet />
-          </main>
+          <main key={currentUser.id} className="flex-1 flex flex-col overflow-hidden">
+          {/*
+            key={currentUser.id} is on <main>, not <Outlet>.
+            Keying <Outlet> alone doesn't reliably remount the child page because
+            React Router manages the rendered component separately. Keying the
+            parent <main> forces the entire subtree — including the page rendered
+            by Outlet — to fully unmount and remount, so all useEffect fetches
+            re-fire immediately with the new USER_ID. No manual refresh needed.
+          */}
+          <Outlet />
+        </main>
         </div>
       </div>
     </SidebarProvider>

@@ -6,6 +6,7 @@ import { API_BASE } from "@/config/api";
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue, cacheAPIResponse, getAllSyncQueue } from "@/lib/offlineStore";
 import { toast } from "sonner";
+import { useUser } from "@/contexts/UserContext";
 
 interface Deck {
   id: string;
@@ -27,10 +28,8 @@ interface FlashcardGenerationState {
   };
 }
 
-const USER_ID = "student-001";
-const FLASHCARDS_URL = `${API_BASE}/flashcards?user_id=${USER_ID}`;
-const FLASHCARDS_CACHE_KEY =
-  new URL(FLASHCARDS_URL).pathname + new URL(FLASHCARDS_URL).search;
+
+
 
 function buildFlashcardsCachePayload(decks: Deck[]) {
   return {
@@ -123,6 +122,11 @@ function PendingFlashcardDeck() {
 }
 
 const FlashcardsPage = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
+  const FLASHCARDS_URL = `${API_BASE}/flashcards?user_id=${USER_ID}`;
+  const FLASHCARDS_CACHE_KEY =
+    new URL(FLASHCARDS_URL).pathname + new URL(FLASHCARDS_URL).search;
   const navigate = useNavigate();
   const location = useLocation();
   const initialGenerationRequestRef = useRef(

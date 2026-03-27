@@ -108,6 +108,15 @@ export async function getCachedAPI<T = any>(key: string): Promise<{ data: T; cac
   return result ? { data: result.data, cachedAt: result.cachedAt } : null;
 }
 
+/**
+ * Wipe the entire API response cache.
+ * Called by UserContext.switchUser() to prevent data from one profile
+ * bleeding into another profile's UI on user switch.
+ */
+export async function clearAPICache(): Promise<void> {
+  await clear("apiCache");
+}
+
 // ── Quiz Details (for offline retake — includes correct_index) ───────────────
 
 export interface CachedQuizDetail {

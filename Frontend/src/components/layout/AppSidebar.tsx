@@ -12,6 +12,7 @@ import {
   PanelLeft,
   Star,
   MoreHorizontal,
+  Share2,
   Pencil,
   Trash2,
   BarChart2,
@@ -54,9 +55,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { API_BASE } from "@/config/api";
+import { toast } from "sonner";
 import { cacheAPIResponse, getCachedAPI, addToSyncQueue, cacheConversation } from "@/lib/offlineStore";
-
-const USER_ID = "student-001";
+import { useUser } from "@/contexts/UserContext";
 
 const menuItems = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
@@ -78,6 +79,8 @@ interface Conversation {
 }
 
 const AppSidebar = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
   const { state, toggleSidebar, isMobile, setOpenMobile, setOpen } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
@@ -565,6 +568,17 @@ const AppSidebar = () => {
                                       <DropdownMenuItem onClick={() => handleGenerateFlashcards(chat)}>
                                         <Layers className="w-3.5 h-3.5 mr-2" />
                                         Generate Flashcards
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        onClick={() => {
+                                          const url = `${window.location.origin}/chat/shared/${chat.conversation_id}`;
+                                          navigator.clipboard.writeText(url)
+                                            .then(() => toast.success("Share link copied!"))
+                                            .catch(() => toast.error("Could not copy link."));
+                                        }}
+                                      >
+                                        <Share2 className="w-3.5 h-3.5 mr-2" />
+                                        Share chat
                                       </DropdownMenuItem>
                                       <DropdownMenuSeparator />
                                       <DropdownMenuItem

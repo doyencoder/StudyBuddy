@@ -19,6 +19,7 @@ import { API_BASE } from "@/config/api";
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
 import { withMindmapTheme } from "@/lib/mermaidMindmapTheme";
+import { useUser } from "@/contexts/UserContext";
 
 // Ensure mermaid is initialized regardless of which page loads first
 mermaid.initialize({
@@ -50,7 +51,7 @@ interface DiagramItem {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const USER_ID = "student-001";
+
 
 // ── Download helper ───────────────────────────────────────────────────────────
 
@@ -435,6 +436,8 @@ const TABS: { key: TabType; label: string; icon: typeof ImageIcon; emptyHint: st
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 const ImagesPage = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
   const [diagrams, setDiagrams] = useState<DiagramItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

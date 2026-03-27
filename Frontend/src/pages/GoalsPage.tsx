@@ -20,8 +20,8 @@ import { toast } from "sonner";
 import CelebrationOverlay, { CelebrationVariant } from "@/components/CelebrationOverlay";
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
+import { useUser } from "@/contexts/UserContext";
 
-const USER_ID = "student-001";
 
 // ── Daily goals localStorage helpers ─────────────────────────────────────────
 
@@ -305,6 +305,8 @@ const GoalCard = ({
 
 const GoalsPage = () => {
   // Daily goals (localStorage-backed)
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
   const [dailyGoals, setDailyGoals] = useState<DailyGoal[]>(loadDailyGoals);
   const [newGoal, setNewGoal] = useState("");
 

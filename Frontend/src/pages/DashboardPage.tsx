@@ -30,6 +30,7 @@ import { addToSyncQueue, cacheAPIResponse } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { formatCachedTime } from "@/lib/offlineStore";
 import { useCoins } from "@/contexts/CoinContext";
+import { useUser } from "@/contexts/UserContext";
 
 // ─── colour aliases — V0 uses --chart-1/2/3, this project uses --primary/--accent
 // We resolve them here as inline-style strings so nothing else needs changing.
@@ -37,9 +38,7 @@ const C1 = "hsl(var(--primary))";        // chart-1 → primary blue
 const C2 = "hsl(var(--accent))";         // chart-2 → accent teal
 const C3 = "hsl(var(--muted-foreground))"; // chart-3 → muted grey
 
-const USER_ID = "student-001";
-const DISMISSED_WEAK_TOPICS_PATH = `/settings/dismissed-weak-topics?user_id=${USER_ID}`;
-const DISMISSED_WEAK_TOPICS_URL = `${API_BASE}${DISMISSED_WEAK_TOPICS_PATH}`;
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface WeekPlanData {
@@ -559,6 +558,10 @@ function RecentQuizzes({ quizzes }: { quizzes: { quiz_id: string; topic: string;
 
 // ─── DashboardPage ────────────────────────────────────────────────────────────
 const DashboardPage = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
+  const DISMISSED_WEAK_TOPICS_PATH = `/settings/dismissed-weak-topics?user_id=${USER_ID}`;
+  const DISMISSED_WEAK_TOPICS_URL = `${API_BASE}${DISMISSED_WEAK_TOPICS_PATH}`;
   const [loading, setLoading]               = useState(true);
   const [quizzes, setQuizzes]               = useState<QuizHistoryItem[]>([]);
   const [goals, setGoals]                   = useState<GoalItem[]>([]);

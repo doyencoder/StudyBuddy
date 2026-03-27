@@ -41,6 +41,7 @@ import { addToSyncQueue, cacheConversation, getCachedConversation } from "@/lib/
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { ModelSelector, type ProviderKey } from "@/components/ModelSelector";
 import { useCoins } from "@/contexts/CoinContext";
+import { useUser } from "@/contexts/UserContext";
 
 // ── Mermaid init ──────────────────────────────────────────────────────────────
 mermaid.initialize({
@@ -197,7 +198,6 @@ interface Message {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const USER_ID = "student-001";
 
 const TOOLS = [
   { label: "Generate Quiz", icon: FileText, intent: "quiz" },
@@ -1307,11 +1307,13 @@ const QuizCard = ({
   quizData,
   onQuizComplete,
   onRetake,
+  userId,
 }: {
   messageId: string;
   quizData: QuizData;
   onQuizComplete: (id: string, data: QuizData) => void;
   onRetake?: () => void;
+  userId: string;
 }) => {
   const { completeMission } = useCoins();
   const [currentQ, setCurrentQ] = useState(0);
@@ -1354,7 +1356,7 @@ const QuizCard = ({
   useEffect(() => {
     fetch(`${API_BASE}/quiz/preclassify`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: USER_ID, quiz_id: quizData.quiz_id }),
+      body: JSON.stringify({ user_id: userId, quiz_id: quizData.quiz_id }),
     }).catch(() => {});
   }, [quizData.quiz_id]);
 
@@ -1413,7 +1415,7 @@ const QuizCard = ({
       const response = await fetch(`${API_BASE}/quiz/submit`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: USER_ID,
+          user_id: userId,
           quiz_id: quizData.quiz_id,
           answers: finalAnswers,
           unanswered_indices: unanswered.length > 0 ? unanswered : [],
@@ -2007,9 +2009,11 @@ const ImageCard = ({ imageData }: { imageData: ImageData }) => {
 const StudyPlanCard = ({
   studyPlanData,
   conversationId,
+  userId,
 }: {
   studyPlanData: StudyPlanData;
   conversationId: string | null;
+  userId: string;
 }) => {
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set([1]));
   const [isSaving, setIsSaving] = useState(false);
@@ -2031,7 +2035,7 @@ const StudyPlanCard = ({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: USER_ID,
+          user_id: userId,
           title: studyPlanData.title,
           start_date: studyPlanData.start_date,
           end_date: studyPlanData.end_date,
@@ -2049,7 +2053,7 @@ const StudyPlanCard = ({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            user_id: USER_ID,
+            user_id: userId,
             plan_id: studyPlanData.plan_id,
             conversation_id: conversationId,
           }),
@@ -2302,6 +2306,8 @@ function WelcomeScreen({ onSuggestion, onStarterPrompt }: WelcomeScreenProps) {
 
 
 const ChatPage = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
   const { language } = useLanguage();
   const { voice } = useAppearance();
   const { isOnline } = useOnlineStatus();
@@ -4326,6 +4332,7 @@ const ChatPage = () => {
                         quizData={msg.quizData}
                         onQuizComplete={handleQuizComplete}
                         onRetake={() => handleRetake(msg.quizData!, msg.id)}
+                        userId={USER_ID}
                       />
                     )}
                   </div>
@@ -4382,6 +4389,7 @@ const ChatPage = () => {
                     <StudyPlanCard
                       studyPlanData={msg.studyPlanData}
                       conversationId={conversationId}
+                      userId={USER_ID}
                     />
                   </div>
                 </div>

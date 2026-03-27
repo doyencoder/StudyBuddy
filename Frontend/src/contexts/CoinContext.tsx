@@ -17,8 +17,7 @@ import {
   hasMeaningfulCoinState,
   type CoinState,
 } from "@/lib/coinStore";
-
-const COIN_USER_ID = "student-001";
+import { useUser } from "@/contexts/UserContext";
 
 interface DailyLoginReward {
   coins_earned: number;
@@ -53,19 +52,36 @@ async function readCachedCoinState(userId: string): Promise<CoinState | null> {
 }
 
 export function CoinProvider({ children }: { children: ReactNode }) {
+  const { currentUser } = useUser();
+  const userId = currentUser.id;
+
   const [coinState, setCoinState] = useState<CoinState>(() => getLegacyCoinState() ?? createDefaultCoinState());
   const [initialized, setInitialized] = useState(false);
   const bootstrapPromiseRef = useRef<Promise<CoinState> | null>(null);
   const backendReadyRef = useRef(false);
+
+  // ── Reset when the active user changes ──────────────────────────────────────
+  // Using a ref to track the previous userId lets us reset state without
+  // triggering an infinite loop.
+  const prevUserIdRef = useRef(userId);
+  if (prevUserIdRef.current !== userId) {
+    prevUserIdRef.current = userId;
+    // Reset synchronously (inside render) so the new user never briefly
+    // sees the previous user's coin balance.
+    bootstrapPromiseRef.current = null;
+    backendReadyRef.current = false;
+    // We can't call setCoinState during render without warnings, so we
+    // defer it to the useEffect below via the userId dependency.
+  }
 
   const persistCoinState = useCallback(async (next: CoinState, fromBackend = true) => {
     setCoinState(next);
     if (fromBackend) {
       backendReadyRef.current = true;
       clearLegacyCoinState();
-      await cacheAPIResponse(getCoinCacheKey(COIN_USER_ID), next).catch(() => {});
+      await cacheAPIResponse(getCoinCacheKey(userId), next).catch(() => {});
     }
-  }, []);
+  }, [userId]);
 
   const bootstrap = useCallback(async (force = false): Promise<CoinState> => {
     if (bootstrapPromiseRef.current && !force) return bootstrapPromiseRef.current;
@@ -78,11 +94,11 @@ export function CoinProvider({ children }: { children: ReactNode }) {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                user_id: COIN_USER_ID,
+                user_id: userId,
                 legacy_state: legacyState,
               }),
             })
-          : await fetch(`${API_BASE}/coins?user_id=${encodeURIComponent(COIN_USER_ID)}`);
+          : await fetch(`${API_BASE}/coins?user_id=${encodeURIComponent(userId)}`);
         if (!response.ok) {
           throw new Error(`Coin bootstrap failed with HTTP ${response.status}`);
         }
@@ -90,7 +106,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
         await persistCoinState(data, true);
         return data;
       } catch (error) {
-        const cached = await readCachedCoinState(COIN_USER_ID);
+        const cached = await readCachedCoinState(userId);
         if (cached) {
           setCoinState(cached);
           return cached;
@@ -110,13 +126,18 @@ export function CoinProvider({ children }: { children: ReactNode }) {
     });
 
     return bootstrapPromiseRef.current;
-  }, [persistCoinState]);
+  }, [userId, persistCoinState]);
 
+  // Re-bootstrap whenever the active user changes
   useEffect(() => {
+    setCoinState(createDefaultCoinState());
+    setInitialized(false);
+    backendReadyRef.current = false;
+    bootstrapPromiseRef.current = null;
     bootstrap().catch(() => {
       setInitialized(true);
     });
-  }, [bootstrap]);
+  }, [userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handleOnline = () => {
@@ -137,9 +158,9 @@ export function CoinProvider({ children }: { children: ReactNode }) {
       if (!backendReadyRef.current) return coinState;
     }
 
-    const response = await fetch(`${API_BASE}/coins?user_id=${encodeURIComponent(COIN_USER_ID)}`);
+    const response = await fetch(`${API_BASE}/coins?user_id=${encodeURIComponent(userId)}`);
     if (!response.ok) {
-      const cached = await readCachedCoinState(COIN_USER_ID);
+      const cached = await readCachedCoinState(userId);
       if (cached) {
         setCoinState(cached);
         return cached;
@@ -150,7 +171,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
     const data = (await response.json()) as CoinState;
     await persistCoinState(data, true);
     return data;
-  }, [coinState, ensureBackendReady, persistCoinState]);
+  }, [userId, coinState, ensureBackendReady, persistCoinState]);
 
   const claimDailyLogin = useCallback(async (): Promise<DailyLoginReward | null> => {
     await ensureBackendReady();
@@ -158,7 +179,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
     const response = await fetch(`${API_BASE}/coins/daily-login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: COIN_USER_ID }),
+      body: JSON.stringify({ user_id: userId }),
     });
     if (!response.ok) {
       throw new Error(`Failed to claim daily login: HTTP ${response.status}`);
@@ -167,7 +188,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
     const data = await response.json() as { coin_state: CoinState; reward: DailyLoginReward | null };
     await persistCoinState(data.coin_state, true);
     return data.reward;
-  }, [ensureBackendReady, persistCoinState]);
+  }, [userId, ensureBackendReady, persistCoinState]);
 
   const completeMission = useCallback(async (missionId: string): Promise<number> => {
     try {
@@ -176,7 +197,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
       const response = await fetch(`${API_BASE}/coins/missions/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: COIN_USER_ID, mission_id: missionId }),
+        body: JSON.stringify({ user_id: userId, mission_id: missionId }),
       });
       if (!response.ok) return 0;
 
@@ -186,7 +207,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
     } catch {
       return 0;
     }
-  }, [ensureBackendReady, persistCoinState]);
+  }, [userId, ensureBackendReady, persistCoinState]);
 
   const applyReferralCode = useCallback(async (code: string): Promise<ReferralApplyResult> => {
     await ensureBackendReady();
@@ -194,7 +215,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
     const response = await fetch(`${API_BASE}/coins/referral/apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: COIN_USER_ID, code }),
+      body: JSON.stringify({ user_id: userId, code }),
     });
     if (!response.ok) {
       throw new Error(`Failed to apply referral code: HTTP ${response.status}`);
@@ -210,7 +231,7 @@ export function CoinProvider({ children }: { children: ReactNode }) {
       applied: data.applied,
       reason: data.reason ?? null,
     };
-  }, [ensureBackendReady, persistCoinState]);
+  }, [userId, ensureBackendReady, persistCoinState]);
 
   const value = useMemo<CoinContextValue>(() => ({
     coinState,

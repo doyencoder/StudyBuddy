@@ -1916,3 +1916,30 @@ async def infer_topic(request: InferTopicRequest):
         return {"topic": topic}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Topic inference failed: {str(e)}")
+
+
+
+
+# ── GET /chat/shared/{conversation_id} ───────────────────────────────────────
+
+@router.get("/shared/{conversation_id}")
+async def get_shared_conversation(conversation_id: str):
+    try:
+        conv_data = await get_conversation_full(conversation_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch shared conversation: {str(e)}")
+
+    raw_messages = conv_data.get("messages", [])
+    if not raw_messages:
+        raise HTTPException(status_code=404, detail="Conversation not found or has no messages.")
+
+    messages = [
+        {"id": m["id"], "role": m["role"], "content": m["content"], "timestamp": m["timestamp"]}
+        for m in raw_messages
+    ]
+
+    return {
+        "conversation_id": conversation_id,
+        "title": conv_data.get("title", "Shared Conversation"),
+        "messages": messages,
+    }        

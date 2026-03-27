@@ -13,8 +13,9 @@ import { API_BASE } from "@/config/api";
 import { offlineFetch } from "@/lib/offlineFetch";
 import { cacheQuizDetail, getCachedQuizDetail, addToSyncQueue, type CachedQuizDetail } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
+import { useUser } from "@/contexts/UserContext";
 
-const USER_ID = "student-001";
+
 
 // ── Lightweight summary — used for the list view ───────────────────────────
 interface QuizSummary {
@@ -74,6 +75,8 @@ const mapSummary = (q: any): QuizSummary => {
 // ── Component ──────────────────────────────────────────────────────────────
 
 const QuizzesPage = () => {
+  const { currentUser } = useUser();
+  const USER_ID = currentUser.id;
   const [quizzes, setQuizzes]           = useState<QuizSummary[]>([]);
   const [selectedQuiz, setSelectedQuiz] = useState<QuizDetail | null>(null);
   const [loading, setLoading]           = useState(true);
