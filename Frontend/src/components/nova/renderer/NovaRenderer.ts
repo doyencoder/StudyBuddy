@@ -1215,10 +1215,10 @@ export class NovaRenderer {
 
     // ── Grid: minor then major ───────────────────────────────────────────────
     if (!this.interactiveMode && this.minorGrid) {
-      this.drawGeometry(this.minorGrid, [0.3, 0.35, 0.45, 0.3], gl.LINES);
+      this.drawGeometry(this.minorGrid, [0.3, 0.35, 0.5, 0.42], gl.LINES);
     }
     if (this.majorGrid) {
-      this.drawGeometry(this.majorGrid, [0.3, 0.35, 0.45, 0.55], gl.LINES);
+      this.drawGeometry(this.majorGrid, [0.3, 0.35, 0.5, 0.72], gl.LINES);
     }
 
     // ── Axes: 4-pass for visual ~2.5px thickness ─────────────────────────────

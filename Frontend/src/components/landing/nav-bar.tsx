@@ -23,6 +23,7 @@ function NavBar({
     { label: 'Features', href: '#features' },
     { label: 'How it Works', href: '#how-it-works' },
     { label: 'Dashboard', href: '/dashboard' },
+    { label: 'Nova', href: '/nova' },
   ],
   ctaText = 'Start Learning',
   ctaHref = '/chat',
@@ -31,6 +32,25 @@ function NavBar({
   const [isOpen, setIsOpen] = React.useState(false)
   const [isScrolled, setIsScrolled] = React.useState(false)
   const navRef = React.useRef<HTMLElement>(null)
+
+  const handleAnchorClick = React.useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+      const targetId = href.replace('#', '')
+      const target = document.getElementById(targetId)
+      if (!target) return
+
+      event.preventDefault()
+      const navHeight = navRef.current?.offsetHeight ?? 0
+      const top = target.getBoundingClientRect().top + window.scrollY - navHeight - 12
+
+      window.scrollTo({
+        top: Math.max(top, 0),
+        behavior: 'smooth',
+      })
+      setIsOpen(false)
+    },
+    []
+  )
 
   React.useEffect(() => {
     const handleScroll = () => {
@@ -96,6 +116,7 @@ function NavBar({
                 <a
                   key={item.href}
                   href={item.href}
+                  onClick={(event) => handleAnchorClick(event, item.href)}
                   className={cn(
                     'relative px-4 py-2 text-sm font-medium',
                     'text-muted-foreground hover:text-foreground',
@@ -159,12 +180,12 @@ function NavBar({
               <a
                 key={item.href}
                 href={item.href}
+                onClick={(event) => handleAnchorClick(event, item.href)}
                 className={cn(
                   'block px-3 py-2.5 text-sm font-medium rounded-lg',
                   'text-muted-foreground hover:text-foreground hover:bg-accent/50',
                   'transition-colors duration-200'
                 )}
-                onClick={() => setIsOpen(false)}
               >
                 {item.label}
               </a>

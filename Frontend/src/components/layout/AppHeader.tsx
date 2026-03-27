@@ -27,9 +27,9 @@ function Avatar({
   return (
     <div
       className={`
-        ${sizeClasses} rounded-full flex items-center justify-center font-bold
-        ${user.avatarBg} ${user.avatarText} shrink-0
-        ${showRing ? `ring-2 ring-offset-2 ring-offset-background ${user.ringColor}` : ""}
+        ${sizeClasses} rounded-full flex items-center justify-center font-bold shrink-0
+        bg-muted/70 text-foreground border border-border
+        ${showRing ? "ring-2 ring-primary/25 ring-offset-2 ring-offset-background" : ""}
         transition-all duration-200
       `}
     >
@@ -164,10 +164,7 @@ function ProfileSwitcher() {
                      
                     </div>
                     {isActive && (
-                      <div
-                        className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
-                        style={{ backgroundColor: user.hex + "22", color: user.hex }}
-                      >
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 bg-muted/70 text-primary border border-border">
                         <Check className="w-3 h-3" strokeWidth={3} />
                       </div>
                     )}

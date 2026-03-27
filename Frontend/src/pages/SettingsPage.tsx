@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  User, LogOut, Trash2, CreditCard, Plug, Copy, Check,
+  User, LogOut, Trash2, CreditCard, Copy, Check,
   ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail, GraduationCap,
   Gift, Coins, Flame, Users, Share2,
 } from "lucide-react";
@@ -33,7 +33,7 @@ import { useUser } from "@/contexts/UserContext";
 // ── Constants ────────────────────────────────────────────────────────────────
 
 
-type SettingsTab = "general" | "account" | "billing" | "connectors";
+type SettingsTab = "general" | "account" | "billing";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -109,62 +109,9 @@ interface BillingPlan {
   is_current: boolean;
 }
 
-interface ConnectorItem {
-  id: string;
-  name: string;
-  icon: string;
-  connected: boolean;
-  connected_at: string | null;
-}
-
 // ── Connector Icons ──────────────────────────────────────────────────────────
 
 // ── Inline Microsoft SVG icons — no external URLs needed ─────────────────────
-const MicrosoftOneDriveIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M14.5 10.5C14.5 10.5 13.5 8 10.5 8C7.5 8 6 10.5 6 10.5C4 10.5 2.5 12 2.5 14C2.5 16 4 17.5 6 17.5H18C19.7 17.5 21 16.2 21 14.5C21 12.8 19.7 11.5 18 11.5C18 11.5 17.5 10.5 16.5 10.5H14.5Z" fill="#0078D4"/>
-    <path d="M9 10C9 10 8 8 6 8C4 8 2.5 9.5 2.5 11.5C2.5 12 2.6 12.5 2.8 12.9C3.6 12.3 4.7 12 6 12H9V10Z" fill="#1490DF"/>
-  </svg>
-);
-
-const MicrosoftOutlookIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="2" y="4" width="14" height="16" rx="2" fill="#0078D4"/>
-    <rect x="8" y="2" width="14" height="16" rx="2" fill="#1490DF"/>
-    <ellipse cx="15" cy="10" rx="3.5" ry="3.5" fill="white"/>
-    <rect x="9" y="13" width="12" height="1.5" rx="0.75" fill="white" opacity="0.7"/>
-    <rect x="9" y="15.5" width="9" height="1.5" rx="0.75" fill="white" opacity="0.5"/>
-  </svg>
-);
-
-const MicrosoftTeamsIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <path d="M13.5 8C13.5 9.1 12.6 10 11.5 10C10.4 10 9.5 9.1 9.5 8C9.5 6.9 10.4 6 11.5 6C12.6 6 13.5 6.9 13.5 8Z" fill="#5059C9"/>
-    <path d="M16 10H21C21.6 10 22 10.4 22 11V15.5C22 17.4 20.4 19 18.5 19H18.4C17.9 20.2 16.8 21 15.5 21C13.6 21 12 19.4 12 17.5V13C12 11.3 13.3 10 15 10H16Z" fill="#5059C9"/>
-    <circle cx="18.5" cy="7.5" r="2.5" fill="#5059C9"/>
-    <path d="M9 12H13C14.1 12 15 12.9 15 14V18C15 19.7 13.7 21 12 21H5C3.3 21 2 19.7 2 18V14C2 12.9 2.9 12 4 12H9Z" fill="#7B83EB"/>
-    <circle cx="8.5" cy="8.5" r="2.5" fill="#7B83EB"/>
-  </svg>
-);
-
-const MicrosoftOneNoteIcon = () => (
-  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="2" y="3" width="13" height="18" rx="2" fill="#7719AA"/>
-    <rect x="9" y="3" width="13" height="18" rx="2" fill="#9332BF"/>
-    <text x="10.5" y="15.5" fontSize="9" fontWeight="bold" fill="white" fontFamily="Arial">N</text>
-    <rect x="3" y="7" width="6" height="1.5" rx="0.75" fill="white" opacity="0.6"/>
-    <rect x="3" y="10" width="6" height="1.5" rx="0.75" fill="white" opacity="0.6"/>
-    <rect x="3" y="13" width="6" height="1.5" rx="0.75" fill="white" opacity="0.6"/>
-  </svg>
-);
-
-const CONNECTOR_ICON_MAP: Record<string, React.ReactNode> = {
-  "onedrive":  <MicrosoftOneDriveIcon />,
-  "outlook":   <MicrosoftOutlookIcon />,
-  "teams":     <MicrosoftTeamsIcon />,
-  "onenote":   <MicrosoftOneNoteIcon />,
-};
-
 // ── Main Component ───────────────────────────────────────────────────────────
 
 const SettingsPage = () => {
@@ -173,7 +120,7 @@ const SettingsPage = () => {
   const { setColorMode, setChatFont, setVoice } = useAppearance();
   const [searchParams] = useSearchParams();
   const urlTab = searchParams.get("tab") as SettingsTab | null;
-  const validTabs: SettingsTab[] = ["general", "account", "billing", "connectors"];
+  const validTabs: SettingsTab[] = ["general", "account", "billing"];
   const [activeTab, setActiveTab] = useState<SettingsTab>(
     urlTab && validTabs.includes(urlTab) ? urlTab : "general"
   );
@@ -183,7 +130,7 @@ const SettingsPage = () => {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const pageRef = useRef<HTMLDivElement>(null);           // stable ref — works from first render
   const activeTabRef = useRef<SettingsTab>("general");    // mirror of activeTab for the closure below
-  const TABS_ORDER: SettingsTab[] = ["general", "account", "billing", "connectors"];
+  const TABS_ORDER: SettingsTab[] = ["general", "account", "billing"];
 
   // Keep activeTabRef in sync with state
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
@@ -227,7 +174,6 @@ const SettingsPage = () => {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [billingPlans, setBillingPlans] = useState<BillingPlan[]>([]);
   const [currentPlan, setCurrentPlan] = useState("free");
-  const [connectors, setConnectors] = useState<ConnectorItem[]>([]);
   const [showPlansDialog, setShowPlansDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showLogoutDialog, setShowLogoutDialog] = useState(false);
@@ -279,31 +225,43 @@ const SettingsPage = () => {
       console.error("Failed to fetch billing:", err);
       // Fallback plans — matches Backend/app/routers/settings.py PLANS exactly
       setBillingPlans([
-        { id: "free", name: "Free", tagline: "Get started with Study Buddy", price: "$0", period: "", features: ["5 AI chat messages per day","3 quiz generations per day","Basic diagram generation","Upload up to 5 files","Community support"], is_current: true },
-        { id: "pro", name: "Pro", tagline: "For serious students", price: "$12", period: "USD/month", features: ["Everything in Free and:","Unlimited AI chat messages","Unlimited quiz generations","Advanced diagram generation","Upload up to 50 files","Priority support","Study plan generation","Voice input & output","Translation to 8 languages"], is_current: false },
-        { id: "max", name: "Max", tagline: "For power users & teams", price: "From $30", period: "USD/month", features: ["Everything in Pro, plus:","Unlimited file uploads","Custom AI model tuning","Team collaboration","API access","Dedicated support","Advanced analytics","Custom integrations"], is_current: false },
+        { id: "free", name: "Free", tagline: "Get started with Study Buddy", price: "$0", period: "", features: [
+            "Limited AI chat messages per day",
+            "Limited Tools use per day",
+            "Basic diagram generation",
+            "Upload up to 5 files(max 20 MB per file and 35 pages for PDFs)",
+            "Limited TTS usage per month"], is_current: true },
+        { id: "pro", name: "Pro", tagline: "For serious students", price: "$12", period: "USD/month", features: [
+            "More AI chat messages per day",
+            "More Tools use per day",
+            "Advanced diagram generation",
+            "Upload up to 7 files((max 50 MB per file))",
+            "More TTS usage per month",
+            "More Models to choose from for AI chat",
+            "Limited access to new features of StudyBuddy",
+            "More translation languages"
+        ], is_current: false },
+        { id: "max", name: "Max", tagline: "For power users & teams", price: "From $30", period: "USD/month", features: [
+            "20x AI chat messages per day compared to Pro",
+            "Unlimited Tools use",
+            "Upload up to 7 files(max 100 MB per file)",
+            "Early access to new features of StudyBuddy",
+            "Priority access at high traffic times",
+            "Unlimited TTS usage",
+        ], is_current: false },
       ]);
       setCurrentPlan("free");
-    }
-  }, []);
-
-  const fetchConnectors = useCallback(async () => {
-    try {
-      const { data } = await offlineFetch(`${API_BASE}/settings/connectors?user_id=${USER_ID}`);
-      setConnectors(data.connectors);
-    } catch (err) {
-      console.error("Failed to fetch connectors:", err);
     }
   }, []);
 
   useEffect(() => {
     const loadAll = async () => {
       setLoading(true);
-      await Promise.all([fetchSettings(), fetchAccount(), fetchBilling(), fetchConnectors()]);
+      await Promise.all([fetchSettings(), fetchAccount(), fetchBilling()]);
       setLoading(false);
     };
     loadAll();
-  }, [fetchSettings, fetchAccount, fetchBilling, fetchConnectors]);
+  }, [fetchSettings, fetchAccount, fetchBilling]);
 
   // ── Save Settings ────────────────────────────────────────────────────────
   // Shows "Saving…" immediately on any change, debounces the actual API call 800ms.
@@ -378,10 +336,6 @@ const SettingsPage = () => {
   }, []);
 
   // ── Connector Placeholder ────────────────────────────────────────────────
-  const handleConnectorClick = (connectorName: string) => {
-    toast.info(`${connectorName} connector coming soon.`);
-  };
-
   // ── Plan Upgrade ─────────────────────────────────────────────────────────
 
   const handleUpgrade = async (planId: string) => {
@@ -406,7 +360,6 @@ const SettingsPage = () => {
     { id: "general", label: "General", icon: <User className="w-4 h-4" /> },
     { id: "account", label: "Account", icon: <LogOut className="w-4 h-4" /> },
     { id: "billing", label: "Billing", icon: <CreditCard className="w-4 h-4" /> },
-    { id: "connectors", label: "Connectors", icon: <Plug className="w-4 h-4" /> },
   ];
 
   if (loading) {
@@ -421,7 +374,7 @@ const SettingsPage = () => {
           </div>
           {/* Tab bar skeleton */}
           <div className="max-w-3xl mx-auto flex gap-6 border-b border-border">
-            {[...Array(4)].map((_, i) => (
+            {[...Array(3)].map((_, i) => (
               <div key={i} className="h-9 w-20 bg-secondary/40 rounded-t-lg animate-pulse" />
             ))}
           </div>
@@ -531,12 +484,6 @@ const SettingsPage = () => {
             handleUpgrade={handleUpgrade}
           />
         )}
-        {activeTab === "connectors" && (
-          <ConnectorsTab
-            connectors={connectors}
-            handleConnectorClick={handleConnectorClick}
-          />
-        )}
       </div>
     </div>
   );
@@ -642,12 +589,6 @@ const GeneralTab = ({
     const updated = { ...settings, notifications: { ...settings.notifications, [field]: value } };
     setSettings(updated);
     saveSettings({ notifications: updated.notifications });
-  };
-
-  const updateAIPref = (field: keyof AIPreferences, value: boolean) => {
-    const updated = { ...settings, ai_preferences: { ...settings.ai_preferences, [field]: value } };
-    setSettings(updated);
-    saveSettings({ ai_preferences: updated.ai_preferences });
   };
 
   const updateAppearance = (field: keyof Appearance, value: string) => {
@@ -783,37 +724,6 @@ const GeneralTab = ({
               />
             </div>
           ))}
-        </CardContent>
-      </Card>
-
-      {/* AI Preferences */}
-      <Card className="bg-card border-border">
-        <CardHeader>
-          <CardTitle className="text-base text-foreground">AI Preferences</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <Label className="text-sm text-foreground">Simplified explanations</Label>
-              <p className="text-xs text-muted-foreground">AI explains in simple terms by default</p>
-            </div>
-            <Switch
-              checked={settings.ai_preferences.simplified_explanations}
-              onCheckedChange={(v) => updateAIPref("simplified_explanations", v)}
-              className="data-[state=checked]:bg-primary"
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <Label className="text-sm text-foreground">Auto-generate flashcards</Label>
-              <p className="text-xs text-muted-foreground">Create flashcards from chat topics</p>
-            </div>
-            <Switch
-              checked={settings.ai_preferences.auto_generate_flashcards}
-              onCheckedChange={(v) => updateAIPref("auto_generate_flashcards", v)}
-              className="data-[state=checked]:bg-primary"
-            />
-          </div>
         </CardContent>
       </Card>
 
@@ -1079,9 +989,8 @@ const ReferralSection = () => {
   };
 
   return (
-    <Card className="bg-card border-border overflow-hidden">
-      <div className="h-1 bg-gradient-to-r from-primary via-primary/80 to-primary/60" />
-      <CardHeader className="pb-2">
+    <Card className="bg-card border-border">
+      <CardHeader>
         <CardTitle className="text-base text-foreground flex items-center gap-2">
           <Users className="w-4 h-4 text-primary" />
           Refer Friends & Earn
@@ -1089,8 +998,8 @@ const ReferralSection = () => {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Balance mini-display */}
-        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/8 border border-primary/15">
-          <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-background/60 border border-border">
+          <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
             <Coins className="w-4 h-4 text-primary" />
           </div>
           <div className="flex-1">
@@ -1101,7 +1010,7 @@ const ReferralSection = () => {
             <Flame className="w-3.5 h-3.5 text-primary" />
             <span>{coinState.login_streak}d login streak</span>
           </div>
-          <Button size="sm" variant="outline" className="border-primary/30 text-primary hover:bg-primary/10 text-xs h-8" onClick={() => navigate("/store")}>
+          <Button size="sm" variant="outline" className="border-border text-primary hover:bg-background/80 text-xs h-8" onClick={() => navigate("/store")}>
             <Gift className="w-3 h-3 mr-1" /> Store
           </Button>
         </div>
@@ -1436,64 +1345,5 @@ const BillingTab = ({
 
 // ── Connectors Tab ───────────────────────────────────────────────────────────
 
-interface ConnectorsTabProps {
-  connectors: ConnectorItem[];
-  handleConnectorClick: (name: string) => void;
-}
-
-const ConnectorsTab = ({ connectors, handleConnectorClick }: ConnectorsTabProps) => {
-  return (
-    <>
-      <Card className="bg-card border-border">
-        <CardHeader>
-          <div>
-            <CardTitle className="text-base text-foreground">Connectors</CardTitle>
-            <p className="text-sm text-muted-foreground mt-1">
-              Allow Study Buddy to reference other apps and services for more context.
-            </p>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-1">
-          {connectors.map((connector, index) => (
-            <div key={connector.id}>
-              <button
-                type="button"
-                onClick={() => handleConnectorClick(connector.name)}
-                className="flex w-full items-center justify-between py-3 text-left transition-colors hover:bg-secondary/30 rounded-lg px-2"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-lg bg-muted/50 flex items-center justify-center overflow-hidden">
-                    {CONNECTOR_ICON_MAP[connector.icon] ?? (
-                      <span className="text-xs font-bold text-muted-foreground">
-                        {connector.name.charAt(0)}
-                      </span>
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{connector.name}</p>
-                    <p className="text-xs text-muted-foreground">Coming soon</p>
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleConnectorClick(connector.name);
-                  }}
-                  className="border-border min-w-[100px]"
-                >
-                  Coming soon
-                </Button>
-              </button>
-              {index < connectors.length - 1 && <Separator className="bg-border" />}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-    </>
-  );
-};
 
 export default SettingsPage;

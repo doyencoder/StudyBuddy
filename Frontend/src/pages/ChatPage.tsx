@@ -271,6 +271,24 @@ function generateUUID(): string {
   });
 }
 
+function formatAttachmentName(name: string, maxBaseLength = 18): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "File";
+
+  const lastDot = trimmed.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === trimmed.length - 1) {
+    return trimmed.length > maxBaseLength
+      ? `${trimmed.slice(0, Math.max(0, maxBaseLength - 3))}...`
+      : trimmed;
+  }
+
+  const base = trimmed.slice(0, lastDot);
+  const ext = trimmed.slice(lastDot);
+  if (base.length <= maxBaseLength) return trimmed;
+
+  return `${base.slice(0, Math.max(0, maxBaseLength - 3))}...${ext}`;
+}
+
 function isSafetyRefusalText(text?: string): boolean {
   const t = (text ?? "").trim().toLowerCase();
   if (!t) return false;
@@ -2395,6 +2413,7 @@ const ChatPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const skipHistoryReload = useRef(false);
   const lastLoadedId = useRef<string | null>(null);
+  const forceScrollOnNextUpdateRef = useRef(false);
   // Tracks which pending key "owns" the new-chat view right now.
   // Set when a brand-new chat stream starts; cleared when the user navigates
   // away to a fresh new-chat screen. Prevents the meta handler from hijacking
@@ -2889,8 +2908,15 @@ const ChatPage = () => {
     requestAnimationFrame(syncTextareaHeight);
   }, [intentChip]);
 
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    bottomRef.current?.scrollIntoView({ behavior });
+  };
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (forceScrollOnNextUpdateRef.current) {
+      scrollToBottom("smooth");
+      forceScrollOnNextUpdateRef.current = false;
+    }
   }, [messages, isTyping]);
 
   // Stop audio when leaving the page
@@ -3668,6 +3694,7 @@ const ChatPage = () => {
       ],
       isTyping: true,
     }));
+    forceScrollOnNextUpdateRef.current = true;
 
     // Existing-chat UX: move this chat up immediately in the sidebar.
     // If the request fails before any assistant output, we roll this back.
@@ -4130,6 +4157,13 @@ const ChatPage = () => {
     toast.success("Copied to clipboard!");
   };
 
+  const visibleMessages = messages.filter((msg) => msg.content !== "__welcome__");
+  const lastVisibleMessage = visibleMessages[visibleMessages.length - 1];
+  const shouldShowTypingIndicator =
+    isTyping &&
+    !regeneratingMsgId &&
+    lastVisibleMessage?.role === "user";
+
   // ── Loading history spinner ─────────────────────────────────────────────────
   if (isLoadingHistory) {
     return (
@@ -4457,8 +4491,11 @@ const ChatPage = () => {
                                 <Paperclip className="w-3.5 h-3.5 text-primary-foreground" />
                               </div>
                               <div className="flex flex-col min-w-0">
-                                <span className="text-xs font-medium text-primary-foreground truncate">
-                                  {att.name}
+                                <span
+                                  className="text-xs font-medium text-primary-foreground truncate"
+                                  title={att.name}
+                                >
+                                  {formatAttachmentName(att.name)}
                                 </span>
                                 <span className="text-xs text-primary-foreground/60">
                                   Click to open
@@ -4691,7 +4728,7 @@ const ChatPage = () => {
         })}
 
         {/* Typing indicator */}
-        {isTyping && !regeneratingMsgId && (
+        {shouldShowTypingIndicator && (
           <div className="flex justify-start items-center gap-3 animate-fade-in">
             <LoadingDots size={65} />
             {isReadingDoc && (
@@ -4743,8 +4780,11 @@ const ChatPage = () => {
                     )}
                     {/* Text */}
                     <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-medium text-foreground truncate w-[80px] leading-tight">
-                        {file.name}
+                      <span
+                        className="text-xs font-medium text-foreground truncate w-[80px] leading-tight"
+                        title={file.name}
+                      >
+                        {formatAttachmentName(file.name)}
                       </span>
                       <span className="text-[10px] text-muted-foreground leading-tight mt-0.5">
                         {file.status === "uploading" ? (

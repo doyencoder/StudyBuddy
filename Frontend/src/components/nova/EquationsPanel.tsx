@@ -547,7 +547,7 @@ function MathQuillInput({
     return (
       <div
         className={cn(
-          "flex-1 min-w-0 text-[11px] text-muted-foreground/90",
+          "flex-1 min-w-0 bg-transparent text-sm leading-tight font-mono text-foreground outline-none placeholder:text-muted-foreground/60",
           className,
         )}
         aria-live="polite"
@@ -919,7 +919,7 @@ export function EquationsPanel({
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
                 placeholder="Describe the graph..."
-                className="flex-1 min-w-0 h-9 px-3 text-xs font-mono rounded-lg border bg-primary/5 border-primary/25 outline-none focus:border-primary/50 transition-colors"
+                className="flex-1 min-w-0 h-9 px-3 text-sm leading-tight font-mono rounded-lg border bg-primary/5 border-primary/25 outline-none focus:border-primary/50 transition-colors"
                 disabled={isLoading}
                 spellCheck={false}
               />
@@ -947,14 +947,20 @@ export function EquationsPanel({
                 onClick={toggleListening}
                 className={cn(
                   "h-8 w-8 shrink-0 rounded-lg",
-                  isListening
+                  isLoading
+                    ? "text-primary bg-primary/10"
+                    : isListening
                     ? "text-destructive bg-destructive/10 hover:bg-destructive/15"
                     : "text-muted-foreground hover:text-primary hover:bg-background/70",
                 )}
                 disabled={isLoading || !online}
-                title={isListening ? "Stop voice input" : "Start voice input"}
+                title={isLoading ? "Nova AI is thinking" : isListening ? "Stop voice input" : "Start voice input"}
               >
-                <Mic className={cn("w-3 h-3", isListening && "animate-pulse")} />
+                {isLoading ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Mic className={cn("w-3 h-3", isListening && "animate-pulse")} />
+                )}
               </Button>
             ) : (
               <Button

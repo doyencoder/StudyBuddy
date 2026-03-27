@@ -16,7 +16,7 @@ const STEPS = [
   },
   {
     number: "03",
-    title: "Generate Study Tools",
+    title: "Use Study Tools",
     description:
       "Create quizzes, flashcards, mind maps, and study plans tailored to your learning goals.",
   },

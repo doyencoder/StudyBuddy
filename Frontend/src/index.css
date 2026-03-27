@@ -281,7 +281,7 @@ body.font-dyslexic {
   display: inline-block;
   width: 100%;
   min-height: 20px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.4;
   color: hsl(var(--foreground));
   cursor: text;
@@ -310,7 +310,7 @@ body.font-dyslexic {
 .mq-nova.mq-editable-field.mq-empty::before {
   content: attr(data-placeholder);
   color: hsl(var(--muted-foreground));
-  font-size: 11px;
+  font-size: 12px;
   pointer-events: none;
   position: absolute;
 }

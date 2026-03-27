@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  Gift, Coins, Crown, ShoppingBag, Flame, Star, Trophy, Check,
-  Sparkles, ArrowRight, BadgeCheck, Zap, TrendingUp, X, Lock,
+  Gift, Coins, ShoppingBag, Flame, Star, Trophy, Check,
+  Sparkles, ArrowRight, TrendingUp, Lock,
   LogIn, ClipboardCheck, Upload, Users, FilePlus, Brain,
   ClipboardList, Moon, TreePine, GraduationCap, Volume2, Shield,
 } from "lucide-react";
@@ -15,7 +15,7 @@ import {
 } from "@/lib/coinStore";
 import { useCoins } from "@/contexts/CoinContext";
 
-type StoreTab = "redeem" | "earn" | "premium" | "orders";
+type StoreTab = "redeem" | "earn" | "orders";
 
 // ── Icon map: iconKey → React component ─────────────────────────────────────
 const ICON_MAP: Record<string, React.ReactNode> = {
@@ -53,14 +53,14 @@ const StorePage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initTab = (searchParams.get("tab") as StoreTab) || "redeem";
-  const [activeTab, setActiveTab] = useState<StoreTab>(["redeem","earn","premium","orders"].includes(initTab) ? initTab : "redeem");
+  const [activeTab, setActiveTab] = useState<StoreTab>(["redeem","earn","orders"].includes(initTab) ? initTab : "redeem");
   const { coinState } = useCoins();
 
   const swipeStartX = useRef<number | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const activeTabRef = useRef<StoreTab>(activeTab);
-  const TABS: StoreTab[] = ["redeem", "earn", "premium", "orders"];
+  const TABS: StoreTab[] = ["redeem", "earn", "orders"];
 
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   useEffect(() => { tabRefs.current[activeTab]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" }); }, [activeTab]);
@@ -75,7 +75,6 @@ const StorePage = () => {
   const tabs: { id: StoreTab; label: string; icon: React.ReactNode }[] = [
     { id: "redeem", label: "Redeem", icon: <Gift className="w-4 h-4" /> },
     { id: "earn", label: "Earn Coins", icon: <Coins className="w-4 h-4" /> },
-    { id: "premium", label: "Premium", icon: <Crown className="w-4 h-4" /> },
     { id: "orders", label: "Orders", icon: <ShoppingBag className="w-4 h-4" /> },
   ];
 
@@ -122,7 +121,6 @@ const StorePage = () => {
       <div className="max-w-5xl mx-auto px-6 py-8">
         {activeTab === "redeem" && <RedeemSection coinState={coinState} />}
         {activeTab === "earn" && <EarnSection coinState={coinState} />}
-        {activeTab === "premium" && <PremiumSection />}
         {activeTab === "orders" && <OrdersSection coinState={coinState} />}
       </div>
     </div>
@@ -229,47 +227,6 @@ const EarnSection = ({ coinState }: { coinState: CoinState }) => {
           </div>
         );
       })}
-    </div>
-  );
-};
-
-// ── Premium — matches Settings billing plans ────────────────────────────────
-const PremiumSection = () => {
-  const navigate = useNavigate();
-  const plans = [
-    { id: "free", name: "Free", tagline: "Get started with Study Buddy", price: "$0", period: "", features: ["5 AI chat messages per day","3 quiz generations per day","Basic diagram generation","Upload up to 5 files","Community support"], current: true },
-    { id: "pro", name: "Pro", tagline: "For serious students", price: "$12", period: "USD/month", features: ["Everything in Free and:","Unlimited AI chat messages","Unlimited quiz generations","Advanced diagram generation","Upload up to 50 files","Priority support","Study plan generation","Voice input & output","Translation to 8 languages"], current: false, popular: true },
-    { id: "max", name: "Max", tagline: "For power users & teams", price: "From $30", period: "USD/month", features: ["Everything in Pro, plus:","Unlimited file uploads","Custom AI model tuning","Team collaboration","API access","Dedicated support","Advanced analytics","Custom integrations"], current: false },
-  ];
-
-  return (
-    <div className="space-y-6">
-      <div className="text-center mb-8">
-        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary/10 border border-primary/20 mb-4">
-          <Sparkles className="w-4 h-4 text-primary" /><span className="text-sm font-medium text-primary">Upgrade your study game</span>
-        </div>
-        <h2 className="text-2xl font-bold text-foreground">Plans that grow with you</h2>
-        <p className="text-sm text-muted-foreground mt-1">Choose the plan that fits your learning journey</p>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {plans.map(p => (
-          <div key={p.id} className={`relative rounded-2xl border-2 p-5 flex flex-col transition-all hover:shadow-lg ${p.current ? "border-primary bg-primary/5" : "border-border hover:border-muted-foreground/40"}`}>
-            {(p as any).popular && <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-primary text-primary-foreground text-xs font-semibold shadow-lg">Most Popular</div>}
-            <div className="mb-4"><h3 className="font-bold text-lg text-foreground">{p.name}</h3><p className="text-xs text-muted-foreground">{p.tagline}</p></div>
-            <div className="mb-4"><span className="text-2xl font-bold text-foreground">{p.price}</span>{p.period && <span className="text-xs text-muted-foreground ml-1">{p.period}</span>}</div>
-            <Button className="w-full mb-4" variant={p.current ? "secondary" : "default"} disabled={p.current}
-              onClick={() => navigate("/settings?tab=billing")}>
-              {p.current ? "Current plan" : `Get ${p.name} plan`}
-            </Button>
-            <div className="space-y-2 flex-1">
-              {p.features.map((f, i) => (
-                <div key={i} className="flex items-start gap-2"><Check className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" /><span className="text-xs text-muted-foreground">{f}</span></div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-center text-muted-foreground">* Usage limits apply. Prices shown don't include applicable tax.</p>
     </div>
   );
 };

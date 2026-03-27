@@ -13,27 +13,20 @@ import { cn } from '@/lib/utils'
 import {
   MessageSquare,
   Wand2,
+  Layers,
   Timer,
   Target,
   LineChart,
-  UploadCloud
+  BookOpen
 } from 'lucide-react'
 
 const features = [
   {
     icon: MessageSquare,
-    title: 'RAG chat grounded in your own notes',
-    description: 'Ask anything about the PDFs, images, and notes you uploaded. StudyBuddy retrieves context from your material so answers stay relevant, specific, and exam-ready.',
-    label: 'Context-aware answers',
+    title: 'Chat directly with your notes',
+    description: 'Ask questions about your PDFs, images of handwritten notes. StudyBuddy scans your actual coursework to give you instant, specific, and exam-ready answers.',
+    label: 'Personalized AI Partner',
     colSpan: 2 as const,
-    rowSpan: 1 as const,
-  },
-  {
-    icon: Wand2,
-    title: 'Dynamic diagrams and mind maps',
-    description: 'Generate Mermaid flowcharts, concept maps, and visual breakdowns when a topic needs structure, not just text.',
-    label: 'Visual learning',
-    colSpan: 1 as const,
     rowSpan: 1 as const,
   },
   {
@@ -61,13 +54,38 @@ const features = [
     rowSpan: 1 as const,
   },
   {
-    icon: UploadCloud,
-    title: 'Upload-first workflow',
-    description: 'Start with PDFs, screenshots, or handwritten notes. No setup friction — just upload and begin learning.',
-    label: 'Fast onboarding',
+    icon: Wand2,
+    title: 'Dynamic diagrams and mind maps',
+    description: 'Generate Mermaid flowcharts, concept maps, and visual breakdowns when a topic needs structure, not just text.',
+    label: 'Visual learning',
     colSpan: 1 as const,
     rowSpan: 1 as const,
   },
+  {
+    icon: LineChart,
+    title: 'Nova AI graphing calculator',
+    description: 'Describe a function or equation in plain language and Nova turns it into an interactive graph for faster visual understanding.',
+    label: 'AI graphing',
+    colSpan: 1 as const,
+    rowSpan: 1 as const,
+  },
+  {
+    icon: BookOpen,
+    title: 'Curriculum-aware answers',
+    description: 'StudyBuddy adapts responses to your selected board and grade so explanations stay aligned with your actual syllabus.',
+    label: 'Syllabus aligned',
+    colSpan: 1 as const,
+    rowSpan: 1 as const,
+  },
+  {
+    icon: Layers,
+    title: 'Smart flashcards from your chats',
+    description: 'Turn study discussions into review-ready flashcards so key facts, definitions, and concepts are easier to revise.',
+    label: 'Flashcard revision',
+    colSpan: 1 as const,
+    rowSpan: 1 as const,
+  },
+
 ]
 
 function FeatureCard({
