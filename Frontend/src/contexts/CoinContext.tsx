@@ -28,7 +28,7 @@ interface DailyLoginReward {
 
 interface ReferralApplyResult {
   applied: boolean;
-  reason: "self_referral" | "already_referred" | null;
+  reason: "self_referral" | "already_referred" | "invalid_code" | null;
 }
 
 interface CoinContextValue {

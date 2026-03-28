@@ -34,6 +34,7 @@ from app.services.settings_service import record_checkin, get_all_users_for_noti
 from app.services.goals_service import list_goals
 from app.services.cosmos_service import has_flashcard_decks
 from app.services.email_service import (
+    get_email_service_status,
     send_daily_goals_reminder,
     send_flashcard_review_reminder,
     send_weekly_all_goals_summary,
@@ -84,12 +85,14 @@ async def send_daily_reminders():
             done  = user.get("daily_goals_done", 0)
             if total > 0 and done < total:
                 try:
-                    send_daily_goals_reminder(
+                    sent = send_daily_goals_reminder(
                         to_email=email,
                         display_name=display_name,
                         goals_done=done,
                         goals_total=total,
                     )
+                    if not sent:
+                        print(f"[notifications] Daily goals email failed for {email}: send returned False")
                 except Exception as e:
                     print(f"[notifications] Daily goals email failed for {email}: {e}")
 
@@ -98,7 +101,9 @@ async def send_daily_reminders():
             last_active = user.get("last_active_date", "")
             if last_active != today_ist:    # both now IST — consistent comparison
                 try:
-                    send_streak_alert(to_email=email, display_name=display_name)
+                    sent = send_streak_alert(to_email=email, display_name=display_name)
+                    if not sent:
+                        print(f"[notifications] Streak alert failed for {email}: send returned False")
                 except Exception as e:
                     print(f"[notifications] Streak alert failed for {email}: {e}")
 
@@ -132,7 +137,9 @@ async def send_flashcard_review_reminders():
             continue
 
         try:
-            send_flashcard_review_reminder(to_email=email, display_name=display_name)
+            sent = send_flashcard_review_reminder(to_email=email, display_name=display_name)
+            if not sent:
+                print(f"[notifications] Flashcard reminder failed for {email}: send returned False")
         except Exception as e:
             print(f"[notifications] Flashcard reminder failed for {email}: {e}")
 
@@ -207,11 +214,13 @@ async def send_weekly_longterm_reminders():
 
         # Send ONE digest email covering all goals
         try:
-            send_weekly_all_goals_summary(
+            sent = send_weekly_all_goals_summary(
                 to_email=email,
                 display_name=display_name,
                 goals_data=goals_data,
             )
+            if not sent:
+                print(f"[notifications] Weekly digest failed for {email}: send returned False")
         except Exception as e:
             print(f"[notifications] Weekly digest failed for {email}: {e}")
 
@@ -269,6 +278,14 @@ def start_scheduler():
     print("[notifications]   daily_reminders  → 9 PM IST daily  (daily goals reminder + study streak alert)")
     print("[notifications]   flashcard_review_reminders → 12 PM IST daily (flashcard review reminder)")
     print("[notifications]   weekly_longterm  → Sunday 9 AM IST (long-term goals progress email)")
+    email_status = get_email_service_status()
+    if email_status["configured"]:
+        print(
+            "[notifications] Email service ready "
+            f"({email_status['smtp_host']}:{email_status['smtp_port']})"
+        )
+    else:
+        print("[notifications] Email service is not configured; test sends and scheduled emails will fail.")
 
 
 def stop_scheduler():
@@ -283,8 +300,8 @@ def stop_scheduler():
 
 class CheckinRequest(BaseModel):
     user_id: str
-    daily_goals_total: int = 0
-    daily_goals_done: int = 0
+    daily_goals_total: Optional[int] = None
+    daily_goals_done: Optional[int] = None
 
 
 @router.post("/checkin")
@@ -320,6 +337,7 @@ async def test_email(request: TestEmailRequest):
         email = settings.get("profile", {}).get("email", "")
         display_name = settings.get("profile", {}).get("display_name") or \
                        settings.get("profile", {}).get("full_name", "")
+        response_payload = {"status": "sent", "to": email, "type": request.type}
 
         if not email:
             raise HTTPException(status_code=400, detail="No email address found in profile settings.")
@@ -330,11 +348,11 @@ async def test_email(request: TestEmailRequest):
             # Ensure there's something to show (demo defaults if no goals recorded yet)
             if total == 0:
                 total, done = 4, 2
-            send_daily_goals_reminder(email, display_name, done, total)
+            sent = send_daily_goals_reminder(email, display_name, done, total)
 
         elif request.type == "streak":
             # FIX: Always send in test mode — don't check last_active_date
-            send_streak_alert(email, display_name)
+            sent = send_streak_alert(email, display_name)
 
         elif request.type == "weekly_goals":
             goals = await list_goals(user_id=request.user_id)
@@ -371,20 +389,23 @@ async def test_email(request: TestEmailRequest):
                     print(f"[notifications/test-email] Skipped goal: {e}")
 
             # Send ONE digest email with all goals
-            send_weekly_all_goals_summary(
+            sent = send_weekly_all_goals_summary(
                 to_email=email,
                 display_name=display_name,
                 goals_data=goals_data,
             )
-            return {"status": "sent", "to": email, "type": request.type, "goals_in_email": len(goals_data)}
+            response_payload["goals_in_email"] = len(goals_data)
         elif request.type == "flashcards":
             if not await has_flashcard_decks(request.user_id):
                 raise HTTPException(status_code=400, detail="No flashcard decks found.")
-            send_flashcard_review_reminder(email, display_name)
+            sent = send_flashcard_review_reminder(email, display_name)
         else:
             raise HTTPException(status_code=400, detail="type must be 'daily_goals', 'weekly_goals', 'streak', or 'flashcards'")
 
-        return {"status": "sent", "to": email, "type": request.type}
+        if not sent:
+            raise HTTPException(status_code=502, detail="Email send failed. Check SMTP configuration and server logs.")
+
+        return response_payload
     except HTTPException:
         raise
     except Exception as e:
@@ -396,7 +417,11 @@ async def scheduler_status():
     """Debug: shows scheduler status and next run times."""
     sched = get_scheduler()
     if not sched or not sched.running:
-        return {"running": False, "jobs": []}
+        return {
+            "running": False,
+            "jobs": [],
+            "email": get_email_service_status(),
+        }
 
     jobs = []
     for job in sched.get_jobs():
@@ -405,4 +430,8 @@ async def scheduler_status():
             "name": job.name,
             "next_run": str(job.next_run_time) if job.next_run_time else None,
         })
-    return {"running": True, "jobs": jobs}
+    return {
+        "running": True,
+        "jobs": jobs,
+        "email": get_email_service_status(),
+    }

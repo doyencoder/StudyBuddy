@@ -8,24 +8,6 @@ import { OfflineBanner } from "@/components/OfflineBanner";
 import { DailyLoginReward } from "@/components/DailyLoginReward";
 import { useUser } from "@/contexts/UserContext";
 
-const DAILY_GOALS_KEY = "studybuddy_daily_goals";
-
-/** Read daily goals from localStorage and return total/done counts */
-function getDailyGoalCounts(): { total: number; done: number } {
-  try {
-    const raw = localStorage.getItem(DAILY_GOALS_KEY);
-    if (!raw) return { total: 0, done: 0 };
-    const stored = JSON.parse(raw);
-    const d = new Date();
-    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    if (stored.date !== today) return { total: 0, done: 0 };
-    const goals = stored.goals || [];
-    return { total: goals.length, done: goals.filter((g: any) => g.completed).length };
-  } catch {
-    return { total: 0, done: 0 };
-  }
-}
-
 function useStudyHeartbeat(userId: string) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -39,11 +21,10 @@ function useStudyHeartbeat(userId: string) {
       body: JSON.stringify({ user_id: userId }),
     }).catch(() => {});
 
-    const { total, done } = getDailyGoalCounts();
     fetch(`${API_BASE}/notifications/checkin`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: userId, daily_goals_total: total, daily_goals_done: done }),
+      body: JSON.stringify({ user_id: userId }),
     }).catch(() => {});
   };
 

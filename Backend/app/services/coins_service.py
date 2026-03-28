@@ -132,6 +132,7 @@ def _default_coin_doc(user_id: str) -> Dict[str, Any]:
         "referral_code": _generate_referral_code(),
         "referred_by": None,
         "referral_count": 0,
+        "referral_rewarded_users": [],
         "updated_at": None,
     }
 
@@ -245,6 +246,18 @@ def _sanitize_legacy_state(
 def _trim_transactions(item: Dict[str, Any]) -> None:
     transactions = item.get("transactions") or []
     item["transactions"] = transactions[:MAX_TRANSACTIONS]
+
+
+def _sanitize_referral_rewarded_users(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+
+    rewarded_users: list[str] = []
+    for value in raw:
+        rewarded_user_id = str(value or "").strip()
+        if rewarded_user_id:
+            rewarded_users.append(rewarded_user_id)
+    return rewarded_users
 
 
 def _public_coin_state(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -408,6 +421,26 @@ async def _mutate_coin_state(
     raise RuntimeError("Could not update coin state after multiple retries.")
 
 
+async def _get_coin_doc_by_referral_code(code: str) -> Optional[Dict[str, Any]]:
+    normalized_code = (code or "").strip().upper()
+    if not normalized_code:
+        return None
+
+    async with _get_client() as client:
+        db = client.get_database_client(DB_NAME)
+        container = db.get_container_client(COINS_CONTAINER)
+        query = "SELECT * FROM c WHERE UPPER(c.referral_code) = @code"
+        parameters = [{"name": "@code", "value": normalized_code}]
+
+        async for item in container.query_items(
+            query=query,
+            parameters=parameters,
+        ):
+            return item
+
+    return None
+
+
 async def claim_daily_login(user_id: str) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     today = _today_ist()
     yesterday = _yesterday_ist()
@@ -529,12 +562,28 @@ async def apply_referral_code(user_id: str, code: str) -> Tuple[Dict[str, Any], 
     if not normalized_code:
         raise ValueError("Referral code is required.")
 
+    referrer = await _get_coin_doc_by_referral_code(normalized_code)
+    if not referrer:
+        return await get_coin_state(user_id), {"applied": False, "reason": "invalid_code"}
+
+    referrer_user_id = str(referrer.get("user_id") or referrer.get("id") or "").strip()
+    if not referrer_user_id:
+        return await get_coin_state(user_id), {"applied": False, "reason": "invalid_code"}
+
     def mutator(item: Dict[str, Any]) -> MutationPayload:
         own_code = str(item.get("referral_code") or "").upper()
         if normalized_code == own_code:
             return False, {"applied": False, "reason": "self_referral"}
-        if item.get("referred_by"):
+        existing_referred_by = str(item.get("referred_by") or "").strip().upper()
+        if existing_referred_by and existing_referred_by != normalized_code:
             return False, {"applied": False, "reason": "already_referred"}
+
+        if existing_referred_by == normalized_code:
+            return False, {
+                "applied": False,
+                "reason": "already_referred",
+                "sync_referrer_reward": True,
+            }
 
         item["referred_by"] = normalized_code
         item["balance"] = _coerce_int(item.get("balance"), 0) + REWARDS["REFERRAL_RECEIVER"]
@@ -549,4 +598,29 @@ async def apply_referral_code(user_id: str, code: str) -> Tuple[Dict[str, Any], 
         )
         return True, {"applied": True, "reason": None}
 
-    return await _mutate_coin_state(user_id, mutator)
+    coin_state, result = await _mutate_coin_state(user_id, mutator)
+    should_sync_referrer_reward = bool(result.pop("sync_referrer_reward", False))
+    if not result.get("applied") and not should_sync_referrer_reward:
+        return coin_state, result
+
+    def referrer_mutator(item: Dict[str, Any]) -> MutationPayload:
+        rewarded_users = _sanitize_referral_rewarded_users(item.get("referral_rewarded_users"))
+        if user_id in rewarded_users:
+            return False, None
+
+        item["referral_rewarded_users"] = [*rewarded_users, user_id]
+        item["referral_count"] = _coerce_int(item.get("referral_count"), 0) + 1
+        item["balance"] = _coerce_int(item.get("balance"), 0) + REWARDS["REFERRAL_SENDER"]
+        item["lifetime_earned"] = _coerce_int(item.get("lifetime_earned"), 0) + REWARDS["REFERRAL_SENDER"]
+        item.setdefault("transactions", []).insert(
+            0,
+            _new_transaction(
+                amount=REWARDS["REFERRAL_SENDER"],
+                reason=f"Friend used your referral code ({user_id})",
+                category="referral",
+            ),
+        )
+        return True, None
+
+    await _mutate_coin_state(referrer_user_id, referrer_mutator)
+    return coin_state, result

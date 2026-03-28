@@ -467,4 +467,4 @@ class ReferralApplyRequest(BaseModel):
 class ReferralApplyResponse(BaseModel):
     coin_state: CoinStateResponse
     applied: bool
-    reason: Optional[Literal["self_referral", "already_referred"]] = None
+    reason: Optional[Literal["self_referral", "already_referred", "invalid_code"]] = None

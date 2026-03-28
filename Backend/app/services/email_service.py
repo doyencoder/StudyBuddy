@@ -2,16 +2,19 @@
 email_service.py  —  StudyBuddy notification emails
 """
 
-import os, smtplib
+import os
+import smtplib
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import formataddr
+from typing import Any
 
-SMTP_HOST      = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
-EMAIL_SENDER   = os.getenv("EMAIL_SENDER", "")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
-SITE_URL       = os.getenv("SITE_URL", "https://study-buddy-five-jade.vercel.app")
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DEFAULT_SITE_URL = "https://white-mushroom-0b6df0c00.1.azurestaticapps.net"
 
 _STYLE = """
   body{font-family:'Segoe UI',Arial,sans-serif;background:#0f1117;margin:0;padding:0}
@@ -47,22 +50,92 @@ def _today_label():
     return datetime.now(timezone.utc).strftime("%a, %b %-d")
 
 
+def _get_email_config() -> dict[str, Any]:
+    load_dotenv()
+
+    smtp_host = (os.getenv("SMTP_HOST") or "smtp.gmail.com").strip()
+    try:
+        smtp_port = int((os.getenv("SMTP_PORT") or "587").strip())
+    except ValueError:
+        smtp_port = 587
+
+    try:
+        smtp_timeout = int((os.getenv("SMTP_TIMEOUT") or "20").strip())
+    except ValueError:
+        smtp_timeout = 20
+
+    site_url = (
+        os.getenv("SITE_URL")
+        or os.getenv("AZURE_FRONTEND_URL")
+        or os.getenv("FRONTEND_URL")
+        or DEFAULT_SITE_URL
+    ).strip().rstrip("/")
+
+    return {
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_timeout": smtp_timeout,
+        "email_sender": (os.getenv("EMAIL_SENDER") or "").strip(),
+        "email_password": (os.getenv("EMAIL_PASSWORD") or "").strip(),
+        "site_url": site_url,
+    }
+
+
+def get_email_service_status() -> dict[str, Any]:
+    config = _get_email_config()
+    return {
+        "configured": bool(
+            config["smtp_host"]
+            and config["smtp_port"]
+            and config["email_sender"]
+            and config["email_password"]
+        ),
+        "smtp_host": config["smtp_host"],
+        "smtp_port": config["smtp_port"],
+        "sender_set": bool(config["email_sender"]),
+        "password_set": bool(config["email_password"]),
+        "site_url": config["site_url"],
+    }
+
+
 def _send(to_email, subject, html, demo_label):
-    from_header = f"Study Buddy <{EMAIL_SENDER}>" if EMAIL_SENDER else "Study Buddy"
-    if not EMAIL_SENDER or not EMAIL_PASSWORD:
-        print(f"[EmailService] (demo) {demo_label} -> {to_email}")
-        return True
+    config = _get_email_config()
+    recipient = str(to_email or "").strip()
+    if not recipient:
+        print(f"[EmailService] Missing recipient for '{demo_label}'")
+        return False
+
+    if not config["email_sender"] or not config["email_password"]:
+        print(
+            "[EmailService] SMTP not configured; "
+            f"skipping '{demo_label}' -> {recipient}"
+        )
+        return False
+
+    from_header = formataddr(("Study Buddy", config["email_sender"]))
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"]    = from_header
-        msg["To"]      = to_email
+        msg["From"] = from_header
+        msg["To"] = recipient
         msg.attach(MIMEText(html, "html"))
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as srv:
+
+        with smtplib.SMTP(
+            config["smtp_host"],
+            config["smtp_port"],
+            timeout=config["smtp_timeout"],
+        ) as srv:
+            srv.ehlo()
             srv.starttls()
-            srv.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            srv.sendmail(EMAIL_SENDER, to_email, msg.as_string())
-        print(f"[EmailService] Sent '{subject}' -> {to_email}")
+            srv.ehlo()
+            srv.login(config["email_sender"], config["email_password"])
+            failures = srv.sendmail(config["email_sender"], [recipient], msg.as_string())
+
+        if failures:
+            print(f"[EmailService] SMTP reported failures for '{subject}' -> {recipient}: {failures}")
+            return False
+
+        print(f"[EmailService] Sent '{subject}' -> {recipient}")
         return True
     except Exception as e:
         print(f"[EmailService] Failed: {e}")
@@ -75,6 +148,7 @@ def send_daily_goals_reminder(to_email, display_name, goals_done, goals_total):
     name    = display_name or "Student"
     pct     = int((goals_done / goals_total) * 100) if goals_total else 0
     pending = goals_total - goals_done
+    site_url = _get_email_config()["site_url"]
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_STYLE}</style></head><body>
 <div class="wrap">
   <div class="hero">
@@ -92,7 +166,7 @@ def send_daily_goals_reminder(to_email, display_name, goals_done, goals_total):
       <p style="color:#a89fff;font-size:13px;margin:6px 0 0">{goals_done}/{goals_total} tasks ({pct}%)</p>
     </div>
     <p>Small steps every day lead to big results. You've got this! &#128170;</p>
-    <a href="{SITE_URL}/goals" class="cta">Complete my goals &#8594;</a>
+    <a href="{site_url}/goals" class="cta">Complete my goals &#8594;</a>
   </div>
   <div class="footer"><p>Study Buddy &middot; Goal reminders are on in Settings.</p></div>
 </div></body></html>"""
@@ -140,6 +214,7 @@ def send_weekly_all_goals_summary(to_email, display_name, goals_data: list):
     """
     name = display_name or "Student"
     goal_count = len(goals_data)
+    site_url = _get_email_config()["site_url"]
     all_blocks = "".join(
         _render_goal_block(
             g["goal_title"], g["weeks_elapsed"], g["weeks_total"], g["weeks_remaining"],
@@ -159,7 +234,7 @@ def send_weekly_all_goals_summary(to_email, display_name, goals_data: list):
     <p>Hey <strong style="color:#e2e3eb">{name}</strong>,</p>
     <p>Here's how your long-term goals are looking this week. Keep the momentum going!</p>
     {all_blocks}
-    <a href="{SITE_URL}/goals" class="cta">View all my goals &#8594;</a>
+    <a href="{site_url}/goals" class="cta">View all my goals &#8594;</a>
   </div>
   <div class="footer"><p>Study Buddy &middot; Long-term goal reminders are on in Settings.</p></div>
 </div></body></html>"""
@@ -172,6 +247,7 @@ def send_weekly_all_goals_summary(to_email, display_name, goals_data: list):
 
 def send_streak_alert(to_email, display_name):
     name = display_name or "Student"
+    site_url = _get_email_config()["site_url"]
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_STYLE}</style></head><body>
 <div class="wrap">
   <div class="hero">
@@ -191,7 +267,7 @@ def send_streak_alert(to_email, display_name):
       </ul>
     </div>
     <p>Consistency is the secret to mastery. Log in before midnight!</p>
-    <a href="{SITE_URL}/chat" class="cta">Study now &#8594;</a>
+    <a href="{site_url}/chat" class="cta">Study now &#8594;</a>
   </div>
   <div class="footer"><p>Study Buddy &middot; Streak alerts are on in Settings.</p></div>
 </div></body></html>"""
@@ -204,6 +280,7 @@ def send_streak_alert(to_email, display_name):
 
 def send_flashcard_review_reminder(to_email, display_name):
     name = display_name or "Student"
+    site_url = _get_email_config()["site_url"]
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_STYLE}</style></head><body>
 <div class="wrap">
   <div class="hero">
@@ -223,7 +300,7 @@ def send_flashcard_review_reminder(to_email, display_name):
       </ul>
     </div>
     <p>Short daily revision sessions make recall much stronger over time.</p>
-    <a href="{SITE_URL}/flashcards" class="cta">Review flashcards &#8594;</a>
+    <a href="{site_url}/flashcards" class="cta">Review flashcards &#8594;</a>
   </div>
   <div class="footer"><p>Study Buddy &middot; Flashcard review reminders are on in Settings.</p></div>
 </div></body></html>"""

@@ -109,11 +109,21 @@ def _reconcile_settings_item(item: Dict[str, Any]) -> tuple[Dict[str, Any], bool
             continue
 
         merged = {**default_section, **current_section}
+        if section == "profile":
+            merged = _sanitize_profile_updates(merged)
         if merged != current_section:
             item[section] = merged
             changed = True
 
     return item, changed
+
+
+def _sanitize_profile_updates(profile: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "full_name": str(profile.get("full_name") or "").strip(),
+        "display_name": str(profile.get("display_name") or "").strip(),
+        "email": str(profile.get("email") or "").strip(),
+    }
 
 
 async def get_settings(user_id: str) -> Dict[str, Any]:
@@ -180,10 +190,13 @@ async def update_settings(user_id: str, updates: Dict[str, Any]) -> Dict[str, An
         # Merge the four standard nested sections
         for section in ("profile", "notifications", "ai_preferences", "appearance"):
             if section in updates and updates[section] is not None:
+                section_updates = updates[section]
+                if section == "profile":
+                    section_updates = _sanitize_profile_updates(section_updates)
                 if section in item:
-                    item[section].update(updates[section])
+                    item[section].update(section_updates)
                 else:
-                    item[section] = updates[section]
+                    item[section] = section_updates
 
         # Handle top-level curriculum fields (stored flat on the document, not nested)
         # curriculum_enabled can legitimately be False — use `is not None` not truthiness.
@@ -254,8 +267,12 @@ async def update_plan(user_id: str, plan_id: str) -> Dict[str, Any]:
         await container.upsert_item(body=item)
         return item
 
-async def record_checkin(user_id: str, daily_goals_total: int, daily_goals_done: int) -> None:
-    """Record that a user is active today (IST) and their daily goal completion status."""
+async def record_checkin(
+    user_id: str,
+    daily_goals_total: Optional[int] = None,
+    daily_goals_done: Optional[int] = None,
+) -> None:
+    """Record that a user is active today (IST) and optionally refresh daily goal progress."""
     from datetime import timedelta
     today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     async with _get_client() as client:
@@ -272,8 +289,17 @@ async def record_checkin(user_id: str, daily_goals_total: int, daily_goals_done:
                 "current_plan": "free",
             }
         item["last_active_date"] = today_ist          # IST date (was UTC — fixed)
-        item["daily_goals_total"] = daily_goals_total
-        item["daily_goals_done"] = daily_goals_done
+        if daily_goals_total is not None and daily_goals_done is not None:
+            item["daily_goals_total"] = max(0, int(daily_goals_total))
+            item["daily_goals_done"] = max(0, int(daily_goals_done))
+        elif item.get("daily_goals_date") == today_ist:
+            stored_goals = item.get("daily_goals_list", [])
+            if isinstance(stored_goals, list):
+                item["daily_goals_total"] = len(stored_goals)
+                item["daily_goals_done"] = sum(
+                    1 for goal in stored_goals
+                    if isinstance(goal, dict) and bool(goal.get("completed"))
+                )
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
         await container.upsert_item(body=item)
 
@@ -345,7 +371,12 @@ async def get_all_users_for_notifications() -> list:
         )
         results = []
         async for item in container.query_items(
-            query=query, enable_cross_partition_query=True
+            query=query
         ):
+            profile = item.setdefault("profile", {})
+            email = str(profile.get("email") or "").strip()
+            if not email:
+                continue
+            profile["email"] = email
             results.append(item)
         return results

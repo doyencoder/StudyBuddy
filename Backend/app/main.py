@@ -102,6 +102,19 @@ async def _print_cors_info():
     except Exception as e:
         print(f"[startup] Notification scheduler error (non-fatal): {e}")
 
+    try:
+        from app.services.email_service import get_email_service_status
+        email_status = get_email_service_status()
+        if email_status["configured"]:
+            print(
+                "[startup] Email service configured "
+                f"({email_status['smtp_host']}:{email_status['smtp_port']})."
+            )
+        else:
+            print("[startup] Email service not configured; notification emails will fail until SMTP env vars are set.")
+    except Exception as e:
+        print(f"[startup] Email status check error (non-fatal): {e}")
+
     # Ensure Azure AI Search index exists before any request hits it.
     try:
         from app.services.search_service import create_index_if_not_exists

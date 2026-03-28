@@ -262,9 +262,10 @@ const SettingsPage = () => {
         if (!response.ok) {
           throw new Error(`Settings save failed with status ${response.status}`);
         }
-        // Bug 4: sync display_name change to global UserContext immediately
-        if (updates.profile?.display_name !== undefined) {
-          setProfileName(USER_ID, updates.profile.display_name);
+        const saved = await response.json().catch(() => null);
+        const savedDisplayName = saved?.profile?.display_name;
+        if (typeof savedDisplayName === "string") {
+          setProfileName(USER_ID, savedDisplayName);
         }
       } catch {
         // Offline — queue for later sync
@@ -285,7 +286,7 @@ const SettingsPage = () => {
         setSaving(false);
       }
     }, 800);
-  }, [fetchSettings]);
+  }, [USER_ID, fetchSettings, setProfileName]);
 
   // ── Curriculum Setting Save ───────────────────────────────────────────────
   // Curriculum fields live top-level on the Cosmos doc (not in a nested section),
@@ -545,6 +546,7 @@ const GeneralTab = ({
   const updateProfile = (field: keyof Profile, value: string) => {
     const updated = { ...settings, profile: { ...settings.profile, [field]: value } };
     setSettings(updated);
+    saveSettings({ profile: updated.profile });
   };
 
   const updateNotification = (field: keyof Notifications, value: boolean) => {
@@ -929,6 +931,8 @@ const ReferralSection = () => {
           toast.error("You can't use your own referral code!");
         } else if (result.reason === "already_referred") {
           toast.error("You've already used a referral code");
+        } else if (result.reason === "invalid_code") {
+          toast.error("Invalid referral code");
         } else {
           toast.error("Invalid referral code");
         }
