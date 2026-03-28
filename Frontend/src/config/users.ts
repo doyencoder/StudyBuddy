@@ -3,12 +3,15 @@
 //
 // Design notes:
 //   • IDs are intentionally kept as student-001…005 so all existing Cosmos data
-//     (which lives under student-001) automatically belongs to Aarav with zero
+//     (which lives under student-001) automatically belongs to Rajat with zero
 //     migration required.
 //   • avatarBg / avatarText are raw Tailwind colour classes; they are safe to
 //     use with arbitrary-value syntax inside className strings.
 //   • This file is the SINGLE source of truth for user identities. Never
 //     hardcode a user ID anywhere else — always import from here via useUser().
+//   • displayName here is the STATIC FALLBACK only. The live name for each
+//     user is fetched from Cosmos at startup and stored in UserContext's
+//     profileNames map. Always read names via useUser().getDisplayName(id).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface UserProfile {
@@ -31,8 +34,8 @@ export interface UserProfile {
 export const USER_PROFILES: readonly UserProfile[] = [
   {
     id: "student-001",
-    displayName: "Aarav",
-    initials: "AA",
+    displayName: "Rajat",
+    initials: "RA",
     avatarBg: "bg-violet-500",
     avatarText: "text-white",
     ringColor: "ring-violet-500",
@@ -51,8 +54,8 @@ export const USER_PROFILES: readonly UserProfile[] = [
   },
   {
     id: "student-003",
-    displayName: "Rohan",
-    initials: "RO",
+    displayName: "Saksham",
+    initials: "SA",
     avatarBg: "bg-amber-500",
     avatarText: "text-white",
     ringColor: "ring-amber-500",
@@ -61,8 +64,8 @@ export const USER_PROFILES: readonly UserProfile[] = [
   },
   {
     id: "student-004",
-    displayName: "Ananya",
-    initials: "AN",
+    displayName: "Rehaan",
+    initials: "RE",
     avatarBg: "bg-emerald-500",
     avatarText: "text-white",
     ringColor: "ring-emerald-500",
@@ -71,8 +74,8 @@ export const USER_PROFILES: readonly UserProfile[] = [
   },
   {
     id: "student-005",
-    displayName: "Kiran",
-    initials: "KI",
+    displayName: "Saarthak",
+    initials: "SA",
     avatarBg: "bg-sky-500",
     avatarText: "text-white",
     ringColor: "ring-sky-500",
@@ -81,6 +84,6 @@ export const USER_PROFILES: readonly UserProfile[] = [
   },
 ] as const;
 
-/** student-001 / Aarav is the default — all pre-existing Cosmos data lives here */
+/** student-001 / Rajat is the default — all pre-existing Cosmos data lives here */
 export const DEFAULT_USER_ID = "student-001";
 export const DEFAULT_USER = USER_PROFILES[0];

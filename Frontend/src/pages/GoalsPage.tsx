@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Check, Bell, Trash2, ChevronDown, ChevronUp, Clock, CalendarDays, WifiOff } from "lucide-react";
+import { Plus, Check, Trash2, ChevronDown, ChevronUp, Clock, CalendarDays, WifiOff } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -257,15 +257,7 @@ const GoalCard = ({
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-primary hover:bg-primary/10"
-              onClick={() => onToggleReminder(goal.goal_id, true)}
-              title="Send reminder email"
-            >
-              <Bell className="w-4 h-4" />
-            </Button>
+            
             <Button
               variant="ghost"
               size="icon"

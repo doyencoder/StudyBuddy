@@ -40,7 +40,8 @@ function Avatar({
 
 // ── Profile Switcher Dropdown ─────────────────────────────────────────────────
 function ProfileSwitcher() {
-  const { currentUser, allUsers, switchUser } = useUser();
+  const { currentUser, allUsers, switchUser, getDisplayName } = useUser();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -72,10 +73,14 @@ function ProfileSwitcher() {
     return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
+  // Bug 1 fix: navigate to /chat on user switch so ChatPage resets its state
   const handleSwitch = (id: string) => {
     switchUser(id);
     setOpen(false);
+    navigate("/chat", { replace: true });
   };
+
+  const currentDisplayName = getDisplayName(currentUser.id);
 
   return (
     <div className="relative">
@@ -95,7 +100,7 @@ function ProfileSwitcher() {
       >
         <Avatar user={currentUser} size="md" showRing />
         <div className="hidden sm:flex flex-col items-start leading-tight">
-          <span className="text-xs font-semibold text-foreground">{currentUser.displayName}</span>
+          <span className="text-xs font-semibold text-foreground">{currentDisplayName}</span>
         </div>
         <ChevronDown
           className={`w-3.5 h-3.5 text-muted-foreground hidden sm:block transition-transform duration-200 ${
@@ -122,9 +127,8 @@ function ProfileSwitcher() {
               <Avatar user={currentUser} size="lg" showRing />
               <div>
                 <p className="text-sm font-semibold text-foreground">
-                  Hello, {currentUser.displayName} 👋
+                  Hello, {currentDisplayName} 👋
                 </p>
-                
               </div>
             </div>
           </div>
@@ -159,9 +163,9 @@ function ProfileSwitcher() {
                           isActive ? "text-foreground" : "text-foreground/80"
                         }`}
                       >
-                        {user.displayName}
+                        {/* Bug 4 fix: show live DB name, fall back to static */}
+                        {getDisplayName(user.id)}
                       </p>
-                     
                     </div>
                     {isActive && (
                       <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 bg-muted/70 text-primary border border-border">
@@ -173,8 +177,6 @@ function ProfileSwitcher() {
               })}
             </div>
           </div>
-
-          
         </div>
       )}
     </div>
@@ -267,7 +269,7 @@ const AppHeader = () => {
           </TooltipContent>
         </Tooltip>
 
-        {/* Profile Switcher — replaces the old static User icon */}
+        {/* Profile Switcher */}
         <ProfileSwitcher />
       </div>
     </header>

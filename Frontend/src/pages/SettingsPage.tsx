@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  User, LogOut, Trash2, CreditCard, Copy, Check,
+  User, Trash2, CreditCard, Copy, Check,
   ExternalLink, Sun, Moon, Monitor, Volume2, Loader2, Settings2 as Settings2Icon, Mail, GraduationCap,
   Gift, Coins, Flame, Users, Share2,
 } from "lucide-react";
@@ -33,7 +33,7 @@ import { useUser } from "@/contexts/UserContext";
 // ── Constants ────────────────────────────────────────────────────────────────
 
 
-type SettingsTab = "general" | "account" | "billing";
+type SettingsTab = "general" | "billing";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,12 +93,6 @@ interface ActiveSession {
   is_current: boolean;
 }
 
-interface AccountInfo {
-  user_id: string;
-  organization_id: string;
-  sessions: ActiveSession[];
-}
-
 interface BillingPlan {
   id: string;
   name: string;
@@ -120,7 +114,7 @@ const SettingsPage = () => {
   const { setColorMode, setChatFont, setVoice } = useAppearance();
   const [searchParams] = useSearchParams();
   const urlTab = searchParams.get("tab") as SettingsTab | null;
-  const validTabs: SettingsTab[] = ["general", "account", "billing"];
+  const validTabs: SettingsTab[] = ["general", "billing"];
   const [activeTab, setActiveTab] = useState<SettingsTab>(
     urlTab && validTabs.includes(urlTab) ? urlTab : "general"
   );
@@ -130,7 +124,7 @@ const SettingsPage = () => {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const pageRef = useRef<HTMLDivElement>(null);           // stable ref — works from first render
   const activeTabRef = useRef<SettingsTab>("general");    // mirror of activeTab for the closure below
-  const TABS_ORDER: SettingsTab[] = ["general", "account", "billing"];
+  const TABS_ORDER: SettingsTab[] = ["general", "billing"];
 
   // Keep activeTabRef in sync with state
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
@@ -171,13 +165,9 @@ const SettingsPage = () => {
   const [curriculumBoard, setCurriculumBoard]     = useState<string | null>(null);
   const [curriculumGrade, setCurriculumGrade]     = useState<string | null>(null);
   const [curriculumEnabled, setCurriculumEnabled] = useState<boolean>(false);
-  const [account, setAccount] = useState<AccountInfo | null>(null);
   const [billingPlans, setBillingPlans] = useState<BillingPlan[]>([]);
   const [currentPlan, setCurrentPlan] = useState("free");
   const [showPlansDialog, setShowPlansDialog] = useState(false);
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [showLogoutDialog, setShowLogoutDialog] = useState(false);
-  const [copiedOrgId, setCopiedOrgId] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -206,15 +196,6 @@ const SettingsPage = () => {
       console.error("Failed to fetch settings:", err);
     }
   }, [setColorMode, setChatFont, setVoice]);
-
-  const fetchAccount = useCallback(async () => {
-    try {
-      const { data } = await offlineFetch(`${API_BASE}/settings/account?user_id=${USER_ID}`);
-      setAccount(data);
-    } catch (err) {
-      console.error("Failed to fetch account:", err);
-    }
-  }, []);
 
   const fetchBilling = useCallback(async () => {
     try {
@@ -257,11 +238,11 @@ const SettingsPage = () => {
   useEffect(() => {
     const loadAll = async () => {
       setLoading(true);
-      await Promise.all([fetchSettings(), fetchAccount(), fetchBilling()]);
+      await Promise.all([fetchSettings(), fetchBilling()]);
       setLoading(false);
     };
     loadAll();
-  }, [fetchSettings, fetchAccount, fetchBilling]);
+  }, [fetchSettings, fetchBilling]);
 
   // ── Save Settings ────────────────────────────────────────────────────────
   // Shows "Saving…" immediately on any change, debounces the actual API call 800ms.
@@ -344,21 +325,10 @@ const SettingsPage = () => {
     toast.info(`${planName} plan upgrade is coming soon.`);
   };
 
-  // ── Copy Org ID ──────────────────────────────────────────────────────────
-
-  const copyOrgId = () => {
-    if (account) {
-      navigator.clipboard.writeText(account.organization_id);
-      setCopiedOrgId(true);
-      setTimeout(() => setCopiedOrgId(false), 2000);
-    }
-  };
-
   // ── Tabs Config ──────────────────────────────────────────────────────────
 
   const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
     { id: "general", label: "General", icon: <User className="w-4 h-4" /> },
-    { id: "account", label: "Account", icon: <LogOut className="w-4 h-4" /> },
     { id: "billing", label: "Billing", icon: <CreditCard className="w-4 h-4" /> },
   ];
 
@@ -374,13 +344,13 @@ const SettingsPage = () => {
           </div>
           {/* Tab bar skeleton */}
           <div className="max-w-3xl mx-auto flex gap-6 border-b border-border">
-            {[...Array(3)].map((_, i) => (
+            {[...Array(2)].map((_, i) => (
               <div key={i} className="h-9 w-20 bg-secondary/40 rounded-t-lg animate-pulse" />
             ))}
           </div>
         </div>
         <div className="px-6 py-8 max-w-3xl mx-auto space-y-4">
-          {[...Array(3)].map((_, i) => (
+          {[...Array(2)].map((_, i) => (
             <div key={i} className="bg-card border border-border rounded-2xl p-6 space-y-4 animate-pulse">
               <div className="h-5 w-24 bg-secondary/60 rounded-lg" />
               <div className="h-px w-full bg-border" />
@@ -464,18 +434,7 @@ const SettingsPage = () => {
             saveCurriculumSetting={saveCurriculumSetting}
           />
         )}
-        {activeTab === "account" && (
-          <AccountTab
-            account={account}
-            copiedOrgId={copiedOrgId}
-            copyOrgId={copyOrgId}
-            showLogoutDialog={showLogoutDialog}
-            setShowLogoutDialog={setShowLogoutDialog}
-            showDeleteDialog={showDeleteDialog}
-            setShowDeleteDialog={setShowDeleteDialog}
-          />
-        )}
-        {activeTab === "billing" && (
+{activeTab === "billing" && (
           <BillingTab
             billingPlans={billingPlans}
             currentPlan={currentPlan}
@@ -1078,162 +1037,6 @@ const ReferralSection = () => {
   );
 };
 
-// ── Account Tab ──────────────────────────────────────────────────────────────
-
-interface AccountTabProps {
-  account: AccountInfo | null;
-  copiedOrgId: boolean;
-  copyOrgId: () => void;
-  showLogoutDialog: boolean;
-  setShowLogoutDialog: (v: boolean) => void;
-  showDeleteDialog: boolean;
-  setShowDeleteDialog: (v: boolean) => void;
-}
-
-const AccountTab = ({
-  account,
-  copiedOrgId,
-  copyOrgId,
-  showLogoutDialog,
-  setShowLogoutDialog,
-  showDeleteDialog,
-  setShowDeleteDialog,
-}: AccountTabProps) => {
-  return (
-    <>
-      <Card className="bg-card border-border">
-        <CardHeader>
-          <CardTitle className="text-base text-foreground">Account</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Logout */}
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-foreground font-medium">Log out of all devices</p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowLogoutDialog(true)}
-              className="border-border shrink-0"
-            >
-              Log out
-            </Button>
-          </div>
-
-          <Separator className="bg-border" />
-
-          {/* Delete Account */}
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-foreground font-medium">Delete your account</p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-              className="border-destructive text-destructive hover:bg-destructive/10 shrink-0"
-            >
-              Delete account
-            </Button>
-          </div>
-
-          <Separator className="bg-border" />
-
-          {/* Organization ID */}
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm text-primary font-medium shrink-0">Organization ID</p>
-            <div className="flex items-center gap-1.5 min-w-0">
-              <code className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded font-mono truncate max-w-[140px] sm:max-w-[200px]">
-                {account?.organization_id || "—"}
-              </code>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={copyOrgId}
-              >
-                {copiedOrgId ? (
-                  <Check className="w-3.5 h-3.5 text-green-500" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                )}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Active Sessions — compact, no horizontal scroll needed */}
-      <Card className="bg-card border-border">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base text-primary">Active sessions</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0 pb-2">
-          {account?.sessions && account.sessions.length > 0 ? (
-            <div className="divide-y divide-border">
-              {account.sessions.map((session, i) => (
-                <div key={i} className="flex items-center justify-between px-6 py-3 gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium text-foreground truncate">{session.device}</span>
-                      {session.is_current && (
-                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
-                          Current
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">{session.location}</p>
-                  </div>
-                  <span className="text-muted-foreground cursor-pointer hover:text-foreground text-sm shrink-0">•••</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground px-6 py-4">No active sessions.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Logout Dialog */}
-      <Dialog open={showLogoutDialog} onOpenChange={setShowLogoutDialog}>
-        <DialogContent className="bg-card border-border">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">Log out of all devices</DialogTitle>
-            <DialogDescription className="text-muted-foreground">
-              This will log you out of all devices including this one.
-              Since authentication is not yet implemented, this is a placeholder action.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowLogoutDialog(false)}>Cancel</Button>
-            <Button onClick={() => { setShowLogoutDialog(false); }}>
-              Log out
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Dialog */}
-      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent className="bg-card border-border">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">Delete your account</DialogTitle>
-            <DialogDescription className="text-muted-foreground">
-              This action cannot be undone. All your data including chats, quizzes, and study plans will be permanently deleted.
-              Since authentication is not yet implemented, this is a placeholder action.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              onClick={() => { setShowDeleteDialog(false); }}
-            >
-              Delete account
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-};
 
 // ── Billing Tab ──────────────────────────────────────────────────────────────
 

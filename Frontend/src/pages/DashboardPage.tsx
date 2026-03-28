@@ -558,14 +558,13 @@ function RecentQuizzes({ quizzes }: { quizzes: { quiz_id: string; topic: string;
 
 // ─── DashboardPage ────────────────────────────────────────────────────────────
 const DashboardPage = () => {
-  const { currentUser } = useUser();
+  const { currentUser, getDisplayName } = useUser();
   const USER_ID = currentUser.id;
   const DISMISSED_WEAK_TOPICS_PATH = `/settings/dismissed-weak-topics?user_id=${USER_ID}`;
   const DISMISSED_WEAK_TOPICS_URL = `${API_BASE}${DISMISSED_WEAK_TOPICS_PATH}`;
   const [loading, setLoading]               = useState(true);
   const [quizzes, setQuizzes]               = useState<QuizHistoryItem[]>([]);
   const [goals, setGoals]                   = useState<GoalItem[]>([]);
-  const [displayName, setDisplayName]       = useState("");
   const [dismissedTopics, setDismissedTopics] = useState<string[]>([]);
   const [weeklyMinutes, setWeeklyMinutes] = useState<number | null>(null);
   const { coinState } = useCoins();
@@ -593,12 +592,6 @@ const DashboardPage = () => {
   useEffect(() => {
     offlineFetch(DISMISSED_WEAK_TOPICS_URL)
       .then(({ data: d }) => d && setDismissedTopics(d.dismissed_topics || []))
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    offlineFetch(`${API_BASE}/settings/?user_id=${USER_ID}`)
-      .then(({ data: d }) => d && setDisplayName(d.profile?.display_name || ""))
       .catch(() => {});
   }, []);
 
@@ -1044,7 +1037,7 @@ if (loading) {
                 <span className="text-sm font-semibold text-muted-foreground">StudyBuddy</span>
               </div>
               <h1 className="text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-                Welcome back{displayName ? `, ${displayName}` : ""}!
+                Welcome back{getDisplayName(USER_ID) ? `, ${getDisplayName(USER_ID)}` : ""}!
               </h1>
               <p className="mt-1 text-muted-foreground">Track your learning journey and improve every day.</p>
               {cachedAt && !isOnline && (

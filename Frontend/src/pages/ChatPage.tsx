@@ -4554,7 +4554,7 @@ const ChatPage = () => {
                               href={att.blobUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity"
+                              className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity w-fit max-w-[220px]"
                             >
                               <div className="w-7 h-7 rounded-md bg-primary-foreground/20 flex items-center justify-center shrink-0">
                                 <Paperclip className="w-3.5 h-3.5 text-primary-foreground" />
@@ -4894,7 +4894,7 @@ const ChatPage = () => {
                   onPaste={handlePaste}
                   placeholder={CHIP_PLACEHOLDERS[intentChip] ?? `Type a topic for ${INTENT_LABELS[intentChip] ?? intentChip}...`}
                   rows={1}
-                  className="w-full bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-4 pt-3 pb-1 resize-none outline-none min-h-[44px] overflow-hidden"
+                  className="w-full bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-4 pt-3 pb-1 resize-none outline-none min-h-[44px] overflow-y-auto"
                 />
                 {/* Row 2: + | chip badge | spacer | mic | send */}
                 <div className="flex items-center gap-1 px-1 pb-1">
@@ -5061,7 +5061,7 @@ const ChatPage = () => {
                   onPaste={handlePaste}
                   placeholder="Ask anything..."
                   rows={1}
-                  className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-3 py-2.5 resize-none outline-none min-h-[40px] overflow-hidden"
+                  className="flex-1 bg-transparent text-foreground placeholder:text-muted-foreground text-sm px-3 py-2.5 resize-none outline-none min-h-[40px] overflow-y-auto"
                 />
 
                 <div className="flex items-end gap-1 pr-1 pb-1 shrink-0">
@@ -5104,6 +5104,9 @@ const ChatPage = () => {
             )}
           </div>
         </div>
+        <p className="text-xs text-muted-foreground text-center pt-1 pb-0.5">
+            StudyBuddy can make mistakes. Always verify important information.
+          </p>
       </div>
     </div>
   );
