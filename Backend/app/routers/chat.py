@@ -97,6 +97,76 @@ def _is_blocked_web_query(query: str) -> bool:
     return bool(_WEB_BLOCKED_PATTERN.search(query or ""))
 
 
+# ── Auto-title generation (fire-and-forget) ──────────────────────────────────
+
+def _generate_title_text(user_message: str, intent: str = "", filename: str = "") -> str:
+    """
+    Small synchronous LLM call — generates a concise chat title.
+    Runs on a thread executor, never in the main async loop.
+    Always uses Azure regardless of user's model choice (tiny call, ~100ms).
+    """
+    from app.services.azure_openai_service import _get_client, _chat_deployment
+
+    context_parts = []
+    if user_message.strip():
+        context_parts.append(f"User message: {user_message[:200]}")
+    if intent and intent != "chat":
+        context_parts.append(f"Action requested: {intent.replace('_', ' ')}")
+    if filename:
+        context_parts.append(f"Uploaded file: {filename}")
+
+    context = "\n".join(context_parts) or "General conversation"
+
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model=_chat_deployment(),
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate a concise 3-6 word title for this student's chat conversation. "
+                        "Respond with ONLY the title. No quotes, no punctuation at the end, no explanation. "
+                        "Examples: 'Photosynthesis Quiz', 'Newton Laws Summary', 'EC342 Flowchart', "
+                        "'Microprocessor Study Plan', 'Attention Paper Notes'"
+                    ),
+                },
+                {"role": "user", "content": context},
+            ],
+            max_tokens=20,
+            temperature=0.0,
+        )
+        title = response.choices[0].message.content.strip().strip('"').strip("'").rstrip(".")
+        return title[:50] if title else ""
+    except Exception as e:
+        print(f"[TITLE] Generation failed: {e}")
+        return ""
+
+
+async def _auto_title_conversation(
+    conversation_id: str, user_id: str,
+    user_message: str, intent: str = "", filename: str = "",
+):
+    """
+    Fire-and-forget: generates a chat title via LLM and saves to Cosmos.
+    If generation fails, the placeholder '…' remains and the frontend
+    falls back to showing the first message text on next refresh.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        title = await loop.run_in_executor(
+            None, lambda: _generate_title_text(user_message, intent, filename),
+        )
+        if title:
+            await rename_conversation(conversation_id, user_id, title)
+            print(f"[TITLE] Set title for {conversation_id}: {title!r}")
+        else:
+            # Clear placeholder so fallback logic kicks in
+            await rename_conversation(conversation_id, user_id, "")
+    except Exception as e:
+        print(f"[TITLE] Failed to set title for {conversation_id}: {e}")
+
+
 def _is_refusal_text(text: str) -> bool:
     """Detect refusal-like replies produced by upstream safety handlers/models."""
     t = (text or "").strip().lower()
@@ -436,7 +506,7 @@ async def chat_message(request: ChatRequest):
     # ── Ensure conversation ───────────────────────────────────────────────────
     conversation_id = request.conversation_id
     if not conversation_id:
-        conversation_id = await create_conversation(request.user_id)
+        conversation_id = await create_conversation(request.user_id, title="…")
 
     # ── History + Settings in parallel (two independent Cosmos containers) ────
     # get_conversation_full → conversations container (keyed by conversation_id)
@@ -673,6 +743,10 @@ async def chat_message(request: ChatRequest):
             pending_intent_update=None,
         )
 
+        # Set a safe generic title so the sidebar never shows the blocked text
+        if not prior_messages:
+            await rename_conversation(conversation_id, request.user_id, "Conversation")
+
         async def safety_refusal_stream():
             yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id})}\n\n"
             async for evt in _yield_refusal(conversation_id, request.user_id):
@@ -867,6 +941,17 @@ async def chat_message(request: ChatRequest):
         just_ingested_filenames: list = []
 
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id})}\n\n"
+
+        # ── Auto-title for new conversations (fire-and-forget, zero latency) ──
+        # The conversation was created with placeholder title "…" (shimmer in
+        # sidebar). Now generate a real title in the background via a tiny LLM
+        # call. The sidebar picks up the real title on its next refresh cycle.
+        if not prior_messages:
+            asyncio.ensure_future(_auto_title_conversation(
+                conversation_id, request.user_id,
+                request.message or "", intent,
+                request.filename or "",
+            ))
 
         # Blob RAG ingestion (when one or more files are sent WITH this message)
         # Runs INSIDE the stream so retrieval happens AFTER chunks are stored —

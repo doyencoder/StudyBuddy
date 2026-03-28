@@ -81,7 +81,7 @@ async def ensure_flashcards_container() -> None:
 
 # ── Public Functions ──────────────────────────────────────────────────────────
 
-async def create_conversation(user_id: str) -> str:
+async def create_conversation(user_id: str, title: str = "") -> str:
     """
     Creates a new conversation document in Cosmos DB and returns its ID.
     Called when a user starts a fresh chat (no conversation_id yet).
@@ -95,6 +95,7 @@ async def create_conversation(user_id: str) -> str:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "messages": [],
+        "title": title,
     }
 
     async with _get_client() as client:

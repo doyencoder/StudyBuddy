@@ -200,6 +200,18 @@ const AppSidebar = () => {
 
   useEffect(() => {
     const handler = () => {
+      // Optimistically inject a placeholder with "…" so the shimmer shows
+      // immediately — before fetchConversations returns real data.
+      const urlCid = new URLSearchParams(window.location.search).get("conversationId");
+      if (urlCid) {
+        setConversations((prev) => {
+          if (prev.some(c => c.conversation_id === urlCid)) return prev;
+          return [
+            { conversation_id: urlCid, title: "…", created_at: new Date().toISOString(), starred: false },
+            ...prev,
+          ];
+        });
+      }
       fetchConversations();
       setTimeout(() => fetchConversations(), 1500);
     };
@@ -534,7 +546,13 @@ const AppSidebar = () => {
                             }}
                           >
                             <Clock className="w-3.5 h-3.5 shrink-0 text-muted-foreground mr-1.5" />
-                            <span className="text-xs truncate flex-1 min-w-0">{chat.title}</span>
+                            {chat.title === "…" ? (
+                              <span className="text-xs truncate flex-1 min-w-0 inline-block">
+                                <span className="inline-block h-3 w-full max-w-[220px] rounded bg-muted-foreground/20 animate-pulse" />
+                              </span>
+                            ) : (
+                              <span className="text-xs truncate flex-1 min-w-0">{chat.title}</span>
+                            )}
                             <div className="shrink-0 ml-1 w-4 flex items-center justify-center">
                               {showStar && (
                                 <Star className="w-3 h-3 text-yellow-400" fill="currentColor" />

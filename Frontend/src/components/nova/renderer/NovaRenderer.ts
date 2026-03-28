@@ -224,8 +224,8 @@ function getImplicitTraceProfile(quality: ResampleQuality, vp: Viewport): Implic
   return {
     xMarginMultiplier: 1.0,
     yMarginMultiplier: 0.75,
-    coarseGrid: Math.max(16, Math.min(22, Math.round(span / 90))),
-    maxDepth: 6,
+    coarseGrid: Math.max(16, Math.min(28, Math.round(span / 90))),
+    maxDepth: 8,
   };
 }
 
@@ -1006,7 +1006,7 @@ export class NovaRenderer {
         || yMin < entry.lastFillSampleYMin + yRange * RESAMPLE_EDGE_FRACTION
         || yMax > entry.lastFillSampleYMax - yRange * RESAMPLE_EDGE_FRACTION;
 
-      const needsCurveRefresh = needsQualityUpgrade || scaleDelta > 0.3 || rangeExtended;
+      const needsCurveRefresh = needsQualityUpgrade || scaleDelta > 0.15 || rangeExtended;
       const needsFillRefresh = quality === 'full'
         && !!entry.inequalityOp
         && !!entry.residual
