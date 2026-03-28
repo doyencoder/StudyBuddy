@@ -3692,8 +3692,9 @@ const ChatPage = () => {
     const landingMsg = sessionStorage.getItem('sb_landing_autosend') || '';
     if (landingMsg) sessionStorage.removeItem('sb_landing_autosend');
 
+    const rawUserMessage = landingMsg || input;
     const hasContent =
-      (landingMsg || input.trim()) || attachedFiles.some((f) => f.status === "ready") || intentChip;
+      rawUserMessage.trim() || attachedFiles.some((f) => f.status === "ready") || intentChip;
     const uploadingFiles = attachedFiles.filter((f) => f.status === "uploading");
     if (uploadingFiles.length > 0) {
       toast.info(
@@ -3705,7 +3706,7 @@ const ChatPage = () => {
     }
     if (!hasContent || isTyping) return;
 
-    const userMessage = landingMsg || input.trim();
+    const userMessage = rawUserMessage;
     const sentFiles = attachedFiles.filter((f) => f.status === "ready");
     const chipValue = intentChip;
 
@@ -4508,7 +4509,11 @@ const ChatPage = () => {
               key={msg.id}
               className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}
             >
-              <div className="max-w-[85%] md:max-w-[70%] min-w-0">
+              <div
+                className={`min-w-0 ${
+                  msg.role === "user" ? "max-w-[80%] md:max-w-[62%]" : "max-w-[85%] md:max-w-[70%]"
+                }`}
+              >
                 {msg.role === "assistant" && (
                   <div className="flex items-center gap-2 mb-1.5">
                     <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center">
@@ -4603,12 +4608,12 @@ const ChatPage = () => {
 
                     {(msg.content || msg.intentHint) && (
                       <div
-                        className={`rounded-2xl px-4 py-3 text-sm leading-relaxed break-words ${
+                        className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                           msg.role === "user"
-                            ? "bg-primary text-primary-foreground rounded-br-md w-fit ml-auto"
-                            : "bg-card border border-glow text-card-foreground rounded-bl-md"
+                            ? "bg-primary text-primary-foreground rounded-br-md w-fit ml-auto whitespace-pre-wrap"
+                            : "bg-card border border-glow text-card-foreground rounded-bl-md break-words"
                         }`}
-                        style={{ overflowWrap: "anywhere" }}
+                        style={msg.role === "user" ? undefined : { overflowWrap: "anywhere" }}
                       >
                         {msg.role === "user" ? (
                           <>
