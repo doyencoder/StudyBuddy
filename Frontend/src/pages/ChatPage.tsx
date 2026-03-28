@@ -4554,7 +4554,7 @@ const ChatPage = () => {
                               href={att.blobUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity w-fit max-w-[220px]"
+                              className="flex items-center gap-2 mb-1.5 bg-primary/80 rounded-2xl px-3 py-2 hover:opacity-80 transition-opacity w-fit max-w-[220px] ml-auto"
                             >
                               <div className="w-7 h-7 rounded-md bg-primary-foreground/20 flex items-center justify-center shrink-0">
                                 <Paperclip className="w-3.5 h-3.5 text-primary-foreground" />

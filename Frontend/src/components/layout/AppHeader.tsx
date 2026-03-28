@@ -8,13 +8,35 @@ import { useCoins } from "@/contexts/CoinContext";
 import { useUser } from "@/contexts/UserContext";
 import type { UserProfile } from "@/config/users";
 
-// ── Avatar helper — shared between trigger and list items ────────────────────
+// ── Derive initials dynamically from any name string ─────────────────────────
+// Takes up to the first letter of each word, max 2 chars, always uppercase.
+// "john" → "JO"  |  "John Smith" → "JS"  |  "" → "??"
+function deriveInitials(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "??";
+  const words = trimmed.split(/\s+/);
+  if (words.length === 1) {
+    // Single word — use first two letters
+    return trimmed.slice(0, 2).toUpperCase();
+  }
+  // Multiple words — first letter of each word, max 2
+  return words
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase();
+}
+
+// ── Avatar helper ─────────────────────────────────────────────────────────────
 function Avatar({
   user,
+  displayName,
   size = "md",
   showRing = false,
 }: {
   user: UserProfile;
+  /** Live name — initials are derived from this, not from user.initials */
+  displayName: string;
   size?: "sm" | "md" | "lg";
   showRing?: boolean;
 }) {
@@ -33,7 +55,7 @@ function Avatar({
         transition-all duration-200
       `}
     >
-      {user.initials}
+      {deriveInitials(displayName)}
     </div>
   );
 }
@@ -73,7 +95,7 @@ function ProfileSwitcher() {
     return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
-  // Bug 1 fix: navigate to /chat on user switch so ChatPage resets its state
+  // Navigate to /chat on switch so ChatPage resets its state
   const handleSwitch = (id: string) => {
     switchUser(id);
     setOpen(false);
@@ -98,7 +120,7 @@ function ProfileSwitcher() {
         aria-expanded={open}
         aria-haspopup="true"
       >
-        <Avatar user={currentUser} size="md" showRing />
+        <Avatar user={currentUser} displayName={currentDisplayName} size="md" showRing />
         <div className="hidden sm:flex flex-col items-start leading-tight">
           <span className="text-xs font-semibold text-foreground">{currentDisplayName}</span>
         </div>
@@ -124,7 +146,7 @@ function ProfileSwitcher() {
           {/* Header */}
           <div className="px-4 pt-4 pb-3 border-b border-border">
             <div className="flex items-center gap-3">
-              <Avatar user={currentUser} size="lg" showRing />
+              <Avatar user={currentUser} displayName={currentDisplayName} size="lg" showRing />
               <div>
                 <p className="text-sm font-semibold text-foreground">
                   Hello, {currentDisplayName} 👋
@@ -141,6 +163,7 @@ function ProfileSwitcher() {
             <div className="space-y-0.5">
               {allUsers.map((user) => {
                 const isActive = user.id === currentUser.id;
+                const name = getDisplayName(user.id);
                 return (
                   <button
                     key={user.id}
@@ -156,15 +179,14 @@ function ProfileSwitcher() {
                       }
                     `}
                   >
-                    <Avatar user={user} size="sm" showRing={isActive} />
+                    <Avatar user={user} displayName={name} size="sm" showRing={isActive} />
                     <div className="flex-1 min-w-0">
                       <p
                         className={`text-sm font-medium truncate ${
                           isActive ? "text-foreground" : "text-foreground/80"
                         }`}
                       >
-                        {/* Bug 4 fix: show live DB name, fall back to static */}
-                        {getDisplayName(user.id)}
+                        {name}
                       </p>
                     </div>
                     {isActive && (

@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { useAppearance, type ColorMode, type ChatFont, type VoiceSetting } from "@/contexts/AppearanceContext";
+import { useUser } from "@/contexts/UserContext";
 import { offlineFetch } from "@/lib/offlineFetch";
 import { addToSyncQueue } from "@/lib/offlineStore";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -28,7 +29,6 @@ import {
   REWARDS,
 } from "@/lib/coinStore";
 import { useCoins } from "@/contexts/CoinContext";
-import { useUser } from "@/contexts/UserContext";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -38,7 +38,6 @@ type SettingsTab = "general" | "billing";
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface Profile {
-  full_name: string;
   display_name: string;
   email: string;
 }
@@ -68,7 +67,7 @@ interface UserSettings {
   appearance: Appearance;
 }
 
-const DEFAULT_PROFILE: Profile = { full_name: "", display_name: "", email: "" };
+const DEFAULT_PROFILE: Profile = { display_name: "", email: "" };
 const DEFAULT_NOTIFICATIONS: Notifications = {
   goal_reminders: false,
   long_term_goals_reminder: false,
@@ -109,7 +108,7 @@ interface BillingPlan {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 const SettingsPage = () => {
-  const { currentUser } = useUser();
+  const { currentUser, setProfileName } = useUser();
   const USER_ID = currentUser.id;
   const { setColorMode, setChatFont, setVoice } = useAppearance();
   const [searchParams] = useSearchParams();
@@ -262,6 +261,10 @@ const SettingsPage = () => {
         });
         if (!response.ok) {
           throw new Error(`Settings save failed with status ${response.status}`);
+        }
+        // Bug 4: sync display_name change to global UserContext immediately
+        if (updates.profile?.display_name !== undefined) {
+          setProfileName(USER_ID, updates.profile.display_name);
         }
       } catch {
         // Offline — queue for later sync
@@ -569,39 +572,29 @@ const GeneralTab = ({
           <CardTitle className="text-base text-foreground">Profile</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <Label className="text-sm text-muted-foreground mb-2 block">Full name</Label>
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center text-primary font-semibold text-sm flex-shrink-0">
-                  {settings.profile.full_name
-                    ? settings.profile.full_name.charAt(0).toUpperCase()
-                    : "S"}
-                </div>
-                <Input
-                  value={settings.profile.full_name}
-                  onChange={(e) => updateProfile("full_name", e.target.value)}
-                  onBlur={() => saveSettings({ profile: settings.profile })}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); saveSettings({ profile: settings.profile }); } }}
-                  placeholder="Your name"
-                  className="bg-background border-border"
-                />
-              </div>
-            </div>
-            <div>
-              <Label className="text-sm text-muted-foreground mb-2 block">
-                What should Study Buddy call you?
-              </Label>
-              <Input
-                value={settings.profile.display_name}
-                onChange={(e) => updateProfile("display_name", e.target.value)}
-                onBlur={() => saveSettings({ profile: settings.profile })}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); saveSettings({ profile: settings.profile }); } }}
-                placeholder="Display name"
-                className="bg-background border-border"
-              />
-            </div>
-          </div>
+          <div>
+  <Label className="text-sm text-muted-foreground mb-2 block">
+    What should StudyBuddy call you?
+  </Label>
+    <div className="flex gap-2">
+      <Input
+        value={settings.profile.display_name}
+        onChange={(e) => updateProfile("display_name", e.target.value)}
+        onBlur={() => saveSettings({ profile: settings.profile })}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); saveSettings({ profile: settings.profile }); } }}
+        placeholder="Display name"
+        className="bg-background border-border"
+      />
+      <Button
+        size="sm"
+        variant="outline"
+        className="border-border shrink-0"
+        onClick={() => saveSettings({ profile: settings.profile })}
+      >
+        Save
+      </Button>
+    </div>
+</div>
           {/* Email field — full width below */}
           <div className="mt-4">
             <Label className="text-sm text-muted-foreground mb-2 block">Email address</Label>
