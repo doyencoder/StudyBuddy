@@ -2421,6 +2421,17 @@ const ChatPage = () => {
   // the user's view if they clicked "New Chat" before the backend replied.
   const streamOwnerRef = useRef<string | null>(null);
 
+  // ── FIX: Clear stream ownership on unmount so background streams from a
+  // new chat can't call navigate() and yank the user back to /chat after
+  // they've moved to a different page (Dashboard, Images, Flashcards, etc.).
+  // The fetch reader loop in sendMessage() keeps running in the background
+  // even after unmount — this ensures its meta handler becomes a no-op.
+  useEffect(() => {
+    return () => {
+      streamOwnerRef.current = null;
+    };
+  }, []);
+
   const location = useLocation();
   const navigate = useNavigate();
   const handleEquationClick = (eq: string) => {
@@ -2523,6 +2534,13 @@ const ChatPage = () => {
       setModelProvider("azure"); // reset to default — new chat has no stored provider
       return;
     }
+
+    // ── FIX: Clear stream ownership when the user navigates to ANY specific
+    // conversation (clicked an old chat in the sidebar). Without this, a
+    // still-running new-chat stream's meta handler would see streamOwnerRef
+    // still set, call navigate(), and hijack the URL — causing the sidebar
+    // to highlight the new chat while the content area shows the old one.
+    streamOwnerRef.current = null;
 
     if (skipHistoryReload.current) {
       skipHistoryReload.current = false;

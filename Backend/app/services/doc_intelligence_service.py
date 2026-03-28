@@ -76,6 +76,11 @@ def extract_pages_from_url(blob_url: str) -> list:
     For each detected figure, crops the region and sends to GPT-4o-mini
     Vision to generate a text description injected into the page text.
 
+    Memory optimization: instead of rendering ALL pages into PIL images
+    upfront (~6.5 MB each = ~228 MB for 35 pages), pages are rendered
+    one at a time inside the loop and freed immediately after processing.
+    Peak memory: ONE page image (~6.5 MB) instead of all pages (~228 MB).
+
     Returns:
         List of dicts: [{"page_number": 1, "text": "..."}, ...]
         Pages with no extractable text are omitted.
@@ -88,38 +93,9 @@ def extract_pages_from_url(blob_url: str) -> list:
     )
     result = poller.result()
 
-    # ── Download raw file bytes once (needed for figure cropping) ─────────────
-    try:
-        file_response = requests.get(blob_url, timeout=30)
-        file_bytes    = file_response.content
-        file_ext      = blob_url.split("?")[0].rsplit(".", 1)[-1].lower()
-    except Exception as e:
-        print(f"[doc_intelligence] Could not download file for figure cropping: {e}")
-        file_bytes = None
-        file_ext   = ""
-
-    # ── Build per-page pixel images for figure cropping ───────────────────────
-    # key = 1-based page number, value = PIL Image of that page
-    page_images: dict = {}
-
-    if file_bytes:
-        try:
-            if file_ext == "pdf":
-                pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
-                for page_idx in range(len(pdf_doc)):
-                    pix = pdf_doc[page_idx].get_pixmap(dpi=150)
-                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    page_images[page_idx + 1] = img   # 1-based
-            else:
-                # Single-page image file (JPG, PNG, WEBP, TIFF)
-                img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-                page_images[1] = img
-        except Exception as e:
-            print(f"[doc_intelligence] Page image render failed: {e}")
-
-    # ── Build a map: page_number → list of figure bounding boxes ──────────────
-    # prebuilt-layout returns result.figures with bounding_regions per figure.
-    # Each region has page_number + polygon (normalised 0-1 coordinates).
+    # ── Build figure map FIRST ────────────────────────────────────────────────
+    # Moved above file download so we know which pages have figures before
+    # deciding what to render. Uses only the DI result (already in memory).
     figure_map: dict = {}   # page_number → [polygon, polygon, ...]
 
     if result.figures:
@@ -131,6 +107,51 @@ def extract_pages_from_url(blob_url: str) -> list:
                 figure_map.setdefault(pg, []).append(region.polygon)
 
     print(f"[doc_intelligence] Pages with figures: {list(figure_map.keys())}")
+
+    # ── Prepare file handle for on-demand page rendering ──────────────────────
+    # When ENABLE_FIGURE_VISION=false: skip download entirely (~5-20 MB saved).
+    # When ENABLE_FIGURE_VISION=true:  download file, open PDF handle, but
+    #   do NOT pre-render pages. Pages are rendered one at a time inside the
+    #   per-page loop and freed immediately — peak = ~6.5 MB (one page)
+    #   instead of ~228 MB (all 35 pages).
+    _pdf_doc = None               # kept open through the loop for on-demand rendering
+    _file_ext = ""
+    _single_page_img = None       # for image files (only 1 page — always small)
+
+    if ENABLE_FIGURE_VISION:
+        try:
+            file_response = requests.get(blob_url, timeout=30)
+            file_bytes    = file_response.content
+            _file_ext     = blob_url.split("?")[0].rsplit(".", 1)[-1].lower()
+        except Exception as e:
+            print(f"[doc_intelligence] Could not download file for figure cropping: {e}")
+            file_bytes = None
+
+        if file_bytes:
+            try:
+                if _file_ext == "pdf":
+                    # Open but do NOT render pages yet — rendering happens lazily below
+                    _pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+                else:
+                    # Single-page image file (JPG, PNG, WEBP, TIFF) — always small
+                    _single_page_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            except Exception as e:
+                print(f"[doc_intelligence] File open failed: {e}")
+
+            # Free raw bytes — PyMuPDF copies data internally on fitz.open(),
+            # and _single_page_img is already a decoded PIL Image.
+            del file_bytes
+
+    def _render_pdf_page(page_num: int) -> Image.Image | None:
+        """Render a single PDF page to PIL Image on demand. Returns None if unavailable."""
+        if _pdf_doc is None:
+            return None
+        page_idx = page_num - 1  # 0-based index
+        if 0 <= page_idx < len(_pdf_doc):
+            pix = _pdf_doc[page_idx].get_pixmap(dpi=150)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            return img
+        return None
 
     # ── Extract text and inject figure descriptions per page ──────────────────
     pages = []
@@ -155,11 +176,12 @@ def extract_pages_from_url(blob_url: str) -> list:
 
             page_text = "\n\n".join(p for p in paragraphs if p.strip())
 
-            if ENABLE_FIGURE_VISION and file_ext in ("png", "jpg", "jpeg", "webp", "tiff") and pg_num in page_images:
+            # ── Image file: full-page vision description ─────────────────────
+            # Only for image uploads (not PDFs). Uses _single_page_img (page 1).
+            if ENABLE_FIGURE_VISION and _file_ext in ("png", "jpg", "jpeg", "webp", "tiff") and _single_page_img and pg_num == 1:
                 try:
-                    full_page_img = page_images[pg_num]
                     buf = io.BytesIO()
-                    full_page_img.save(buf, format="PNG")
+                    _single_page_img.save(buf, format="PNG")
                     full_image_bytes = buf.getvalue()
 
                     vision_description = describe_figure(full_image_bytes)
@@ -175,50 +197,67 @@ def extract_pages_from_url(blob_url: str) -> list:
                     # Fall through — use whatever OCR text was extracted
 
             # ── Figure descriptions for this page ─────────────────────────────
-            if ENABLE_FIGURE_VISION and pg_num in figure_map and pg_num in page_images:
-                pg_img = page_images[pg_num]
-                w, h   = pg_img.size
+            # Render page on-demand ONLY if it has figures — then free immediately.
+            if ENABLE_FIGURE_VISION and pg_num in figure_map:
+                # Get the page image: render from PDF on demand, or use _single_page_img for images
+                if _pdf_doc:
+                    pg_img = _render_pdf_page(pg_num)
+                elif _single_page_img and pg_num == 1:
+                    pg_img = _single_page_img
+                else:
+                    pg_img = None
 
-                for polygon in figure_map[pg_num]:
-                    try:
-                        # polygon is a flat list: [x0,y0, x1,y1, x2,y2, x3,y3]
-                        # coordinates are in inches — convert using page dimensions
-                        # Doc Intelligence gives page width/height in inches too
-                        page_w_in = page.width   if page.width  else 8.5
-                        page_h_in = page.height  if page.height else 11.0
+                if pg_img:
+                    w, h   = pg_img.size
 
-                        xs = [polygon[i]     * (w / page_w_in) for i in range(0, len(polygon), 2)]
-                        ys = [polygon[i + 1] * (h / page_h_in) for i in range(0, len(polygon), 2)]
+                    for polygon in figure_map[pg_num]:
+                        try:
+                            # polygon is a flat list: [x0,y0, x1,y1, x2,y2, x3,y3]
+                            # coordinates are in inches — convert using page dimensions
+                            # Doc Intelligence gives page width/height in inches too
+                            page_w_in = page.width   if page.width  else 8.5
+                            page_h_in = page.height  if page.height else 11.0
 
-                        left   = max(0, int(min(xs)) - 8)
-                        top    = max(0, int(min(ys)) - 8)
-                        right  = min(w, int(max(xs)) + 8)
-                        bottom = min(h, int(max(ys)) + 8)
+                            xs = [polygon[i]     * (w / page_w_in) for i in range(0, len(polygon), 2)]
+                            ys = [polygon[i + 1] * (h / page_h_in) for i in range(0, len(polygon), 2)]
 
-                        if right <= left or bottom <= top:
+                            left   = max(0, int(min(xs)) - 8)
+                            top    = max(0, int(min(ys)) - 8)
+                            right  = min(w, int(max(xs)) + 8)
+                            bottom = min(h, int(max(ys)) + 8)
+
+                            if right <= left or bottom <= top:
+                                continue
+
+                            cropped = pg_img.crop((left, top, right, bottom))
+
+                            # Convert crop to PNG bytes
+                            buf = io.BytesIO()
+                            cropped.save(buf, format="PNG")
+                            figure_bytes = buf.getvalue()
+
+                            description = describe_figure(figure_bytes)
+
+                            if description:
+                                page_text += f"\n\n[Figure: {description}]"
+                                print(f"[doc_intelligence] Page {pg_num}: figure described ({len(description)} chars)")
+
+                        except Exception as e:
+                            print(f"[doc_intelligence] Figure crop/describe failed on page {pg_num}: {e}")
                             continue
 
-                        cropped = pg_img.crop((left, top, right, bottom))
-
-                        # Convert crop to PNG bytes
-                        buf = io.BytesIO()
-                        cropped.save(buf, format="PNG")
-                        figure_bytes = buf.getvalue()
-
-                        description = describe_figure(figure_bytes)
-
-                        if description:
-                            page_text += f"\n\n[Figure: {description}]"
-                            print(f"[doc_intelligence] Page {pg_num}: figure described ({len(description)} chars)")
-
-                    except Exception as e:
-                        print(f"[doc_intelligence] Figure crop/describe failed on page {pg_num}: {e}")
-                        continue
+                    # Free this page's rendered image immediately — never accumulate
+                    if pg_img is not _single_page_img:
+                        del pg_img
 
             if page_text.strip():
                 pages.append({
                     "page_number": pg_num,
                     "text":        page_text.strip(),
                 })
+
+    # ── Cleanup ───────────────────────────────────────────────────────────────
+    if _pdf_doc:
+        _pdf_doc.close()
 
     return pages
