@@ -611,6 +611,15 @@ async def chat_message(request: ChatRequest):
                 except Exception:
                     pass   # non-fatal — falls back to empty
 
+        # ── Attachment override: file uploaded with chip → never skip retrieval ──
+        # When a file is attached alongside ANY chip (quiz, flowchart, mindmap,
+        # study_plan, image), the user clearly wants that file used.
+        # extract_document_context may return scope="general" for short/vague
+        # message text (e.g. "in 3 questions"), but the file attachment signals
+        # intent to work with the document.
+        if has_attachment and chip_scope == "general":
+            chip_scope = "document"
+
         classification = {
             "intent":               request.intent_hint,
             "topic":                topic_val,
@@ -855,6 +864,7 @@ async def chat_message(request: ChatRequest):
     # ── Event stream ──────────────────────────────────────────────────────────
     async def event_stream():
         active_chunks = context_chunks
+        just_ingested_filenames: list = []
 
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id})}\n\n"
 
@@ -931,12 +941,20 @@ async def chat_message(request: ChatRequest):
                     # returns empty and the LLM has no document context.
                     await asyncio.sleep(2)
 
+                    # ── Filter to just-uploaded file when exactly one file ingested ──
+                    post_filename_filter = (
+                        just_ingested_filenames[0]
+                        if len(just_ingested_filenames) == 1
+                        else None
+                    )
+
                     # ── Retrieval AFTER all files stored so every file's chunks are findable ──
                     if scope == "document":
                         # Full coverage — bypass vector search, fetch all chunks ordered
                         active_chunks = retrieve_all_chunks_ordered(
                             user_id=request.user_id,
                             conversation_id=conversation_id,
+                            filename_filter=post_filename_filter,
                         )
                     else:
                         total = len(all_ingested_chunks)
@@ -951,12 +969,6 @@ async def chat_message(request: ChatRequest):
 
                         q_emb = embed_query(post_q_text)
                         use_hybrid_post = bool(keywords) or query_type in ("formula", "definition", "list", "specific")
-
-                        post_filename_filter = (
-                            just_ingested_filenames[0]
-                            if len(just_ingested_filenames) == 1
-                            else None
-                        )
 
                         active_chunks = retrieve_chunks_smart(
                             query_embedding=q_emb,
@@ -983,26 +995,36 @@ async def chat_message(request: ChatRequest):
                 yield f"data: {json.dumps({'type': 'status', 'content': 'done'})}\n\n"
 
         # ── Dispatch ─────────────────────────────────────────────────────────
+        # When exactly one file was just ingested in THIS message, pass its
+        # filename so dispatch functions filter retrieval to the new file.
+        # Multi-file uploads (len>1) → None → search all files as before.
+        # No upload (len==0) → None → search all files as before.
+        filename_hint = (
+            just_ingested_filenames[0]
+            if len(just_ingested_filenames) == 1
+            else None
+        )
+
         if intent == "quiz":
-            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider):
+            async for evt in _dispatch_quiz(request.user_id, conversation_id, topic, num_questions, timer_seconds=timer_seconds, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider, filename_hint=filename_hint):
                 yield evt
             return
 
         if intent in ("flowchart", "mindmap"):
             dtype = "flowchart" if intent == "flowchart" else "diagram"
-            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider):
+            async for evt in _dispatch_diagram(request.user_id, conversation_id, topic, dtype, prior_messages, raw_message=request.message, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider, filename_hint=filename_hint):
                 yield evt
             return
 
         if intent == "image":
-            async for evt in _dispatch_image(request.user_id, conversation_id, topic, prior_messages, scope=scope):
+            async for evt in _dispatch_image(request.user_id, conversation_id, topic, prior_messages, scope=scope, filename_hint=filename_hint):
                 yield evt
             return
 
         if intent == "study_plan":
             tw = int(timeline_weeks) if timeline_weeks else 4
             hw = int(hours_per_week) if hours_per_week else 8
-            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider):
+            async for evt in _dispatch_study_plan(request.user_id, conversation_id, topic, tw, hw, page_numbers=page_numbers, scope=scope, curriculum_context=_curr_context, provider=_provider, filename_hint=filename_hint):
                 yield evt
             return
 
@@ -1061,7 +1083,7 @@ async def chat_message(request: ChatRequest):
 
 # ── Feature dispatch helpers ──────────────────────────────────────────────────
 
-async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None, curriculum_context=None, provider=None):
+async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_seconds=None, page_numbers=None, scope=None, curriculum_context=None, provider=None, filename_hint=None):
     # provider defaults to the module-level import (server default) when not supplied.
     from app.services.ai_service import get_provider as _gp
     _p = provider or _gp(None)
@@ -1083,12 +1105,13 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
 
             if has_docs:
                 filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                filename_filter = resolve_document_filter(topic or "", filenames)
+                filename_filter = filename_hint or resolve_document_filter(topic or "", filenames)
 
                 if scope == "document":
                     raw_chunks = retrieve_all_chunks_ordered(
                         user_id=user_id,
                         conversation_id=conversation_id,
+                        filename_filter=filename_filter,
                     )
                 else:
                     q_emb = embed_query(topic or "key concepts and important topics")
@@ -1111,7 +1134,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
 
             if has_docs:
                 filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                filename_filter = resolve_document_filter(topic or "", filenames)
+                filename_filter = filename_hint or resolve_document_filter(topic or "", filenames)
 
                 q_emb = embed_query(topic or "key concepts and important topics")
                 raw_chunks = retrieve_chunks_smart(
@@ -1198,7 +1221,7 @@ async def _dispatch_quiz(user_id, conversation_id, topic, num_questions, timer_s
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None, curriculum_context=None, provider=None):
+async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior_messages, raw_message: str = "", page_numbers=None, scope=None, curriculum_context=None, provider=None, filename_hint=None):
     from app.services.ai_service import get_provider as _gp
     _p = provider or _gp(None)
     try:
@@ -1233,12 +1256,13 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
 
                 if has_docs:
                     filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                    filename_filter = resolve_document_filter(effective, filenames)
+                    filename_filter = filename_hint or resolve_document_filter(effective, filenames)
 
                     if scope == "document":
                         raw_chunks = retrieve_all_chunks_ordered(
                             user_id=user_id,
                             conversation_id=conversation_id,
+                            filename_filter=filename_filter,
                         )
                     else:
                         q_emb = embed_query(effective)
@@ -1257,7 +1281,7 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
 
                 if has_docs:
                     filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                    filename_filter = resolve_document_filter(effective, filenames)
+                    filename_filter = filename_hint or resolve_document_filter(effective, filenames)
 
                     q_emb = embed_query(effective)
                     raw_chunks = retrieve_chunks_smart(
@@ -1319,7 +1343,7 @@ async def _dispatch_diagram(user_id, conversation_id, topic, diagram_type, prior
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_image(user_id, conversation_id, topic, prior_messages, scope=None):
+async def _dispatch_image(user_id, conversation_id, topic, prior_messages, scope=None, filename_hint=None):
     try:
         effective = topic or infer_topic_from_messages(prior_messages) or "General Topic"
         chunks = []
@@ -1337,6 +1361,7 @@ async def _dispatch_image(user_id, conversation_id, topic, prior_messages, scope
                     chunks = retrieve_chunks(
                         query_embedding=q_emb, user_id=user_id,
                         conversation_id=conversation_id, top_k=3, score_threshold=0.5,
+                        filename_filter=filename_hint,
                     )
                 # else: no docs — chunks stays []
         except Exception:
@@ -1373,7 +1398,7 @@ async def _dispatch_image(user_id, conversation_id, topic, prior_messages, scope
         yield "data: [DONE]\n\n"
 
 
-async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None, curriculum_context=None, provider=None):
+async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, hours_per_week, page_numbers=None, scope=None, curriculum_context=None, provider=None, filename_hint=None):
     from app.services.ai_service import get_provider as _gp
     _p = provider or _gp(None)
     try:
@@ -1384,6 +1409,7 @@ async def _dispatch_study_plan(user_id, conversation_id, topic, timeline_weeks, 
             page_numbers=page_numbers, scope=scope,
             curriculum_context=curriculum_context,
             model_provider=("gemini" if "gemini" in getattr(_p, "__name__", "") else "azure"),
+            filename_hint=filename_hint,
         )
 
         # ── Safety sentinel check ─────────────────────────────────────────────
@@ -2102,4 +2128,4 @@ async def get_shared_conversation(conversation_id: str):
         "conversation_id": conversation_id,
         "title": conv_data.get("title", "Shared Conversation"),
         "messages": messages,
-    }        
+    }

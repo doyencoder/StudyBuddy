@@ -184,6 +184,7 @@ def retrieve_chunks(
     conversation_id: str,
     top_k: int = 5,
     score_threshold: float = 0.75,
+    filename_filter: str = None,
 ) -> List[str]:
     """
     Pure vector search — used by regenerate endpoint and quiz fallback.
@@ -197,10 +198,14 @@ def retrieve_chunks(
         fields="embedding",
     )
 
+    base_filter = f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'"
+    if filename_filter:
+        base_filter += f" and filename eq '{filename_filter}'"
+
     results = search_client.search(
         search_text=None,
         vector_queries=[vector_query],
-        filter=f"user_id eq '{user_id}' and conversation_id eq '{conversation_id}'",
+        filter=base_filter,
         select=["chunk_text"],
         top=top_k,
     )

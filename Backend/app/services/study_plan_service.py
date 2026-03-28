@@ -31,6 +31,7 @@ async def create_study_plan(
     page_numbers=None, scope=None,
     curriculum_context: str = None,
     model_provider: str | None = None,
+    filename_hint: str | None = None,
 ) -> dict:
     """
     Generates a structured study plan.
@@ -75,7 +76,7 @@ async def create_study_plan(
                     query_embedding = embed_query(query_text)
 
                     filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                    filename_filter = resolve_document_filter(topic or "", filenames)
+                    filename_filter = filename_hint or resolve_document_filter(topic or "", filenames)
                     if filename_filter:
                         print(f"[StudyPlan] Filtering to file: {filename_filter}")
 
@@ -84,6 +85,7 @@ async def create_study_plan(
                         raw_chunks = retrieve_all_chunks_ordered(
                             user_id=user_id,
                             conversation_id=conversation_id,
+                            filename_filter=filename_filter,
                         )
                     else:
                         raw_chunks = retrieve_chunks_smart(
@@ -106,7 +108,7 @@ async def create_study_plan(
                     query_embedding = embed_query(query_text)
 
                     filenames = get_conversation_filenames(user_id=user_id, conversation_id=conversation_id)
-                    filename_filter = resolve_document_filter(topic or "", filenames)
+                    filename_filter = filename_hint or resolve_document_filter(topic or "", filenames)
                     if filename_filter:
                         print(f"[StudyPlan] Filtering to file: {filename_filter}")
 
